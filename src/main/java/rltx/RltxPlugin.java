@@ -114,6 +114,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private final WeatherState weatherNow = new WeatherState();
 	private WeatherState weatherTarget = NO_WEATHER;
 	private float wetness, snowCover, flash;
+	private float weatherDt;
 	private long lastWeatherNanos;
 	private final Random lightningRandom = new Random();
 	private volatile float[] skyHorizon;
@@ -800,6 +801,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		long now = System.nanoTime();
 		float dt = lastWeatherNanos == 0 ? 0f : Math.min((now - lastWeatherNanos) / 1e9f, 0.25f);
 		lastWeatherNanos = now;
+		weatherDt = dt;
 		switch (config.weatherMode())
 		{
 			case REAL_TIME:
@@ -858,10 +860,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.lightShafts = config.lightShafts() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
 		// Wind blows away from its meteorological direction; full strength carries particles
-		// about two tiles a second.
+		// about two tiles a second. The shader gets the accumulated displacement, not the
+		// velocity, so a change of wind moves the air from where it is instead of jumping it.
 		double to = Math.toRadians(w.windFromDegrees + 180.0);
-		frame.windX = (float) Math.sin(to) * w.wind * 300f;
-		frame.windZ = (float) Math.cos(to) * w.wind * 300f;
+		float speed = w.wind * 300f;
+		frame.windOffsetX = (frame.windOffsetX + (float) Math.sin(to) * speed * weatherDt) % 1048576f;
+		frame.windOffsetZ = (frame.windOffsetZ + (float) Math.cos(to) * speed * weatherDt) % 1048576f;
 		// Fog fades to the sky's horizon colour, greyed and dimmed by cloud the same way the
 		// shader greys the sky, so fogged scenery meets the sky seamlessly.
 		float lum = 0.2126f * horizon[0] + 0.7152f * horizon[1] + 0.0722f * horizon[2];

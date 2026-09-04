@@ -1887,7 +1887,7 @@ public final class RtRenderer
 		b.putFloat(p.bounces).putFloat(p.aperture).putFloat(p.focusDistance).putFloat(p.waveStrength);
 		b.putFloat(p.shutter).putFloat(p.gameCycle).putFloat(p.bumpStrength).putFloat(0f);
 		b.putFloat(p.cloud).putFloat(p.fogAmount).putFloat(p.rain).putFloat(p.snow);
-		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windX).putFloat(p.windZ);
+		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windOffsetX).putFloat(p.windOffsetZ);
 		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
 		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
 		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);

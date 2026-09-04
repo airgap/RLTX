@@ -28,7 +28,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 path;     // diffuse bounce count, lens aperture radius, focus distance, wave strength
   vec4 motion;   // shutter fraction, game cycle for texture scrolling, texture relief, unused
   vec4 weather;  // cloud cover, fog amount, rain, snow
-  vec4 weather2; // ground wetness, snow cover, wind velocity x and z in world units per second
+  vec4 weather2; // ground wetness, snow cover, accumulated wind displacement x and z in world units
   vec4 fog;      // fog colour in display space, lightning flash
   vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
 } u;

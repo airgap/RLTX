@@ -40,8 +40,8 @@ public final class FrameParams
 	public float bumpStrength;
 	/** Weather: cloud cover, fog amount, falling rain and snow; all 0 to 1 unless scaled up. */
 	public float cloud, fogAmount, rain, snow;
-	/** Ground wetness and snow cover 0 to 1, and the wind velocity in world units per second. */
-	public float wetness, snowCover, windX, windZ;
+	/** Ground wetness and snow cover 0 to 1, and how far the wind has carried the air so far, in world units. */
+	public float wetness, snowCover, windOffsetX, windOffsetZ;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */
