@@ -56,6 +56,8 @@ public final class FrameParams
 	public float bloom;
 	/** How far primary rays reach and static zones are kept, in world units. */
 	public float renderDistance;
+	/** Share of the render distance over which scenery fades out, 0 to 1. */
+	public float distanceFade;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

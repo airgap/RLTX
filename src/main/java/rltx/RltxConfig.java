@@ -417,6 +417,20 @@ public interface RltxConfig extends Config
 		return 90;
 	}
 
+	@Range(min = 5, max = 95)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "distanceFade",
+		name = "Distance fade",
+		description = "Share of the render distance over which scenery fades into the horizon. Larger values start the fade nearer and make the edge softer.",
+		section = cameraSection,
+		position = 12
+	)
+	default int distanceFade()
+	{
+		return 45;
+	}
+
 	enum FocusMode
 	{
 		PLAYER("Follow the player"),

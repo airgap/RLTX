@@ -31,7 +31,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 fog;      // fog colour in display space, lightning flash
   vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
-  vec4 post;      // vignette strength, bloom strength, render distance in world units
+  vec4 post;      // vignette strength, bloom strength, render distance in world units, fade share
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -343,9 +343,10 @@ void main() {
       c = mix(c, u.fog.rgb, 1.0 - exp(-depth * u.weather.y * FOG_EXTINCTION));
     }
     // The last stretch before the render distance fades into the horizon, where the cut-off
-    // rays beyond it show the same colour.
+    // rays beyond it show the same colour; the eased curve keeps the onset gentle.
     if (depth > 0.0 && u.post.z > 0.0) {
-      c = mix(c, u.fog.rgb, smoothstep(0.72 * u.post.z, u.post.z, depth));
+      float fade = smoothstep(u.post.z * (1.0 - u.post.w), u.post.z, depth);
+      c = mix(c, u.fog.rgb, fade * fade * (3.0 - 2.0 * fade));
     }
     c = swampMist(c, p, cameraRay(p), depth);
     writeOutput(p, precipitation(c, p, depth));
