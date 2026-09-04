@@ -31,6 +31,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
   vec4 post;      // vignette strength, bloom strength, render distance in world units, fade share
   vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
+  vec4 lights;
+  vec4 material;  // emissive, glossy flag, terrain relief, soft glow sigma in quarter-resolution pixels
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -53,6 +55,23 @@ vec3 finished(ivec2 q) {
 
 const int RADIUS = 6;
 const float WEIGHTS[7] = float[7](0.1329, 0.1257, 0.1063, 0.0805, 0.0545, 0.0330, 0.0179);
+// The soft glow uses its own Gaussian of adjustable width over this many taps a side; wider
+// blurs stride further apart rather than adding taps.
+const int SOFT_RADIUS = 12;
+
+float softSigma() {
+  return max(u.material.w, 0.5);
+}
+
+int softStride() {
+  return max(1, int(ceil(3.0 * softSigma() / float(SOFT_RADIUS))));
+}
+
+float softWeight(int i) {
+  float x = float(i * softStride());
+  float s = softSigma();
+  return exp(-x * x / (2.0 * s * s));
+}
 
 void main() {
   ivec2 q = ivec2(gl_GlobalInvocationID.xy);
@@ -69,24 +88,41 @@ void main() {
       ivec2 s = clamp(centre + ivec2(i * 4, 0), ivec2(0), full - 1);
       // Four rows average the quarter cell vertically as the horizontal taps run.
       vec3 brightColumn = vec3(0.0);
-      vec3 softColumn = vec3(0.0);
       for (int r = 0; r < 4; ++r) {
-        ivec2 p = clamp(ivec2(s.x, q.y * 4 + r), ivec2(0), full - 1);
-        brightColumn += imageLoad(bloomSource, p).rgb;
-        softColumn += finished(p);
+        brightColumn += imageLoad(bloomSource, clamp(ivec2(s.x, q.y * 4 + r), ivec2(0), full - 1)).rgb;
       }
       bright += WEIGHTS[abs(i)] * brightColumn * 0.25;
-      soft += WEIGHTS[abs(i)] * softColumn * 0.25;
     }
     imageStore(bloomA, q, vec4(bright, 1.0));
-    imageStore(diffuseA, q, vec4(soft, 1.0));
+    // The soft copy takes its own horizontal pass at its own width.
+    soft = vec3(0.0);
+    float total = 0.0;
+    int stride = softStride();
+    for (int i = -SOFT_RADIUS; i <= SOFT_RADIUS; ++i) {
+      float w = softWeight(i);
+      ivec2 s = clamp(centre + ivec2(i * stride * 4, 0), ivec2(0), full - 1);
+      vec3 column = vec3(0.0);
+      for (int r = 0; r < 4; ++r) {
+        column += finished(clamp(ivec2(s.x, q.y * 4 + r), ivec2(0), full - 1));
+      }
+      soft += w * column * 0.25;
+      total += w;
+    }
+    imageStore(diffuseA, q, vec4(soft / total, 1.0));
   } else {
     for (int i = -RADIUS; i <= RADIUS; ++i) {
       ivec2 s = clamp(q + ivec2(0, i), ivec2(0), quarter - 1);
       bright += WEIGHTS[abs(i)] * imageLoad(bloomA, s).rgb;
-      soft += WEIGHTS[abs(i)] * imageLoad(diffuseA, s).rgb;
     }
     imageStore(bloomB, q, vec4(bright, 1.0));
-    imageStore(diffuseB, q, vec4(soft, 1.0));
+    float total = 0.0;
+    int stride = softStride();
+    for (int i = -SOFT_RADIUS; i <= SOFT_RADIUS; ++i) {
+      float w = softWeight(i);
+      ivec2 s = clamp(q + ivec2(0, i * stride), ivec2(0), quarter - 1);
+      soft += w * imageLoad(diffuseA, s).rgb;
+      total += w;
+    }
+    imageStore(diffuseB, q, vec4(soft / total, 1.0));
   }
 }

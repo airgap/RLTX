@@ -635,6 +635,20 @@ public interface RltxConfig extends Config
 		return 25;
 	}
 
+	@Range(min = 8, max = 240)
+	@Units(" px")
+	@ConfigItem(
+		keyName = "diffusionRadius",
+		name = "Soft glow radius",
+		description = "How widely the soft glow copy is blurred, in pixels at full resolution.",
+		section = cameraSection,
+		position = 19
+	)
+	default int diffusionRadius()
+	{
+		return 40;
+	}
+
 	@Range(min = 50, max = 150)
 	@Units(Units.PERCENT)
 	@ConfigItem(

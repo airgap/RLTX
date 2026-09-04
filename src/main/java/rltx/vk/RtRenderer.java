@@ -2066,7 +2066,8 @@ public final class RtRenderer
 		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(p.renderDistance).putFloat(p.distanceFade);
 		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(p.aerialPerspective).putFloat(p.sunUp);
 		b.putFloat(p.lightCount).putFloat(p.lightStrength).putFloat(p.surfaceGloss).putFloat(p.surfaceGlossExponent);
-		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(p.terrainBump).putFloat(0f);
+		// The blur runs at quarter resolution and the visible radius spans about two and a half sigmas.
+		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(p.terrainBump).putFloat(p.diffusionRadius / 2.5f / 4f);
 		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(p.diffusion);
 	}
 

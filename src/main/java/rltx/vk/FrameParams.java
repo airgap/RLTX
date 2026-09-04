@@ -81,6 +81,8 @@ public final class FrameParams
 	public float contrast = 1f, saturation = 1f, temperature;
 	/** Opacity of the blurred whole frame blended back over itself, 0 to 1. */
 	public float diffusion;
+	/** Blur radius of the soft glow copy in full-resolution pixels. */
+	public float diffusionRadius = 40f;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

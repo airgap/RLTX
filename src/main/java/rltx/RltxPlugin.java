@@ -1190,6 +1190,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.saturation = config.saturation() / 100f;
 		frame.temperature = config.temperature() / 100f;
 		frame.diffusion = config.diffusion() / 100f;
+		frame.diffusionRadius = config.diffusionRadius();
 		frame.antialias = config.antialias();
 		frame.water = config.water();
 		// Wrapped where every integer scroll speed lands on a whole texture repeat.
