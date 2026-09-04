@@ -137,15 +137,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		final Scene scene;
 		final StaticScene built;
-		final int[][][] waterDepth;
+		final StaticSceneBuilder.WaterBed waterBed;
 		int[][][] terrainLight;
 
-		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, int[][][] waterDepth)
+		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed)
 		{
 			this.scene = scene;
 			this.built = built;
 			this.terrainLight = terrainLight;
-			this.waterDepth = waterDepth;
+			this.waterBed = waterBed;
 		}
 	}
 
@@ -501,7 +501,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		Palette p = palette();
 		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
-		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterDepth(scene)));
+		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterBed(scene)));
 	}
 
 	@Override
@@ -570,7 +570,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				continue;
 			}
-			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterDepth);
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
 				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette()), subTransforms.get(id));

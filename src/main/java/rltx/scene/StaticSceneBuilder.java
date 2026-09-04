@@ -35,7 +35,7 @@ public final class StaticSceneBuilder
 	private final Palette palette;
 	private final int offset;
 	private final int[][][] terrainLight;
-	private final int[][][] waterDepth;
+	private final WaterBed waterBed;
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
@@ -45,14 +45,14 @@ public final class StaticSceneBuilder
 		final GeometryBuffer water = new GeometryBuffer(16);
 	}
 
-	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, int[][][] waterDepth)
+	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed)
 	{
 		this.scene = scene;
 		this.renderCallbacks = renderCallbacks;
 		this.palette = palette;
 		this.offset = scene.getWorldViewId() == WorldView.TOPLEVEL ? TOPLEVEL_OFFSET : 0;
 		this.terrainLight = terrainLight;
-		this.waterDepth = waterDepth;
+		this.waterBed = waterBed;
 	}
 
 	/** Number of zones along each axis of the scene's extended tile grid. */
@@ -65,10 +65,10 @@ public final class StaticSceneBuilder
 	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette)
 	{
 		int[][][] light = terrainLight(scene, palette);
-		int[][][] depth = waterDepth(scene);
+		WaterBed bed = waterBed(scene);
 		int zones = zoneCount(scene);
 		StaticScene.Zone[] out = new StaticScene.Zone[zones * zones];
-		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, depth);
+		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed);
 		for (int zx = 0; zx < zones; ++zx)
 		{
 			for (int zz = 0; zz < zones; ++zz)
@@ -80,9 +80,9 @@ public final class StaticSceneBuilder
 	}
 
 	/** Rebuilds a single zone, for example after a door changed. */
-	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, int[][][] waterDepth)
+	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed)
 	{
-		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterDepth).zone(zx, zz);
+		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed).zone(zx, zz);
 	}
 
 	// 117 HD's underwater slope: depth by tiles from the shore, scaled as its renderer does.
@@ -151,25 +151,67 @@ public final class StaticSceneBuilder
 		return grid;
 	}
 
+	/** A bed colour entry naming a texture rather than a colour. */
+	private static final int BED_TEXTURE_FLAG = 1 << 30;
+	private static final int BED_NO_COLOR = -1;
+
 	/**
-	 * Depth below each water tile's surface of the bed synthesised under it, per plane and
-	 * grid vertex. The client's water is a flat plane with nothing beneath, so a bed that
-	 * deepens away from the shore gives light refracting through the surface something to land on.
+	 * The bed synthesised under water, per plane and grid vertex: its depth below the surface,
+	 * and its colour carried in from the nearest shoreline so shallows read as the ground
+	 * continuing under the water rather than as the water tile's own colour.
 	 */
-	public static int[][][] waterDepth(Scene scene)
+	public static final class WaterBed
+	{
+		final int[][][] depth;
+		/** HSL of the shore terrain, or a texture id flagged with {@link #BED_TEXTURE_FLAG}, or -1. */
+		final int[][][] color;
+
+		WaterBed(int[][][] depth, int[][][] color)
+		{
+			this.depth = depth;
+			this.color = color;
+		}
+	}
+
+	/**
+	 * The client's water is a flat plane with nothing beneath, so a bed that deepens away from
+	 * the shore gives light refracting through the surface something to land on.
+	 */
+	public static WaterBed waterBed(Scene scene)
 	{
 		Tile[][][] tiles = scene.getExtendedTiles();
 		int size = tiles[0].length;
 		int[][][] depth = new int[tiles.length][size + 1][size + 1];
+		int[][][] color = new int[tiles.length][size + 1][size + 1];
 		for (int level = 0; level < tiles.length; ++level)
 		{
 			boolean[][] water = new boolean[size][size];
+			int[][] shore = color[level];
+			for (int[] row : shore)
+			{
+				java.util.Arrays.fill(row, BED_NO_COLOR);
+			}
 			for (int x = 0; x < size; ++x)
 			{
 				for (int y = 0; y < size; ++y)
 				{
 					Tile t = tiles[level][x][y];
-					water[x][y] = t != null && t.getSceneTilePaint() != null && WaterTextures.isWater(t.getSceneTilePaint().getTexture());
+					SceneTilePaint paint = t == null ? null : t.getSceneTilePaint();
+					water[x][y] = paint != null && WaterTextures.isWater(paint.getTexture());
+					if (paint == null || water[x][y] || paint.getNeColor() == HIDDEN_COLOR)
+					{
+						continue;
+					}
+					// Land: its corners seed the colours that spread under neighbouring water.
+					if (paint.getTexture() != -1)
+					{
+						int textured = BED_TEXTURE_FLAG | paint.getTexture();
+						seedShore(shore, x, y, textured, textured, textured, textured);
+					}
+					else
+					{
+						seedShore(shore, x, y, paint.getSwColor(), paint.getSeColor(), paint.getNwColor(), paint.getNeColor());
+					}
 				}
 			}
 			int[][] d = depth[level];
@@ -214,6 +256,24 @@ public final class StaticSceneBuilder
 					}
 				}
 			}
+			// Colours flow outward from the shore, each vertex taking a neighbour one step nearer.
+			for (int step = 1; step <= BED_SLOPE.length; ++step)
+			{
+				for (int vx = 0; vx <= size; ++vx)
+				{
+					for (int vy = 0; vy <= size; ++vy)
+					{
+						if (d[vx][vy] != step || shore[vx][vy] != BED_NO_COLOR)
+						{
+							continue;
+						}
+						if (vx > 0 && d[vx - 1][vy] == step - 1 && shore[vx - 1][vy] != BED_NO_COLOR) shore[vx][vy] = shore[vx - 1][vy];
+						else if (vy > 0 && d[vx][vy - 1] == step - 1 && shore[vx][vy - 1] != BED_NO_COLOR) shore[vx][vy] = shore[vx][vy - 1];
+						else if (vx < size && d[vx + 1][vy] == step - 1 && shore[vx + 1][vy] != BED_NO_COLOR) shore[vx][vy] = shore[vx + 1][vy];
+						else if (vy < size && d[vx][vy + 1] == step - 1 && shore[vx][vy + 1] != BED_NO_COLOR) shore[vx][vy] = shore[vx][vy + 1];
+					}
+				}
+			}
 			for (int vx = 0; vx <= size; ++vx)
 			{
 				for (int vy = 0; vy <= size; ++vy)
@@ -222,7 +282,34 @@ public final class StaticSceneBuilder
 				}
 			}
 		}
-		return depth;
+		return new WaterBed(depth, color);
+	}
+
+	private static void seedShore(int[][] shore, int x, int y, int sw, int se, int nw, int ne)
+	{
+		if (shore[x][y] == BED_NO_COLOR) shore[x][y] = sw;
+		if (shore[x + 1][y] == BED_NO_COLOR) shore[x + 1][y] = se;
+		if (shore[x][y + 1] == BED_NO_COLOR) shore[x][y + 1] = nw;
+		if (shore[x + 1][y + 1] == BED_NO_COLOR) shore[x + 1][y + 1] = ne;
+	}
+
+	// The bed's colour at a grid vertex: the shore terrain carried under the water, or the
+	// water tile's own colour where no shore colour reached.
+	private int bedColor(int plane, int gx, int gy, int fallback)
+	{
+		int[][] shore = waterBed.color[plane];
+		int x = Math.max(0, Math.min(shore.length - 1, gx));
+		int y = Math.max(0, Math.min(shore.length - 1, gy));
+		int v = shore[x][y];
+		if (v == BED_NO_COLOR)
+		{
+			return fallback;
+		}
+		if ((v & BED_TEXTURE_FLAG) != 0)
+		{
+			return palette.texture(v & ~BED_TEXTURE_FLAG);
+		}
+		return cornerColor(v, plane, x, y);
 	}
 
 	/**
@@ -462,13 +549,13 @@ public final class StaticSceneBuilder
 			{
 				bucket.water.face(hx, neH, hz, lx, nwH, hz, hx, seH, lz, rgba, texture, 1f, 1f, 0f, 1f, 1f, 0f);
 				bucket.water.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, rgba, texture, 0f, 0f, 1f, 0f, 0f, 1f);
-				// The bed keeps the tile's own colours, sunk by the shore distance (y grows downwards);
-				// the shader darkens it by depth.
-				int[][] depth = waterDepth[renderLevel];
-				int sw = cornerColor(tile.getSwColor(), renderLevel, tx, ty);
-				int se = cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty);
-				int ne = cornerColor(neColor, renderLevel, tx + 1, ty + 1);
-				int nw = cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1);
+				// The bed carries the shore's colours in, sunk by the shore distance (y grows
+				// downwards); the shader darkens it by depth.
+				int[][] depth = waterBed.depth[renderLevel];
+				int sw = bedColor(renderLevel, tx, ty, cornerColor(tile.getSwColor(), renderLevel, tx, ty));
+				int se = bedColor(renderLevel, tx + 1, ty, cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty));
+				int ne = bedColor(renderLevel, tx + 1, ty + 1, cornerColor(neColor, renderLevel, tx + 1, ty + 1));
+				int nw = bedColor(renderLevel, tx, ty + 1, cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1));
 				out.face(hx, neH + depth[tx + 1][ty + 1], hz, lx, nwH + depth[tx][ty + 1], hz, hx, seH + depth[tx + 1][ty], lz, average(ne, nw, se));
 				out.face(lx, swH + depth[tx][ty], lz, hx, seH + depth[tx + 1][ty], lz, lx, nwH + depth[tx][ty + 1], hz, average(sw, se, nw));
 				return;
@@ -518,7 +605,7 @@ public final class StaticSceneBuilder
 						(vx[a] - tileX) * scale, (vz[a] - tileZ) * scale,
 						(vx[b] - tileX) * scale, (vz[b] - tileZ) * scale,
 						(vx[c] - tileX) * scale, (vz[c] - tileZ) * scale);
-					int bedColor = average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel));
+					int bedColor = average(bedVertexColor(ca[i], vx[a], vz[a], renderLevel), bedVertexColor(cb[i], vx[b], vz[b], renderLevel), bedVertexColor(cc[i], vx[c], vz[c], renderLevel));
 					out.face(vx[a], vy[a] + bedDepth(vx[a], vz[a], renderLevel), vz[a],
 						vx[b], vy[b] + bedDepth(vx[b], vz[b], renderLevel), vz[b],
 						vx[c], vy[c] + bedDepth(vx[c], vz[c], renderLevel), vz[c], bedColor);
@@ -539,10 +626,17 @@ public final class StaticSceneBuilder
 
 	private int bedDepth(int sceneX, int sceneZ, int plane)
 	{
-		int[][] depth = waterDepth[plane];
+		int[][] depth = waterBed.depth[plane];
 		int gx = Math.max(0, Math.min(depth.length - 1, Math.round(sceneX / (float) Perspective.LOCAL_TILE_SIZE) + offset));
 		int gy = Math.max(0, Math.min(depth.length - 1, Math.round(sceneZ / (float) Perspective.LOCAL_TILE_SIZE) + offset));
 		return depth[gx][gy];
+	}
+
+	private int bedVertexColor(int hsl, int sceneX, int sceneZ, int plane)
+	{
+		int gx = Math.round(sceneX / (float) Perspective.LOCAL_TILE_SIZE) + offset;
+		int gy = Math.round(sceneZ / (float) Perspective.LOCAL_TILE_SIZE) + offset;
+		return bedColor(plane, gx, gy, vertexColor(hsl, sceneX, sceneZ, plane));
 	}
 
 	private static int average(int a, int b, int c)
