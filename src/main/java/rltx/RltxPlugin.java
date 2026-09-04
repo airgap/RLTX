@@ -1503,11 +1503,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.skyAmbientR = (pictured ? horizon[0] * frame.skyR : frame.skyR) * dim * 0.6f;
 		frame.skyAmbientG = (pictured ? horizon[1] * frame.skyG : frame.skyG) * dim * 0.6f;
 		frame.skyAmbientB = (pictured ? horizon[2] * frame.skyB : frame.skyB) * dim * 0.6f;
-		// Mist scatters the sun and the sky towards the camera; the final pass composites in
-		// display space, so its colour goes through the same tone map as the scene.
-		frame.mistR = tonemap((frame.sunR * frame.sunIntensity * 0.55f + horizon[0] * frame.skyR * 0.8f + frame.ambient) * 0.9f);
-		frame.mistG = tonemap((frame.sunG * frame.sunIntensity * 0.55f + horizon[1] * frame.skyG * 0.8f + frame.ambient) * 0.9f);
-		frame.mistB = tonemap((frame.sunB * frame.sunIntensity * 0.55f + horizon[2] * frame.skyB * 0.8f + frame.ambient) * 0.9f);
+		// Mist scatters nearly all the sun and sky light that reaches it, so it sits brighter than
+		// the ground beneath, which reflects only its albedo's share. The final pass composites in
+		// display space, so the colour goes through the same tone map as the scene.
+		frame.mistR = tonemap(frame.sunR * frame.sunIntensity * 0.9f + horizon[0] * frame.skyR * 1.3f + frame.ambient);
+		frame.mistG = tonemap(frame.sunG * frame.sunIntensity * 0.9f + horizon[1] * frame.skyG * 1.3f + frame.ambient);
+		frame.mistB = tonemap(frame.sunB * frame.sunIntensity * 0.9f + horizon[2] * frame.skyB * 1.3f + frame.ambient);
 	}
 
 	// The analytic sky's colour at the horizon, matching proceduralSky() in trace.comp, for the
