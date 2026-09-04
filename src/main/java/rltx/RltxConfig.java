@@ -1074,7 +1074,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "weatherMode",
 		name = "Weather",
-		description = "Real weather at the Sun section's latitude and longitude, fetched from Open-Meteo every 10 minutes; a chosen preset; or none.",
+		description = "Real weather for the sun's location, fetched every 10 minutes (weather data by Open-Meteo.com, CC BY 4.0); a chosen preset; or none.",
 		section = weatherSection,
 		position = 0
 	)
