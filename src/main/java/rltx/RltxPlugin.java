@@ -96,6 +96,7 @@ import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
 import rltx.sky.SkyboxLoader;
 import rltx.sky.SolarPosition;
+import rltx.sky.GeoLocation;
 import rltx.sky.WeatherService;
 import rltx.sky.WeatherState;
 import rltx.vk.FrameParams;
@@ -254,6 +255,36 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Gson gson;
 
 	private WeatherService weatherService;
+	private GeoLocation geoLocation;
+
+	// Real time and place takes the machine's own location; the other modes take the settings.
+	private double latitude()
+	{
+		if (config.sunMode() != RltxConfig.SunMode.REAL_TIME)
+		{
+			return config.latitude();
+		}
+		if (geoLocation == null)
+		{
+			geoLocation = new GeoLocation(okHttpClient, gson, config.latitude());
+		}
+		geoLocation.poll();
+		return geoLocation.latitude();
+	}
+
+	private double longitude()
+	{
+		if (config.sunMode() != RltxConfig.SunMode.REAL_TIME)
+		{
+			return config.longitude();
+		}
+		if (geoLocation == null)
+		{
+			geoLocation = new GeoLocation(okHttpClient, gson, config.latitude());
+		}
+		geoLocation.poll();
+		return geoLocation.longitude();
+	}
 	private boolean runoffUploaded;
 
 	// Steps the runoff simulation and uploads it while any water lies on the ground, plus one
@@ -786,10 +817,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		double azimuth;
 		double elevation;
-		if (config.sunMode() == RltxConfig.SunMode.REAL_TIME)
+		if (config.sunMode() != RltxConfig.SunMode.MANUAL)
 		{
-			long now = System.currentTimeMillis() + config.timeOffset() * 3_600_000L;
-			SolarPosition sun = SolarPosition.compute(now, config.latitude(), config.longitude());
+			long now = System.currentTimeMillis() + (config.sunMode() == RltxConfig.SunMode.REAL_TIME_SET ? config.timeOffset() * 3_600_000L : 0L);
+			SolarPosition sun = SolarPosition.compute(now, latitude(), longitude());
 			azimuth = sun.azimuthDegrees;
 			elevation = sun.elevationDegrees;
 		}
@@ -1225,7 +1256,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				{
 					weatherService = new WeatherService(okHttpClient, gson);
 				}
-				weatherService.poll(config.latitude(), config.longitude());
+				weatherService.poll(latitude(), longitude());
 				WeatherState latest = weatherService.latest();
 				if (latest != null)
 				{

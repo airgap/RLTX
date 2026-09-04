@@ -70,6 +70,7 @@ public interface RltxConfig extends Config
 	enum SunMode
 	{
 		REAL_TIME("Real time and place"),
+		REAL_TIME_SET("Real time, chosen place"),
 		MANUAL("Manual azimuth and elevation");
 
 		private final String label;
@@ -89,7 +90,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "sunMode",
 		name = "Sun position",
-		description = "Follow the real sun for the latitude, longitude and clock below, overriding every other sun setting including a skybox's painted sun; or use the manual azimuth and elevation.",
+		description = "Real time and place follows the real sun for where this machine actually is, found from its network address, and the real clock, overriding every other sun setting including a skybox's painted sun. Real time, chosen place uses the latitude, longitude and time offset below instead. Manual uses the azimuth and elevation.",
 		section = sunSection,
 		position = -5
 	)
@@ -103,7 +104,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "latitude",
 		name = "Latitude",
-		description = "Degrees north of the equator, negative for south",
+		description = "Degrees north of the equator, negative for south. Used by Real time, chosen place, and as the fallback before the real place is known.",
 		section = sunSection,
 		position = -4
 	)
@@ -117,7 +118,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "longitude",
 		name = "Longitude",
-		description = "Degrees east of Greenwich, negative for west. The default is estimated from the system time zone.",
+		description = "Degrees east of Greenwich, negative for west. Used by Real time, chosen place; the default is estimated from the system time zone.",
 		section = sunSection,
 		position = -3
 	)
@@ -131,7 +132,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "timeOffset",
 		name = "Time offset",
-		description = "Hours added to the clock when following real time, to preview another time of day",
+		description = "Hours added to the clock in Real time, chosen place, to preview another time of day. Real time and place ignores it.",
 		section = sunSection,
 		position = -2
 	)
