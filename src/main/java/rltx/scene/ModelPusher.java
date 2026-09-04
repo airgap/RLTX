@@ -19,6 +19,20 @@ public final class ModelPusher
 	// faces toward the camera in depth so hair beats hats and capes beat bodies; here they are
 	// pushed out along the face normal instead.
 	private static final float BIAS_OFFSET = 0.6f;
+	/** Marks a face as flame: it glows with its own colour and flickers. */
+	public static final int FLAME_BIT = 1 << 29;
+	/** Whether hot-coloured faces of the models being pushed are flames of a light-bearing object. */
+	public boolean flames;
+
+	// Vanilla flames are saturated orange to yellow faces; hue sits in the top six bits of the
+	// packed HSL as sixty-fourths of a turn, saturation in three bits, lightness in seven.
+	private static boolean hot(int hsl)
+	{
+		int hue = hsl >> 10 & 63;
+		int saturation = hsl >> 7 & 7;
+		int lightness = hsl & 127;
+		return hue >= 1 && hue <= 9 && saturation >= 3 && lightness >= 40;
+	}
 
 	/**
 	 * @param transform row-major 3x4 matrix placing a nested world view's local space in the
@@ -140,11 +154,18 @@ public final class ModelPusher
 				continue;
 			}
 			int hsl = unlit != null ? unlit[f] & 0xffff : c1[f] & 0xffff;
-			if (undo)
+			boolean flame = flames && hot(hsl);
+			if (undo && !flame)
 			{
 				hsl = Palette.undoModelShading(hsl, nX[a] + nX[b] + nX[c], nY[a] + nY[b] + nY[c], nZ[a] + nZ[b] + nZ[c]);
 			}
 			int rgb = palette.hsl(hsl) & 0xffffff;
+			if (flame)
+			{
+				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
+					rgb | opacity, FLAME_BIT, 0f, 0f, 0f, 0f, 0f, 0f);
+				continue;
+			}
 			out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz, rgb | opacity);
 		}
 	}

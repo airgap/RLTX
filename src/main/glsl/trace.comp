@@ -82,6 +82,7 @@ const uint FLAG_SMOOTH_TERRAIN = 32768u;
 const uint FLAG_RUNOFF = 65536u;
 const uint WATER_BIT = 0x80000000u;
 const uint TERRAIN_BIT = 0x40000000u;
+const uint FLAME_BIT = 0x20000000u;
 const uint FLAG_SKYBOX = 32u;
 const uint DYN_BIT = 0x800000u;
 const float RAY_EPS = 0.25;
@@ -107,6 +108,7 @@ struct Hit {
   uint waterType;   // index into the water type table, 0 when not water
   vec4 material;    // specular strength, gloss exponent, emissive, brightness or ground normal layer plus one
   bool terrain;     // untextured terrain face carrying a ground detail id
+  bool flame;       // a flame face of a light-bearing object
 };
 
 // A texture's material, or the global sheen for faces whose texture defines no specular.
@@ -376,6 +378,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   uint tex = texField & 0xFFFFu;
   hit.material = materialOf(tex);
   hit.terrain = (texField & TERRAIN_BIT) != 0u;
+  hit.flame = (texField & FLAME_BIT) != 0u;
   if (hit.terrain) {
     if ((u.misc.y & FLAG_SMOOTH_TERRAIN) != 0u) {
       // The three vertex colours ride in the UV slots as raw bits.
@@ -863,7 +866,12 @@ void main() {
   vec3 sunLight = u.sunColor.rgb * (u.sun.w * sunVisible);
   specular += specularOf(hit.material, hit.n, toEye, sunDir, sunLight);
   vec3 light = vec3(u.sky.w) + sunLight * sunNdl + directLocalSpecular(hit, toEye, specular);
-  if (hit.material.z > 0.0 && u.material.x > 0.0) {
+  if (hit.flame && u.material.x > 0.0) {
+    // Flames glow with their own colour and flicker, brightest at the top of the fire.
+    float t = u.weather3.x;
+    float flicker = 0.7 + 0.6 * valueNoise2(vec2(t * 9.0 + hit.surface.x * 0.02, t * 7.0 + hit.surface.z * 0.02));
+    light += vec3(6.0 * u.material.x * flicker);
+  } else if (hit.material.z > 0.0 && u.material.x > 0.0) {
     // Unlit textures glow with their own colour, four times white at full strength.
     light += vec3(4.0 * u.material.x * hit.material.z);
   }

@@ -4,6 +4,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntPredicate;
 import java.util.function.IntUnaryOperator;
 import net.runelite.api.Constants;
 import net.runelite.api.DecorativeObject;
@@ -54,6 +55,7 @@ public final class StaticSceneBuilder
 	private final WaterBed waterBed;
 	private final IntUnaryOperator foliageKind;
 	private final float treeScale;
+	private final IntPredicate lit;
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
@@ -65,7 +67,7 @@ public final class StaticSceneBuilder
 		float[] swayWeights = new float[64 * 3];
 	}
 
-	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntUnaryOperator foliageKind, float treeScale)
+	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntUnaryOperator foliageKind, float treeScale, IntPredicate lit)
 	{
 		this.scene = scene;
 		this.renderCallbacks = renderCallbacks;
@@ -75,6 +77,7 @@ public final class StaticSceneBuilder
 		this.waterBed = waterBed;
 		this.foliageKind = foliageKind;
 		this.treeScale = treeScale;
+		this.lit = lit;
 	}
 
 	/** Number of zones along each axis of the scene's extended tile grid. */
@@ -88,14 +91,15 @@ public final class StaticSceneBuilder
 	 *
 	 * @param foliageKind 0 for rigid objects, 1 for foliage that sways, 2 for trees that sway and scale
 	 * @param treeScale   visual size multiplier for trees, about their base
+	 * @param lit         which object ids carry a light, so their hot faces are flames
 	 */
-	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, IntUnaryOperator foliageKind, float treeScale)
+	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, IntUnaryOperator foliageKind, float treeScale, IntPredicate lit)
 	{
 		int[][][] light = terrainLight(scene, palette);
 		WaterBed bed = waterBed(scene);
 		int zones = zoneCount(scene);
 		StaticScene.Zone[] out = new StaticScene.Zone[zones * zones];
-		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed, foliageKind, treeScale);
+		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed, foliageKind, treeScale, lit);
 		for (int zx = 0; zx < zones; ++zx)
 		{
 			for (int zz = 0; zz < zones; ++zz)
@@ -107,9 +111,9 @@ public final class StaticSceneBuilder
 	}
 
 	/** Rebuilds a single zone, for example after a door changed. */
-	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntUnaryOperator foliageKind, float treeScale)
+	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntUnaryOperator foliageKind, float treeScale, IntPredicate lit)
 	{
-		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed, foliageKind, treeScale).zone(zx, zz);
+		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed, foliageKind, treeScale, lit).zone(zx, zz);
 	}
 
 	/** Distinct ids of the game objects in the scene, for classifying foliage before a build. */
@@ -556,6 +560,7 @@ public final class StaticSceneBuilder
 				continue;
 			}
 			int kind = foliageKind.applyAsInt(go.getId());
+			pusher.flames = lit.test(go.getId());
 			if (kind > 0)
 			{
 				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), kind == 2 ? treeScale : 1f, bucket);
@@ -564,6 +569,7 @@ public final class StaticSceneBuilder
 			{
 				pushRenderable(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), bucket);
 			}
+			pusher.flames = false;
 		}
 
 		Tile bridge = t.getBridge();

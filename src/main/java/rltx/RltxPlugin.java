@@ -315,6 +315,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return lightLibrary;
 	}
 
+	// Objects that carry a light in 117 HD's data: their hot-coloured faces are flames.
+	private boolean hasLight(int objectId)
+	{
+		return lightLibrary().byObject.containsKey(objectId);
+	}
+
 	private static final String[] TREE_WORDS = {"tree", "oak", "willow", "yew", "maple", "palm", "mahogany", "teak", "redwood"};
 	private static final String[] FOLIAGE_WORDS = {"bush", "shrub", "fern", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
 	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales. */
@@ -902,7 +908,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		long start = System.nanoTime();
 		Palette p = palette();
 		classifyFoliage(StaticSceneBuilder.gameObjectIds(scene));
-		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f);
+		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f, this::hasLight);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
 		SceneLights lights = null;
 		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
@@ -981,7 +987,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				LoadedScene loaded = e.getValue();
 				loaded.terrainLight = StaticSceneBuilder.terrainLight(loaded.scene, p);
-				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f), subTransforms.get(e.getKey()));
+				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f, this::hasLight), subTransforms.get(e.getKey()));
 			}
 			return;
 		}
@@ -995,10 +1001,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				continue;
 			}
-			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, this::foliageKind, config.treeScale() / 100f);
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, this::foliageKind, config.treeScale() / 100f, this::hasLight);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
-				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), this::foliageKind, config.treeScale() / 100f), subTransforms.get(id));
+				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), this::foliageKind, config.treeScale() / 100f, this::hasLight), subTransforms.get(id));
 			}
 			else
 			{
@@ -1095,7 +1101,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		++statDynamicCalls;
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
+		framePusher.flames = tileObject != null && hasLight(tileObject.getId());
 		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
+		framePusher.flames = false;
 		motion.record(renderable, dynamic, opaqueStart, dynamicTranslucent, translucentStart);
 	}
 
