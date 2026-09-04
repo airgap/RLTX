@@ -685,6 +685,60 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "glossyReflections",
+		name = "Glossy reflections",
+		description = "Trace a reflection ray from every visible surface, blurred by its roughness, so polished and wet things mirror their surroundings.",
+		section = surfacesSection,
+		position = 2
+	)
+	default boolean glossyReflections()
+	{
+		return true;
+	}
+
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "surfaceGloss",
+		name = "Surface sheen",
+		description = "Specular highlight and reflection strength of surfaces whose texture defines none, like a light clear coat. 0 leaves them matte.",
+		section = surfacesSection,
+		position = 3
+	)
+	default int surfaceGloss()
+	{
+		return 15;
+	}
+
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "surfaceRoughness",
+		name = "Surface roughness",
+		description = "How blurred that sheen is: low is glassy, high is a broad soft highlight.",
+		section = surfacesSection,
+		position = 4
+	)
+	default int surfaceRoughness()
+	{
+		return 55;
+	}
+
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "emissiveStrength",
+		name = "Emissive surfaces",
+		description = "Lava, fire capes and other textures 117 HD marks unlit glow with their own colour and feed the bloom. 0 disables.",
+		section = surfacesSection,
+		position = 5
+	)
+	default int emissiveStrength()
+	{
+		return 100;
+	}
+
+	@ConfigItem(
 		keyName = "water",
 		name = "Reflective water",
 		description = "Render water tiles as a reflective surface with animated waves and a sun glint",

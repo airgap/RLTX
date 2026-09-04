@@ -74,6 +74,7 @@ import org.lwjgl.vulkan.VkWriteDescriptorSet;
 import org.lwjgl.vulkan.VkWriteDescriptorSetAccelerationStructureKHR;
 import rltx.scene.GeometryBuffer;
 import rltx.scene.StaticScene;
+import rltx.scene.Materials;
 import rltx.scene.WaterType;
 
 /**
@@ -145,7 +146,8 @@ public final class RtRenderer
 	private static final int BINDING_BLOOM_B = 30;
 	private static final int BINDING_EXPOSURE = 31;
 	private static final int BINDING_LIGHTS = 32;
-	private static final int BINDING_COUNT = 33;
+	private static final int BINDING_MATERIALS = 33;
+	private static final int BINDING_COUNT = 34;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
 	private static final int MIST_GRID_MAX = 185 * 185 * 2;
@@ -284,6 +286,7 @@ public final class RtRenderer
 	private VkBuf mistGrid;
 	private VkBuf exposureReadback;
 	private VkBuf lights;
+	private VkBuf materials;
 	private double averageLogLuminance = Double.NaN;
 	private final Img[] historyColor = new Img[2];
 	private final Img[] historyPos = new Img[2];
@@ -340,8 +343,11 @@ public final class RtRenderer
 		exposureReadback.mapped.asFloatBuffer().put(0, Float.NaN);
 		lights = ctx.createBuffer((long) MAX_LIGHTS * 8 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		for (long set : descriptorSets)
 		{
+			writeBufferDescriptor(set, BINDING_MATERIALS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materials);
 			writeBufferDescriptor(set, BINDING_LIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, lights);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
@@ -559,6 +565,7 @@ public final class RtRenderer
 			types[BINDING_BLOOM_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_EXPOSURE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_LIGHTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_MATERIALS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -573,7 +580,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(32);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(26);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(28);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -1178,6 +1185,13 @@ public final class RtRenderer
 	public void setLights(float[] packed, int count)
 	{
 		lights.mapped.asFloatBuffer().put(packed, 0, Math.min(count, MAX_LIGHTS) * 8);
+	}
+
+	/** Surface properties per vanilla texture id, as packed by Materials.table(). */
+	public void setMaterials(float[] table)
+	{
+		idle();
+		materials.mapped.asFloatBuffer().put(table, 0, Math.min(table.length, Materials.TEXTURES * Materials.FLOATS));
 	}
 
 	/** Per-frame placement and visibility of a loaded scene. */
@@ -1993,7 +2007,8 @@ public final class RtRenderer
 		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);
 		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(p.renderDistance).putFloat(p.distanceFade);
 		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(p.aerialPerspective).putFloat(p.sunUp);
-		b.putFloat(p.lightCount).putFloat(p.lightStrength).putFloat(0f).putFloat(0f);
+		b.putFloat(p.lightCount).putFloat(p.lightStrength).putFloat(p.surfaceGloss).putFloat(p.surfaceGlossExponent);
+		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(0f).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -2036,6 +2051,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(mistGrid);
 		ctx.destroyBuffer(exposureReadback);
 		ctx.destroyBuffer(lights);
+		ctx.destroyBuffer(materials);
 		if (skybox != null)
 		{
 			destroyImage(skybox);

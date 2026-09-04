@@ -68,6 +68,11 @@ public final class FrameParams
 	/** Number of local lights uploaded this frame and their brightness scale. */
 	public int lightCount;
 	public float lightStrength;
+	/** Specular strength and gloss exponent for surfaces without a material of their own. */
+	public float surfaceGloss, surfaceGlossExponent;
+	/** Glow scale of unlit textures, 0 disables; and whether reflection rays are traced. */
+	public float emissiveStrength;
+	public boolean glossyReflections;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

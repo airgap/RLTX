@@ -61,6 +61,7 @@ import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryUtil;
 import rltx.gl.GlCompositor;
 import rltx.scene.GeometryBuffer;
+import rltx.scene.Materials;
 import rltx.scene.ModelPusher;
 import rltx.scene.MotionHistory;
 import rltx.scene.Palette;
@@ -247,6 +248,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				compositor = new GlCompositor(caps);
 				vk = VkContext.create(compositor.deviceUuid());
 				renderer = new RtRenderer(vk);
+				renderer.setMaterials(Materials.table(gson));
 				compositor.importSemaphores(renderer.semaphoreVkDoneFd(), renderer.semaphoreGlDoneFd());
 
 				client.setDrawCallbacks(this);
@@ -996,6 +998,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.cullBackfaces = config.cullBackfaces();
 		frame.textures = config.textures();
 		frame.bumpStrength = config.bumpStrength() / 100f;
+		frame.glossyReflections = config.glossyReflections();
+		frame.surfaceGloss = config.surfaceGloss() / 100f * 0.3f;
+		// Low roughness is a tight, glassy highlight; high spreads it wide.
+		frame.surfaceGlossExponent = 300f - 288f * config.surfaceRoughness() / 100f;
+		frame.emissiveStrength = config.emissiveStrength() / 100f;
 		frame.antialias = config.antialias();
 		frame.water = config.water();
 		// Wrapped where every integer scroll speed lands on a whole texture repeat.

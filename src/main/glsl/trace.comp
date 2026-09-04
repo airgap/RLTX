@@ -34,7 +34,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 mistColor;
   vec4 post;     // vignette, bloom, render distance in world units, fade share
   vec4 post2;    // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
-  vec4 lights;   // local light count, local light strength scale
+  vec4 lights;   // local light count, local light strength scale, default sheen strength, default sheen exponent
+  vec4 material; // emissive glow scale, glossy reflections flag
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -52,6 +53,8 @@ layout(std430, set = 0, binding = 24) readonly buffer TexAnim { vec2 v[]; } texA
 layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } waterTypes;
 // Local lights: position and radius, then colour premultiplied by strength.
 layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
+// Per vanilla texture id: specular strength, gloss exponent, emissive, brightness.
+layout(std430, set = 0, binding = 33) readonly buffer Materials { vec4 v[]; } materials;
 
 const uint FLAG_CULL = 1u;
 const uint FLAG_SHADOWS = 2u;
@@ -87,7 +90,28 @@ struct Hit {
   bool covered;     // translucent geometry lies between the ray origin and the accepted surface
   bool water;
   uint waterType;   // index into the water type table, 0 when not water
+  vec4 material;    // specular strength, gloss exponent, emissive, brightness
 };
+
+// A texture's material, or the global sheen for faces whose texture defines no specular.
+vec4 materialOf(uint tex) {
+  vec4 m = tex == 0u ? vec4(0.0, 0.0, 0.0, 1.0) : materials.v[min(tex - 1u, 255u)];
+  if (m.x <= 0.0) {
+    m.x = u.lights.z;
+    m.y = u.lights.w;
+  }
+  return m;
+}
+
+// Specular highlight of a light with a Blinn-Phong lobe, as 117 HD shades it.
+vec3 specularOf(vec4 material, vec3 n, vec3 viewDir, vec3 lightDir, vec3 lightColor) {
+  if (material.x <= 0.0) {
+    return vec3(0.0);
+  }
+  vec3 reflected = reflect(-lightDir, n);
+  float vDotR = clamp(dot(viewDir, reflected), 1e-6, 1.0);
+  return lightColor * (pow(vDotR, material.y) * material.x);
+}
 
 // Water appearance per type, four vec4s each as packed by WaterType.table().
 struct WaterType {
@@ -266,8 +290,9 @@ bool occludedWithin(vec3 origin, vec3 dir, float tMax) {
 }
 
 // Irradiance from the local lights at a hit, before the albedo: 117 HD's falloff, squared
-// distance fraction from the light's edge, with a shadow ray to each light in range.
-vec3 directLocal(Hit hit) {
+// distance fraction from the light's edge, with a shadow ray to each light in range. Their
+// specular highlights towards the viewer accumulate separately as radiance.
+vec3 directLocalSpecular(Hit hit, vec3 viewDir, inout vec3 specular) {
   int count = int(u.lights.x);
   vec3 sum = vec3(0.0);
   for (int i = 0; i < count; ++i) {
@@ -284,9 +309,16 @@ vec3 directLocal(Hit hit) {
       continue;
     }
     float falloff = 1.0 - d / pr.w;
-    sum += localLights.v[i * 2 + 1].rgb * (falloff * falloff * ndl);
+    vec3 color = localLights.v[i * 2 + 1].rgb * (falloff * falloff * u.lights.y);
+    sum += color * ndl;
+    specular += specularOf(hit.material, hit.n, viewDir, l, color);
   }
-  return sum * u.lights.y;
+  return sum;
+}
+
+vec3 directLocal(Hit hit) {
+  vec3 unused = vec3(0.0);
+  return directLocalSpecular(hit, vec3(0.0), unused);
 }
 
 bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint mask, inout uint seed, out Hit hit) {
@@ -324,6 +356,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   hit.water = (texField & WATER_BIT) != 0u && (u.misc.y & FLAG_WATER) != 0u;
   hit.waterType = hit.water ? (texField >> 16) & 0xFFu : 0u;
   uint tex = texField & 0xFFFFu;
+  hit.material = materialOf(tex);
   if (tex != 0u && !hit.water && (u.misc.y & FLAG_TEXTURES) != 0u) {
     vec2 uv = faceUv(hit.dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, true), tex);
     vec4 texel = texture(gameTextures, vec3(uv, float(tex - 1u)));
@@ -639,7 +672,38 @@ void main() {
       hit.albedo *= 1.0 - 0.4 * u.weather2.x * upFacing;
     }
   }
-  vec3 light = vec3(u.sky.w) + directSun(hit, sunDir, shadows, seed) + directLocal(hit);
+  // Radiance that does not scale with the albedo: highlights, reflections and glow.
+  vec3 specular = vec3(0.0);
+  vec3 toEye = -dir;
+  float sunNdl = max(dot(hit.n, sunDir), 0.0);
+  float sunVisible = sunNdl > 0.0 && u.sun.w > 0.0 && !(shadows && occluded(hit.p, sunDir, seed)) ? cloudShadow(hit.p) : 0.0;
+  vec3 sunLight = u.sunColor.rgb * (u.sun.w * sunVisible);
+  specular += specularOf(hit.material, hit.n, toEye, sunDir, sunLight);
+  vec3 light = vec3(u.sky.w) + sunLight * sunNdl + directLocalSpecular(hit, toEye, specular);
+  if (hit.material.z > 0.0 && u.material.x > 0.0) {
+    // Unlit textures glow with their own colour, four times white at full strength.
+    light += vec3(4.0 * u.material.x * hit.material.z);
+  }
+  if (u.material.y > 0.0 && hit.material.x > 0.0 && !hit.water && !hit.translucent) {
+    // Glossy reflection: one ray around the mirror direction, spread by the roughness the gloss
+    // exponent implies, weighted by Schlick's Fresnel with the specular strength as F0.
+    float rough = 1.0 / sqrt(max(hit.material.y, 1.0));
+    vec3 reflected = reflect(dir, hit.n);
+    vec3 jittered = normalize(reflected + rough * 1.5 * (2.0 * vec3(rand(seed), rand(seed), rand(seed)) - 1.0));
+    if (dot(jittered, hit.gn) < 0.0) {
+      jittered = reflect(jittered, hit.gn);
+    }
+    float cosI = clamp(dot(toEye, hit.n), 0.0, 1.0);
+    float fresnel = hit.material.x + (1.0 - hit.material.x) * pow(1.0 - cosI, 5.0);
+    Hit mirror;
+    vec3 seen;
+    if (trace(hit.p, jittered, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
+      seen = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, sunDir, shadows, seed) + directLocal(mirror));
+    } else {
+      seen = skyBackground(jittered);
+    }
+    specular += seen * (fresnel * 0.5);
+  }
 
   // Diffuse path: cosine-weighted bounces, each attenuated by the albedo it passed through,
   // gathering direct light at every vertex and sky light where the path escapes.
@@ -692,7 +756,8 @@ void main() {
   // stochastic primary hit landed on translucent geometry uses the opaque surface behind it
   // instead, and stores its full colour with a unit albedo so the blend is filtered as a whole.
   Hit stable = hit;
-  vec3 sample_ = light;
+  // Specular radiance is stored divided by the albedo the final pass will multiply back.
+  vec3 sample_ = light + specular / max(hit.albedo, vec3(0.05));
   if (hit.covered && !waterPixel) {
     if (hit.translucent) {
       Hit solid;
@@ -700,7 +765,7 @@ void main() {
         stable = solid;
       }
     }
-    sample_ = hit.albedo * light;
+    sample_ = hit.albedo * light + specular;
     hit.albedo = vec3(1.0);
   }
   // w of the position is the hit distance; the sign of the sample's alpha marks dynamic geometry
