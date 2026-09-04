@@ -1391,6 +1391,22 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.exposure = autoExposureLevel * config.exposure() / 100f;
 	}
 
+	// The character's eyes, a little above the head, for the line of sight test.
+	private void fillEyes()
+	{
+		Player player = client.getLocalPlayer();
+		LocalPoint lp = player == null ? null : player.getLocalLocation();
+		if (!config.lineOfSight() || lp == null)
+		{
+			frame.unseenDarkness = 0f;
+			return;
+		}
+		frame.eyeX = lp.getX();
+		frame.eyeZ = lp.getY();
+		frame.eyeY = Perspective.getTileHeight(client, lp, player.getWorldLocation().getPlane()) - 230f;
+		frame.unseenDarkness = config.lineOfSightDarkness() / 100f;
+	}
+
 	// Same filmic curve as atrous.comp, so CPU-derived display colours match the scene.
 	private float tonemap(float c)
 	{
@@ -1434,6 +1450,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.terrainBump = config.terrainBump() / 100f;
 		frame.rainRipples = config.rainRipples();
 		frame.rainSpeed = config.rainSpeed() / 100f;
+		fillEyes();
 		frame.rainLength = config.rainLength() / 100f;
 		frame.puddles = config.puddles();
 		frame.contrast = config.contrast() / 100f;

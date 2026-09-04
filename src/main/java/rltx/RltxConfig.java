@@ -772,6 +772,32 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "lineOfSight",
+		name = "Line of sight",
+		description = "Darken what your character could not see from where they stand, so walls hide what lies beyond them. One extra ray per pixel from the character's eyes.",
+		section = cameraSection,
+		position = 22
+	)
+	default boolean lineOfSight()
+	{
+		return false;
+	}
+
+	@Range(min = 10, max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "lineOfSightDarkness",
+		name = "Unseen darkness",
+		description = "How dark the unseen areas are drawn; 100 is black.",
+		section = cameraSection,
+		position = 23
+	)
+	default int lineOfSightDarkness()
+	{
+		return 85;
+	}
+
+	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
 		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",

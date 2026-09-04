@@ -50,6 +50,8 @@ public final class FrameParams
 	public float skyAmbientR, skyAmbientG, skyAmbientB;
 	/** Scales of rain fall speed and streak length, 1 is the default look. */
 	public float rainSpeed = 1f, rainLength = 1f;
+	/** The character's eye position and how dark what they cannot see is drawn; 0 disables. */
+	public float eyeX, eyeY, eyeZ, unseenDarkness;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */

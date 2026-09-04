@@ -38,6 +38,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 material; // emissive glow scale, glossy reflections flag, terrain relief, soft glow sigma
   vec4 post3;
   vec4 wind;     // wind velocity x and z, angular radius of the sky's light disc
+  vec4 skyAmbient;
+  vec4 eye;      // the character's eye position, and how dark what they cannot see is drawn
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -947,6 +949,17 @@ void main() {
   // The G-buffer for reprojection and denoising describes a stable surface. A pixel whose
   // stochastic primary hit landed on translucent geometry uses the opaque surface behind it
   // instead, and stores its full colour with a unit albedo so the blend is filtered as a whole.
+  if (u.eye.w > 0.0) {
+    // What the character could not see from their own eyes is darkened; the ground around
+    // their feet counts as seen so their own body does not shadow it.
+    vec3 toPoint = hit.surface - u.eye.xyz;
+    float dist = length(toPoint);
+    bool seen = dist < 192.0 || !occludedWithin(u.eye.xyz, toPoint / dist, dist - 4.0);
+    float keep = seen ? 1.0 : 1.0 - u.eye.w;
+    light *= keep;
+    specular *= keep;
+  }
+
   Hit stable = hit;
   // Specular radiance is stored divided by the albedo the final pass will multiply back.
   vec3 sample_ = light + specular / max(hit.albedo, vec3(0.05));

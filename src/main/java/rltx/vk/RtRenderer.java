@@ -2085,6 +2085,7 @@ public final class RtRenderer
 		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(p.diffusion);
 		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(p.sunDiscRadius).putFloat(p.rainLength);
 		b.putFloat(p.skyAmbientR).putFloat(p.skyAmbientG).putFloat(p.skyAmbientB).putFloat(p.rainSpeed);
+		b.putFloat(p.eyeX).putFloat(p.eyeY).putFloat(p.eyeZ).putFloat(p.unseenDarkness);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
