@@ -131,17 +131,20 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private double sunAzimuthNow, sunElevationNow;
 	private Skybox.Phase phaseNow;
 	private volatile double skyboxSunAzimuth = Double.NaN;
+	private volatile double skyboxSunElevation = Double.NaN;
 	private static final class LoadedScene
 	{
 		final Scene scene;
 		final StaticScene built;
+		final int[][][] waterDepth;
 		int[][][] terrainLight;
 
-		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight)
+		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, int[][][] waterDepth)
 		{
 			this.scene = scene;
 			this.built = built;
 			this.terrainLight = terrainLight;
+			this.waterDepth = waterDepth;
 		}
 	}
 
@@ -327,19 +330,23 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			SkyboxLoader.Decoded decoded;
 			double sunAzimuth;
+			double sunElevation;
 			try
 			{
 				decoded = SkyboxLoader.load(file);
 				if (choice.isBodyless())
 				{
 					sunAzimuth = Double.NaN;
+					sunElevation = Double.NaN;
 				}
 				else if (twinFile != null)
 				{
 					SkyboxLoader.Decoded unlit = SkyboxLoader.load(twinFile);
 					try
 					{
-						sunAzimuth = SkyboxLoader.sunByDifference(decoded, unlit);
+						double[] body = SkyboxLoader.sunByDifference(decoded, unlit);
+						sunAzimuth = body[0];
+						sunElevation = body[1];
 					}
 					finally
 					{
@@ -349,6 +356,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				else
 				{
 					sunAzimuth = decoded.sunAzimuthDegrees;
+					sunElevation = decoded.sunElevationDegrees;
 				}
 			}
 			catch (IOException e)
@@ -366,6 +374,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 						renderer.setSkybox(decoded.width, decoded.height, decoded.pixels);
 						skyHorizon = decoded.horizon;
 						skyboxSunAzimuth = sunAzimuth;
+						skyboxSunElevation = sunElevation;
 						skyboxLoaded = true;
 						log.info("Skybox {} loaded ({}x{}), sun in image at {}", choice, decoded.width, decoded.height,
 							Double.isNaN(sunAzimuth) ? "none" : String.format("%.0f°", sunAzimuth));
@@ -442,6 +451,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.sunG = 0.72f;
 			frame.sunB = 1.00f;
 		}
+		// A sky showing its own sun or moon puts the light where that body is painted so shadows
+		// match what is seen; the passage of time then turns the sky rather than raising the light.
+		if (skyboxLoaded && !Double.isNaN(skyboxSunElevation))
+		{
+			lightElevation = skyboxSunElevation;
+		}
 		double az = Math.toRadians(lightAzimuth);
 		double el = Math.toRadians(lightElevation);
 		// Scene space has north along +z, east along +x and up along -y.
@@ -485,7 +500,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		Palette p = palette();
 		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
-		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p)));
+		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterDepth(scene)));
 	}
 
 	@Override
@@ -548,7 +563,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				continue;
 			}
-			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight);
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterDepth);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
 				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette()), subTransforms.get(id));
@@ -833,12 +848,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.snowCover = snowCover;
 		frame.flash = flash;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
-		// Wind blows away from its meteorological direction; particles drift by its component
-		// along the camera's x axis, the first row of the forward rotation.
+		// Wind blows away from its meteorological direction; full strength carries particles
+		// about two tiles a second.
 		double to = Math.toRadians(w.windFromDegrees + 180.0);
-		float wx = (float) Math.sin(to);
-		float wz = (float) Math.cos(to);
-		frame.windScreen = (wx * frame.forwardRotation[0] + wz * frame.forwardRotation[2]) * w.wind;
+		frame.windX = (float) Math.sin(to) * w.wind * 300f;
+		frame.windZ = (float) Math.cos(to) * w.wind * 300f;
 		// Fog fades to the sky's horizon colour, greyed and dimmed by cloud the same way the
 		// shader greys the sky, so fogged scenery meets the sky seamlessly.
 		float lum = 0.2126f * horizon[0] + 0.7152f * horizon[1] + 0.0722f * horizon[2];

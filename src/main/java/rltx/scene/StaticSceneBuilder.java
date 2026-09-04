@@ -35,21 +35,24 @@ public final class StaticSceneBuilder
 	private final Palette palette;
 	private final int offset;
 	private final int[][][] terrainLight;
+	private final int[][][] waterDepth;
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
 	{
 		final GeometryBuffer opaque = new GeometryBuffer(256);
 		final GeometryBuffer translucent = new GeometryBuffer(32);
+		final GeometryBuffer water = new GeometryBuffer(16);
 	}
 
-	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight)
+	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, int[][][] waterDepth)
 	{
 		this.scene = scene;
 		this.renderCallbacks = renderCallbacks;
 		this.palette = palette;
 		this.offset = scene.getWorldViewId() == WorldView.TOPLEVEL ? TOPLEVEL_OFFSET : 0;
 		this.terrainLight = terrainLight;
+		this.waterDepth = waterDepth;
 	}
 
 	/** Number of zones along each axis of the scene's extended tile grid. */
@@ -62,9 +65,10 @@ public final class StaticSceneBuilder
 	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette)
 	{
 		int[][][] light = terrainLight(scene, palette);
+		int[][][] depth = waterDepth(scene);
 		int zones = zoneCount(scene);
 		StaticScene.Zone[] out = new StaticScene.Zone[zones * zones];
-		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light);
+		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, depth);
 		for (int zx = 0; zx < zones; ++zx)
 		{
 			for (int zz = 0; zz < zones; ++zz)
@@ -76,9 +80,87 @@ public final class StaticSceneBuilder
 	}
 
 	/** Rebuilds a single zone, for example after a door changed. */
-	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight)
+	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, int[][][] waterDepth)
 	{
-		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight).zone(zx, zz);
+		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterDepth).zone(zx, zz);
+	}
+
+	private static final int BED_MIN_DEPTH = 8;
+	private static final int BED_STEP = 40;
+	private static final int BED_STEPS = 3;
+
+	/**
+	 * Depth below each water tile's surface of the bed synthesised under it, per plane and
+	 * grid vertex. The client's water is a flat plane with nothing beneath, so a bed that
+	 * deepens away from the shore gives light refracting through the surface something to land on.
+	 */
+	public static int[][][] waterDepth(Scene scene)
+	{
+		Tile[][][] tiles = scene.getExtendedTiles();
+		int size = tiles[0].length;
+		int[][][] depth = new int[tiles.length][size + 1][size + 1];
+		for (int level = 0; level < tiles.length; ++level)
+		{
+			boolean[][] water = new boolean[size][size];
+			for (int x = 0; x < size; ++x)
+			{
+				for (int y = 0; y < size; ++y)
+				{
+					Tile t = tiles[level][x][y];
+					water[x][y] = t != null && t.getSceneTilePaint() != null && WaterTextures.isWater(t.getSceneTilePaint().getTexture());
+				}
+			}
+			int[][] d = depth[level];
+			for (int vx = 0; vx <= size; ++vx)
+			{
+				for (int vy = 0; vy <= size; ++vy)
+				{
+					boolean surrounded = true;
+					for (int dx = -1; dx <= 0 && surrounded; ++dx)
+					{
+						for (int dy = -1; dy <= 0; ++dy)
+						{
+							int tx = vx + dx;
+							int ty = vy + dy;
+							if (tx < 0 || ty < 0 || tx >= size || ty >= size || !water[tx][ty])
+							{
+								surrounded = false;
+								break;
+							}
+						}
+					}
+					d[vx][vy] = surrounded ? BED_STEPS : 0;
+				}
+			}
+			// Distance in tiles to the shore, capped where the bed stops deepening.
+			for (int pass = 0; pass < BED_STEPS; ++pass)
+			{
+				for (int vx = 0; vx <= size; ++vx)
+				{
+					for (int vy = 0; vy <= size; ++vy)
+					{
+						if (d[vx][vy] == 0)
+						{
+							continue;
+						}
+						int nearest = d[vx][vy];
+						if (vx > 0) nearest = Math.min(nearest, d[vx - 1][vy] + 1);
+						if (vy > 0) nearest = Math.min(nearest, d[vx][vy - 1] + 1);
+						if (vx < size) nearest = Math.min(nearest, d[vx + 1][vy] + 1);
+						if (vy < size) nearest = Math.min(nearest, d[vx][vy + 1] + 1);
+						d[vx][vy] = nearest;
+					}
+				}
+			}
+			for (int vx = 0; vx <= size; ++vx)
+			{
+				for (int vy = 0; vy <= size; ++vy)
+				{
+					d[vx][vy] = BED_MIN_DEPTH + d[vx][vy] * BED_STEP;
+				}
+			}
+		}
+		return depth;
 	}
 
 	/**
@@ -149,8 +231,8 @@ public final class StaticSceneBuilder
 		int count = 0;
 		for (Bucket b : groups.values())
 		{
-			total += b.opaque.faces() + b.translucent.faces();
-			count += (b.opaque.faces() > 0 ? 1 : 0) + (b.translucent.faces() > 0 ? 1 : 0);
+			total += b.opaque.faces() + b.translucent.faces() + b.water.faces();
+			count += (b.opaque.faces() > 0 ? 1 : 0) + (b.translucent.faces() > 0 ? 1 : 0) + (b.water.faces() > 0 ? 1 : 0);
 		}
 		if (count == 0)
 		{
@@ -163,13 +245,14 @@ public final class StaticSceneBuilder
 		int[] base = new int[count];
 		int[] faces = new int[count];
 		boolean[] translucent = new boolean[count];
+		boolean[] water = new boolean[count];
 		int i = 0;
 		for (Map.Entry<Long, Bucket> e : groups.entrySet())
 		{
 			Bucket b = e.getValue();
-			for (int pass = 0; pass < 2; ++pass)
+			for (int pass = 0; pass < 3; ++pass)
 			{
-				GeometryBuffer g = pass == 0 ? b.opaque : b.translucent;
+				GeometryBuffer g = pass == 0 ? b.opaque : pass == 1 ? b.translucent : b.water;
 				if (g.faces() == 0)
 				{
 					continue;
@@ -179,11 +262,12 @@ public final class StaticSceneBuilder
 				base[i] = all.faces();
 				faces[i] = g.faces();
 				translucent[i] = pass == 1;
+				water[i] = pass == 2;
 				all.append(g);
 				++i;
 			}
 		}
-		return new StaticScene.Zone(zx, zz, all, level, roof, base, faces, translucent);
+		return new StaticScene.Zone(zx, zz, all, level, roof, base, faces, translucent, water);
 	}
 
 	private void uploadTile(Tile t, Bucket bucket)
@@ -312,6 +396,20 @@ public final class StaticSceneBuilder
 		{
 			int texture = WaterTextures.encode(tile.getTexture());
 			int rgba = palette.texture(tile.getTexture());
+			if (WaterTextures.isWater(tile.getTexture()))
+			{
+				bucket.water.face(hx, neH, hz, lx, nwH, hz, hx, seH, lz, rgba, texture, 1f, 1f, 0f, 1f, 1f, 0f);
+				bucket.water.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, rgba, texture, 0f, 0f, 1f, 0f, 0f, 1f);
+				// The bed: the tile's own colours darkened, sunk by the shore distance (y grows downwards).
+				int[][] depth = waterDepth[renderLevel];
+				int sw = bed(cornerColor(tile.getSwColor(), renderLevel, tx, ty));
+				int se = bed(cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty));
+				int ne = bed(cornerColor(neColor, renderLevel, tx + 1, ty + 1));
+				int nw = bed(cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1));
+				out.face(hx, neH + depth[tx + 1][ty + 1], hz, lx, nwH + depth[tx][ty + 1], hz, hx, seH + depth[tx + 1][ty], lz, average(ne, nw, se));
+				out.face(lx, swH + depth[tx][ty], lz, hx, seH + depth[tx + 1][ty], lz, lx, nwH + depth[tx][ty + 1], hz, average(sw, se, nw));
+				return;
+			}
 			GeometryBuffer target = TextureCutouts.isCutout(tile.getTexture()) ? bucket.translucent : out;
 			target.face(hx, neH, hz, lx, nwH, hz, hx, seH, lz, rgba, texture, 1f, 1f, 0f, 1f, 1f, 0f);
 			target.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, rgba, texture, 0f, 0f, 1f, 0f, 0f, 1f);
@@ -350,6 +448,19 @@ public final class StaticSceneBuilder
 			if (textures != null && textures[i] != -1)
 			{
 				float scale = 1f / Perspective.LOCAL_TILE_SIZE;
+				if (WaterTextures.isWater(textures[i]))
+				{
+					bucket.water.face(vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c],
+						palette.texture(textures[i]), WaterTextures.encode(textures[i]),
+						(vx[a] - tileX) * scale, (vz[a] - tileZ) * scale,
+						(vx[b] - tileX) * scale, (vz[b] - tileZ) * scale,
+						(vx[c] - tileX) * scale, (vz[c] - tileZ) * scale);
+					int bedColor = bed(average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel)));
+					out.face(vx[a], vy[a] + bedDepth(vx[a], vz[a], renderLevel), vz[a],
+						vx[b], vy[b] + bedDepth(vx[b], vz[b], renderLevel), vz[b],
+						vx[c], vy[c] + bedDepth(vx[c], vz[c], renderLevel), vz[c], bedColor);
+					continue;
+				}
 				GeometryBuffer target = TextureCutouts.isCutout(textures[i]) ? bucket.translucent : out;
 				target.face(vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c],
 					palette.texture(textures[i]), WaterTextures.encode(textures[i]),
@@ -361,6 +472,23 @@ public final class StaticSceneBuilder
 			int rgba = average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel));
 			out.face(vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c], rgba);
 		}
+	}
+
+	private int bedDepth(int sceneX, int sceneZ, int plane)
+	{
+		int[][] depth = waterDepth[plane];
+		int gx = Math.max(0, Math.min(depth.length - 1, Math.round(sceneX / (float) Perspective.LOCAL_TILE_SIZE) + offset));
+		int gy = Math.max(0, Math.min(depth.length - 1, Math.round(sceneZ / (float) Perspective.LOCAL_TILE_SIZE) + offset));
+		return depth[gx][gy];
+	}
+
+	// Beds are darker than the colour the client paints on the water plane.
+	private static int bed(int rgba)
+	{
+		int r = (rgba & 0xff) * 55 / 100;
+		int g = (rgba >> 8 & 0xff) * 55 / 100;
+		int b = (rgba >> 16 & 0xff) * 55 / 100;
+		return (rgba & 0xff000000) | b << 16 | g << 8 | r;
 	}
 
 	private static int average(int a, int b, int c)

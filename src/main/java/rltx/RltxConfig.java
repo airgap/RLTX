@@ -171,7 +171,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "sunElevation",
 		name = "Elevation",
-		description = "Manual mode: height of the sun above the horizon",
+		description = "Height of the sun above the horizon in manual mode. A skybox with a visible sun or moon overrides this so shadows match it.",
 		section = sunSection,
 		position = 1
 	)

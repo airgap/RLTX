@@ -110,6 +110,12 @@ public final class ModelPusher
 			int opacity = (255 - t) << 24;
 
 			int a = i1[f], b = i2[f], c = i3[f];
+			// Some models carry a flat, translucent, untextured face at ground level standing in
+			// for a shadow; under real shadows it is a dark smear, so it is dropped as 117 HD does.
+			if (t > 100 && (textures == null || textures[f] == -1) && vy[a] == vy[b] && vy[a] == vy[c] && vy[a] >= -8f)
+			{
+				continue;
+			}
 			float ox = 0, oy = 0, oz = 0;
 			int bias = biases != null ? biases[f] & 0xff : 0;
 			if (bias != 0)

@@ -24,6 +24,8 @@ public final class SkyboxLoader
 		 * centre, or NaN when no bright body stands out.
 		 */
 		public final double sunAzimuthDegrees;
+		/** Elevation of the painted sun or moon above the horizon, or NaN when none stands out. */
+		public final double sunElevationDegrees;
 		/** Contrast of the detected body against its surroundings, 0 to 255; diagnostic. */
 		public final double sunScore;
 		/** Mean colour just above the horizon, RGB 0 to 1, which distance fog fades scenery into. */
@@ -37,6 +39,7 @@ public final class SkyboxLoader
 			double[] sun = findSun(pixels, width, height);
 			this.sunScore = sun[1];
 			this.sunAzimuthDegrees = sun[0];
+			this.sunElevationDegrees = sun[2];
 			this.horizon = horizonColor(pixels, width, height);
 		}
 	}
@@ -91,6 +94,7 @@ public final class SkyboxLoader
 		int ringOuter = 8;
 		double bestScore = 0;
 		int bestX = -1;
+		int bestY = -1;
 		for (int cy = 0; cy < rows; ++cy)
 		{
 			for (int cx = 0; cx < cols; ++cx)
@@ -126,34 +130,42 @@ public final class SkyboxLoader
 				{
 					bestScore = score;
 					bestX = cx;
+					bestY = cy;
 				}
 			}
 		}
 		if (bestX < 0 || bestScore < SUN_MIN_SCORE)
 		{
-			return new double[]{Double.NaN, bestScore};
+			return new double[]{Double.NaN, bestScore, Double.NaN};
 		}
-		return new double[]{((bestX + 0.5) / cols - 0.5) * 360.0, bestScore};
+		return new double[]{((bestX + 0.5) / cols - 0.5) * 360.0, bestScore, elevation(bestY, cell, height)};
+	}
+
+	// Equirectangular rows run from the zenith at the top to the nadir at the bottom.
+	private static double elevation(int row, int cell, int height)
+	{
+		return 90.0 - (row + 0.5) * cell / height * 180.0;
 	}
 
 	private static final double SUN_MIN_SCORE = 60;
 	private static final double TWIN_MIN_DIFFERENCE = 40;
 
 	/**
-	 * Azimuth of the sun or moon as the spot where a sky differs most from its sunless or
-	 * moonless twin, or NaN when the two are the same size or barely differ.
+	 * Azimuth and elevation of the sun or moon as the spot where a sky differs most from its
+	 * sunless or moonless twin, or NaNs when the two are the same size or barely differ.
 	 */
-	public static double sunByDifference(Decoded lit, Decoded unlit)
+	public static double[] sunByDifference(Decoded lit, Decoded unlit)
 	{
 		if (lit.width != unlit.width || lit.height != unlit.height)
 		{
-			return Double.NaN;
+			return new double[]{Double.NaN, Double.NaN};
 		}
 		int cell = Math.max(lit.width / 256, 1);
 		int cols = lit.width / cell;
 		int rows = (int) (lit.height * 0.6) / cell;
 		double best = 0;
 		int bestX = -1;
+		int bestY = -1;
 		for (int cy = 0; cy < rows; ++cy)
 		{
 			for (int cx = 0; cx < cols; ++cx)
@@ -172,14 +184,15 @@ public final class SkyboxLoader
 				{
 					best = diff;
 					bestX = cx;
+					bestY = cy;
 				}
 			}
 		}
 		if (bestX < 0 || best < TWIN_MIN_DIFFERENCE)
 		{
-			return Double.NaN;
+			return new double[]{Double.NaN, Double.NaN};
 		}
-		return ((bestX + 0.5) / cols - 0.5) * 360.0;
+		return new double[]{((bestX + 0.5) / cols - 0.5) * 360.0, elevation(bestY, cell, lit.height)};
 	}
 
 	private static double luminance(ByteBuffer pixels, int i)

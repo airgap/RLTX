@@ -18,8 +18,10 @@ public final class StaticScene
 		public final int[] groupFaceBase;
 		public final int[] groupFaceCount;
 		public final boolean[] groupTranslucent;
+		/** Water surfaces, kept apart so shadow rays can pass through them. */
+		public final boolean[] groupWater;
 
-		Zone(int zx, int zz, GeometryBuffer geometry, int[] groupLevel, int[] groupRoofId, int[] groupFaceBase, int[] groupFaceCount, boolean[] groupTranslucent)
+		Zone(int zx, int zz, GeometryBuffer geometry, int[] groupLevel, int[] groupRoofId, int[] groupFaceBase, int[] groupFaceCount, boolean[] groupTranslucent, boolean[] groupWater)
 		{
 			this.zx = zx;
 			this.zz = zz;
@@ -29,6 +31,7 @@ public final class StaticScene
 			this.groupFaceBase = groupFaceBase;
 			this.groupFaceCount = groupFaceCount;
 			this.groupTranslucent = groupTranslucent;
+			this.groupWater = groupWater;
 		}
 
 		public int groupCount()

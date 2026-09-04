@@ -40,8 +40,10 @@ public final class FrameParams
 	public float bumpStrength;
 	/** Weather: cloud cover, fog amount, falling rain and snow; all 0 to 1 unless scaled up. */
 	public float cloud, fogAmount, rain, snow;
-	/** Ground wetness and snow cover 0 to 1, wind drift across the screen, and a clock for particles. */
-	public float wetness, snowCover, windScreen, timeSeconds;
+	/** Ground wetness and snow cover 0 to 1, and the wind velocity in world units per second. */
+	public float wetness, snowCover, windX, windZ;
+	/** Clock for particle animation, seconds. */
+	public float timeSeconds;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

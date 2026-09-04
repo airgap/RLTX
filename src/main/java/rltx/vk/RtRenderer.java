@@ -91,6 +91,7 @@ public final class RtRenderer
 	// Instance masks matching trace.comp: rays that must see only solid surfaces use MASK_OPAQUE.
 	private static final int MASK_OPAQUE = 0x1;
 	private static final int MASK_TRANSLUCENT = 0x2;
+	private static final int MASK_WATER = 0x4;
 	private static final int BYTES_PER_FACE_POS = GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
 	private static final int AS_OFFSET_ALIGNMENT = 256;
 	private static final int OUTPUT_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
@@ -176,6 +177,7 @@ public final class RtRenderer
 	private long tracePipeline;
 	private long resolvePipeline;
 	private long atrousPipeline;
+	private long dofPipeline;
 
 	private final VkCommandBuffer cmd;
 	private long fence;
@@ -224,6 +226,7 @@ public final class RtRenderer
 		int[] roof = new int[0];
 		int[] faceOffset = new int[0];
 		boolean[] translucent = new boolean[0];
+		boolean[] water = new boolean[0];
 	}
 
 	private static final class StaticSet
@@ -550,6 +553,7 @@ public final class RtRenderer
 		tracePipeline = createComputePipeline("/rltx/trace.comp.spv");
 		resolvePipeline = createComputePipeline("/rltx/resolve.comp.spv");
 		atrousPipeline = createComputePipeline("/rltx/atrous.comp.spv");
+		dofPipeline = createComputePipeline("/rltx/dof.comp.spv");
 	}
 
 	private long createComputePipeline(String resource)
@@ -1199,6 +1203,7 @@ public final class RtRenderer
 		res.roof = zone.groupRoofId.clone();
 		res.faceOffset = zone.groupFaceBase.clone();
 		res.translucent = zone.groupTranslucent.clone();
+		res.water = zone.groupWater.clone();
 		for (int g = 0; g < groups; ++g)
 		{
 			res.handles[g] = createAccel(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, res.storage.buffer, offset[g], size[g]);
@@ -1243,6 +1248,7 @@ public final class RtRenderer
 		res.roof = new int[0];
 		res.faceOffset = new int[0];
 		res.translucent = new boolean[0];
+		res.water = new boolean[0];
 		if (res.storage != null)
 		{
 			ctx.destroyBuffer(res.storage);
@@ -1621,16 +1627,26 @@ public final class RtRenderer
 			if (!params.pattern)
 			{
 				int passes = Math.min(Math.max(params.denoisePasses, 0), MAX_DENOISE_PASSES);
+				// Depth of field is a gather over the finished image, so the last denoiser pass
+				// leaves its result in the filter image for it instead of writing the output.
+				boolean dof = params.aperture > 0f && passes > 0;
 				ByteBuffer push = stack.malloc(PUSH_CONSTANT_SIZE);
 				computeBarrier(cmd);
-				pushPass(cmd, push, 0, 1, false, passes);
+				pushPass(cmd, push, 0, 1, 0, passes);
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
 				vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, atrousPipeline);
 				for (int pass = 0; pass < passes; ++pass)
 				{
 					computeBarrier(cmd);
-					pushPass(cmd, push, pass, 1 << pass, pass == passes - 1, passes);
+					pushPass(cmd, push, pass, 1 << pass, pass == passes - 1 ? (dof ? 2 : 1) : 0, passes);
+					vkCmdDispatch(cmd, groupsX, groupsY, 1);
+				}
+				if (dof)
+				{
+					computeBarrier(cmd);
+					pushPass(cmd, push, passes, 1, 0, passes);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipeline);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				}
 			}
@@ -1675,11 +1691,12 @@ public final class RtRenderer
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 	}
 
-	// Layout must match the Push block in resolve.comp and atrous.comp.
-	private void pushPass(VkCommandBuffer commandBuffer, ByteBuffer push, int pass, int step, boolean last, int passes)
+	// Layout must match the Push block in resolve.comp, atrous.comp and dof.comp; last is 0, 1 for
+	// the final pass writing the output, or 2 for the final pass handing over to depth of field.
+	private void pushPass(VkCommandBuffer commandBuffer, ByteBuffer push, int pass, int step, int last, int passes)
 	{
 		push.clear();
-		push.putInt(pass).putInt(step).putInt(last ? 1 : 0).putInt(passes).flip();
+		push.putInt(pass).putInt(step).putInt(last).putInt(passes).flip();
 		vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
 	}
 
@@ -1768,7 +1785,7 @@ public final class RtRenderer
 					if (groupVisible(set, res.level[g], res.roof[g]))
 					{
 						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g],
-							res.translucent[g] ? MASK_TRANSLUCENT : MASK_OPAQUE, set.transform);
+							res.translucent[g] ? MASK_TRANSLUCENT : res.water[g] ? MASK_WATER : MASK_OPAQUE, set.transform);
 					}
 				}
 			}
@@ -1832,8 +1849,9 @@ public final class RtRenderer
 		b.putFloat(p.bounces).putFloat(p.aperture).putFloat(p.focusDistance).putFloat(p.waveStrength);
 		b.putFloat(p.shutter).putFloat(p.gameCycle).putFloat(p.bumpStrength).putFloat(0f);
 		b.putFloat(p.cloud).putFloat(p.fogAmount).putFloat(p.rain).putFloat(p.snow);
-		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windScreen).putFloat(p.timeSeconds);
+		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windX).putFloat(p.windZ);
 		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
+		b.putFloat(p.timeSeconds).putFloat(0f).putFloat(0f).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -1880,6 +1898,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, tracePipeline, null);
 		vkDestroyPipeline(device, resolvePipeline, null);
 		vkDestroyPipeline(device, atrousPipeline, null);
+		vkDestroyPipeline(device, dofPipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);
 		vkDestroyDescriptorSetLayout(device, descriptorLayout, null);
