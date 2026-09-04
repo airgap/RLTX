@@ -1396,6 +1396,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillSun();
 		// Cloud cover dims the sun and spreads it into soft shadows.
 		frame.sunIntensity *= 1f - 0.92f * weatherNow.cloud;
+		// A sky painted without its sun or moon has no body to cast shadows or glow.
+		if (skyboxLoaded && requestedSkybox != null && requestedSkybox.isBodyless())
+		{
+			frame.sunIntensity = 0f;
+		}
 		frame.sunAngularRadius = (float) Math.toRadians(config.sunSize() / 2.0 * (1.0 + 6.0 * weatherNow.cloud));
 		frame.sunDiscRadius = (float) Math.toRadians(config.sunDiscSize() / 10.0 / 2.0);
 		frame.shadows = config.shadows();
