@@ -258,8 +258,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			if (looking)
 			{
-				freeYaw += (e.getX() - lookX) * 0.004f;
-				freePitch = Math.max(-1.45f, Math.min(1.45f, freePitch + (e.getY() - lookY) * 0.004f));
+				// Dragging pulls the world with the mouse, as the client's own camera drag does.
+				freeYaw -= (e.getX() - lookX) * 0.004f;
+				freePitch = Math.max(-1.45f, Math.min(1.45f, freePitch - (e.getY() - lookY) * 0.004f));
 				lookX = e.getX();
 				lookY = e.getY();
 				e.consume();
