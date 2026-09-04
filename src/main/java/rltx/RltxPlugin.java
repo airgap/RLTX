@@ -67,6 +67,7 @@ import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryUtil;
 import rltx.gl.GlCompositor;
 import rltx.scene.GeometryBuffer;
+import rltx.scene.GroundTextures;
 import rltx.scene.Materials;
 import rltx.scene.ModelPusher;
 import rltx.scene.MotionHistory;
@@ -401,7 +402,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				compositor = new GlCompositor(caps);
 				vk = VkContext.create(compositor.deviceUuid());
 				renderer = new RtRenderer(vk);
-				renderer.setMaterials(Materials.table(gson));
+				float[] materials = Materials.table(gson);
+				GroundTextures.applyMaterials(materials);
+				renderer.setMaterials(materials);
 				compositor.importSemaphores(renderer.semaphoreVkDoneFd(), renderer.semaphoreGlDoneFd());
 
 				client.setDrawCallbacks(this);
@@ -717,6 +720,20 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (id == WorldView.TOPLEVEL)
 		{
 			renderer.setMistGrid(StaticSceneBuilder.mistGrid(scene));
+			int[][][] heights = scene.getTileHeights();
+			int side = heights[0].length;
+			float[] flat = new float[heights.length * side * side];
+			for (int plane = 0; plane < heights.length; ++plane)
+			{
+				for (int x = 0; x < side; ++x)
+				{
+					for (int y = 0; y < side; ++y)
+					{
+						flat[(plane * side + x) * side + y] = heights[plane][x][y];
+					}
+				}
+			}
+			renderer.setTerrainHeights(flat);
 			frame.mistGridSize = scene.getExtendedTiles()[0].length + 1;
 			frame.mistGridOffset = (scene.getExtendedTiles()[0].length - Constants.SCENE_SIZE) / 2;
 		}
@@ -1164,6 +1181,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.surfaceGlossExponent = 300f - 288f * config.surfaceRoughness() / 100f;
 		frame.emissiveStrength = config.emissiveStrength() / 100f;
 		frame.caustics = config.caustics();
+		frame.terrainTextures = config.terrainTextures();
+		frame.terrainSmoothing = config.terrainSmoothing();
+		frame.terrainBump = config.terrainBump() / 100f;
 		frame.rainRipples = config.rainRipples();
 		frame.puddles = config.puddles();
 		frame.contrast = config.contrast() / 100f;
@@ -1216,7 +1236,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// one array and uploaded. Brightness is forced to 1 so the gamma is applied only by us.
 	private void ensureGameTextures()
 	{
-		if (gameTexturesUploaded || !config.textures())
+		if (gameTexturesUploaded || !(config.textures() || config.terrainTextures()))
 		{
 			return;
 		}
@@ -1239,7 +1259,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 
 		final int size = 128;
-		ByteBuffer packed = MemoryUtil.memCalloc(textures.length * size * size * 4);
+		if (textures.length > GroundTextures.BASE)
+		{
+			throw new IllegalStateException("The client has " + textures.length + " textures; ground detail layers start at " + GroundTextures.BASE);
+		}
+		int layers = GroundTextures.BASE + GroundTextures.layerCount();
+		ByteBuffer packed = MemoryUtil.memCalloc(layers * size * size * 4);
 		java.util.BitSet cutouts = new java.util.BitSet();
 		try
 		{
@@ -1301,7 +1326,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				}
 			}
 			renderer.setTextureAnimation(scroll);
-			renderer.setTextureArray(textures.length, size, packed);
+			GroundTextures.pack(packed, size);
+			renderer.setTextureArray(layers, size, packed);
 			gameTexturesUploaded = true;
 			// Faces with cutout textures need the non-opaque path; reclassify the static scene.
 			TextureCutouts.set(cutouts);

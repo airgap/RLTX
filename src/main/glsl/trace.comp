@@ -57,6 +57,8 @@ layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } local
 layout(std430, set = 0, binding = 33) readonly buffer Materials { vec4 v[]; } materials;
 // The ground grid: height, mist coverage, puddle coverage per vertex of the lowest plane.
 layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } groundGrid;
+// Tile heights of the top-level scene, plane-major then x then y, for smooth terrain normals.
+layout(std430, set = 0, binding = 36) readonly buffer Heights { float v[]; } tileHeights;
 
 const uint FLAG_CULL = 1u;
 const uint FLAG_SHADOWS = 2u;
@@ -71,7 +73,10 @@ const uint FLAG_CLOUD_SHADOWS = 1024u;
 const uint FLAG_CAUSTICS = 2048u;
 const uint FLAG_RAIN_RIPPLES = 4096u;
 const uint FLAG_PUDDLES = 8192u;
+const uint FLAG_TERRAIN_TEXTURES = 16384u;
+const uint FLAG_SMOOTH_TERRAIN = 32768u;
 const uint WATER_BIT = 0x80000000u;
+const uint TERRAIN_BIT = 0x40000000u;
 const uint FLAG_SKYBOX = 32u;
 const uint DYN_BIT = 0x800000u;
 const float RAY_EPS = 0.25;
@@ -95,18 +100,21 @@ struct Hit {
   bool covered;     // translucent geometry lies between the ray origin and the accepted surface
   bool water;
   uint waterType;   // index into the water type table, 0 when not water
-  vec4 material;    // specular strength, gloss exponent, emissive, brightness
+  vec4 material;    // specular strength, gloss exponent, emissive, brightness or ground normal layer plus one
+  bool terrain;     // untextured terrain face carrying a ground detail id
 };
 
 // A texture's material, or the global sheen for faces whose texture defines no specular.
 vec4 materialOf(uint tex) {
-  vec4 m = tex == 0u ? vec4(0.0, 0.0, 0.0, 1.0) : materials.v[min(tex - 1u, 255u)];
+  vec4 m = tex == 0u ? vec4(0.0, 0.0, 0.0, 1.0) : materials.v[min(tex - 1u, 271u)];
   if (m.x <= 0.0) {
     m.x = u.lights.z;
     m.y = u.lights.w;
   }
   return m;
 }
+
+vec3 smoothTerrainNormal(vec3 p, vec3 fallback);
 
 // Specular highlight of a light with a Blinn-Phong lobe, as 117 HD shades it.
 vec3 specularOf(vec4 material, vec3 n, vec3 viewDir, vec3 lightDir, vec3 lightColor) {
@@ -362,7 +370,29 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   hit.waterType = hit.water ? (texField >> 16) & 0xFFu : 0u;
   uint tex = texField & 0xFFFFu;
   hit.material = materialOf(tex);
-  if (tex != 0u && !hit.water && (u.misc.y & FLAG_TEXTURES) != 0u) {
+  hit.terrain = (texField & TERRAIN_BIT) != 0u;
+  if (hit.terrain) {
+    if ((u.misc.y & FLAG_SMOOTH_TERRAIN) != 0u) {
+      // The three vertex colours ride in the UV slots as raw bits.
+      vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+      uint o = face * 6u;
+      vec3 c0 = unpack(floatBitsToUint(hit.dyn ? dynUv.v[o] : staticUv.v[o]));
+      vec3 c1 = unpack(floatBitsToUint(hit.dyn ? dynUv.v[o + 1u] : staticUv.v[o + 1u]));
+      vec3 c2 = unpack(floatBitsToUint(hit.dyn ? dynUv.v[o + 2u] : staticUv.v[o + 2u]));
+      hit.albedo = c0 * (1.0 - bary.x - bary.y) + c1 * bary.x + c2 * bary.y;
+      vec3 smooth_ = smoothTerrainNormal(hit.surface, n);
+      hit.n = dot(smooth_, dir) > 0.0 ? n : smooth_;
+    }
+    if ((u.misc.y & FLAG_TERRAIN_TEXTURES) != 0u && tex != 0u) {
+      // Ground detail tiles in world space, one repeat per tile; it modulates the tile's colour.
+      vec2 uv = hit.surface.xz / 128.0;
+      hit.albedo *= texture(gameTextures, vec3(uv, float(tex - 1u))).rgb * 2.0;
+      if (hit.material.w > 0.0 && u.material.z > 0.0) {
+        vec3 tn = texture(gameTextures, vec3(uv, hit.material.w - 1.0)).rgb * 2.0 - 1.0;
+        hit.n = normalize(hit.n + (vec3(1.0, 0.0, 0.0) * tn.x + vec3(0.0, 0.0, 1.0) * tn.y) * (0.8 * u.material.z));
+      }
+    }
+  } else if (tex != 0u && !hit.water && (u.misc.y & FLAG_TEXTURES) != 0u) {
     vec2 uv = faceUv(hit.dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, true), tex);
     vec4 texel = texture(gameTextures, vec3(uv, float(tex - 1u)));
     hit.albedo = mix(hit.albedo, texel.rgb, texel.a);
@@ -413,6 +443,49 @@ float cloudDensity(vec2 xz) {
   n /= 0.9375;
   float threshold = 1.0 - cover * 0.95;
   return smoothstep(threshold - 0.1, threshold + 0.25, n);
+}
+
+float heightAt(int plane, int side, int x, int y) {
+  return tileHeights.v[(plane * side + x) * side + y];
+}
+
+// Smooth terrain normal at a point: vertex normals from the tile height grid by central
+// differences, blended bilinearly. The plane is whichever has its surface nearest the point.
+// Up is -y, so the upward normal of the surface y = h(x, z) is (dh/dx, -1, dh/dz).
+vec3 smoothTerrainNormal(vec3 p, vec3 fallback) {
+  int side = int(u.weather3.z);
+  if (side < 3) {
+    return fallback;
+  }
+  vec2 g = p.xz / 128.0 + u.weather3.w;
+  if (g.x < 1.0 || g.y < 1.0 || g.x >= float(side - 2) || g.y >= float(side - 2)) {
+    return fallback;
+  }
+  ivec2 i = ivec2(g);
+  vec2 f = g - vec2(i);
+  int plane = 0;
+  float best = 1e9;
+  for (int c = 0; c < 4; ++c) {
+    float h = mix(mix(heightAt(c, side, i.x, i.y), heightAt(c, side, i.x + 1, i.y), f.x),
+                  mix(heightAt(c, side, i.x, i.y + 1), heightAt(c, side, i.x + 1, i.y + 1), f.x), f.y);
+    float d = abs(h - p.y);
+    if (d < best) {
+      best = d;
+      plane = c;
+    }
+  }
+  if (best > 64.0) {
+    return fallback;
+  }
+  vec3 n[4];
+  for (int k = 0; k < 4; ++k) {
+    int x = i.x + (k & 1);
+    int y = i.y + (k >> 1);
+    float dx = (heightAt(plane, side, x + 1, y) - heightAt(plane, side, x - 1, y)) / 256.0;
+    float dz = (heightAt(plane, side, x, y + 1) - heightAt(plane, side, x, y - 1)) / 256.0;
+    n[k] = normalize(vec3(dx, -1.0, dz));
+  }
+  return normalize(mix(mix(n[0], n[1], f.x), mix(n[2], n[3], f.x), f.y));
 }
 
 // Puddle coverage of the ground under a world position, from the per-scene grid.

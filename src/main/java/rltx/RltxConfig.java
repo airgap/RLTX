@@ -808,6 +808,44 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "terrainTextures",
+		name = "Terrain textures",
+		description = "Untextured ground keeps its vanilla colour but gains grass, dirt, sand, rock, gravel or snow grain chosen by that colour, with 117 HD's normal maps for relief.",
+		section = surfacesSection,
+		position = 8
+	)
+	default boolean terrainTextures()
+	{
+		return true;
+	}
+
+	@Range(max = 200)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "terrainBump",
+		name = "Terrain relief",
+		description = "Strength of the terrain textures' normal maps. 0 keeps the grain but flattens the relief.",
+		section = surfacesSection,
+		position = 9
+	)
+	default int terrainBump()
+	{
+		return 60;
+	}
+
+	@ConfigItem(
+		keyName = "terrainSmoothing",
+		name = "Terrain smoothing",
+		description = "Interpolate terrain colours and normals across tiles instead of flat facets, as the vanilla renderer does.",
+		section = surfacesSection,
+		position = 10
+	)
+	default boolean terrainSmoothing()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "caustics",
 		name = "Water caustics",
 		description = "Sunlight focused by the waves plays across the bed under clear water.",

@@ -18,7 +18,8 @@ import java.util.Map;
  */
 public final class Materials
 {
-	public static final int TEXTURES = 256;
+	/** Vanilla texture ids plus the ground detail layers above them. */
+	public static final int TEXTURES = 272;
 	/** Floats per texture in the GPU table: specular strength, gloss exponent, emissive, brightness. */
 	public static final int FLOATS = 4;
 

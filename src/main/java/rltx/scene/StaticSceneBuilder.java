@@ -32,6 +32,19 @@ public final class StaticSceneBuilder
 {
 	private static final int TOPLEVEL_OFFSET = (Constants.EXTENDED_SCENE_SIZE - Constants.SCENE_SIZE) / 2;
 	private static final int HIDDEN_COLOR = 12345678;
+	/** Marks an untextured terrain face; its texture id names a ground detail layer. */
+	public static final int TERRAIN_BIT = 1 << 30;
+
+	// Untextured terrain faces: the face colour stays flat as before, the three vertex colours
+	// travel in the UV slots as raw bits for the smoothing option, and the ground detail chosen
+	// by colour becomes the texture id. UVs are not needed since the detail tiles in world space.
+	private static void terrainFace(GeometryBuffer out, float x0, float y0, float z0, float x1, float y1, float z1, float x2, float y2, float z2, int c0, int c1, int c2)
+	{
+		int rgba = average(c0, c1, c2);
+		int texture = (GroundTextures.classify(rgba).layer() + 1) | TERRAIN_BIT;
+		out.face(x0, y0, z0, x1, y1, z1, x2, y2, z2, rgba, texture,
+			Float.intBitsToFloat(c0 & 0xffffff), Float.intBitsToFloat(c1 & 0xffffff), Float.intBitsToFloat(c2 & 0xffffff), 0f, 0f, 0f);
+	}
 
 	private final Scene scene;
 	private final RenderCallbackManager renderCallbacks;
@@ -693,8 +706,8 @@ public final class StaticSceneBuilder
 		int se = cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty);
 		int ne = cornerColor(neColor, renderLevel, tx + 1, ty + 1);
 		int nw = cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1);
-		out.face(hx, neH, hz, lx, nwH, hz, hx, seH, lz, average(ne, nw, se));
-		out.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, average(sw, se, nw));
+		terrainFace(out, hx, neH, hz, lx, nwH, hz, hx, seH, lz, ne, nw, se);
+		terrainFace(out, lx, swH, lz, hx, seH, lz, lx, nwH, hz, sw, se, nw);
 	}
 
 	private void uploadTileModel(SceneTileModel model, int tileX, int tileZ, int renderLevel, Bucket bucket)
@@ -743,8 +756,8 @@ public final class StaticSceneBuilder
 					(vx[c] - tileX) * scale, (vz[c] - tileZ) * scale);
 				continue;
 			}
-			int rgba = average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel));
-			out.face(vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c], rgba);
+			terrainFace(out, vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c],
+				vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel));
 		}
 	}
 

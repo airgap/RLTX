@@ -74,6 +74,9 @@ public final class FrameParams
 	public float emissiveStrength;
 	public boolean glossyReflections;
 	public boolean caustics, rainRipples, puddles;
+	public boolean terrainTextures, terrainSmoothing;
+	/** Strength of terrain normal maps, 0 to 2. */
+	public float terrainBump;
 	/** Colour grading: contrast about mid grey, saturation, and warm or cool shift from -1 to 1. */
 	public float contrast = 1f, saturation = 1f, temperature;
 	/** Opacity of the blurred whole frame blended back over itself, 0 to 1. */
