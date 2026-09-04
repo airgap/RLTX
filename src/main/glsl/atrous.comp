@@ -32,6 +32,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
   vec4 post;      // vignette strength, bloom strength, render distance in world units, fade share
+  vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -238,9 +239,31 @@ void writeFilter(ivec2 q, vec4 v) {
   }
 }
 
-// What exceeds white after exposure feeds the bloom blur.
-void writeBright(ivec2 p, vec3 exposed) {
-  imageStore(bloomSource, p, vec4(max(exposed - 1.0, 0.0), 1.0));
+// What exceeds white after exposure feeds the bloom blur; the alpha carries the luminance
+// before exposure for the auto exposure meter.
+void writeBright(ivec2 p, vec3 exposed, float luminanceBefore) {
+  imageStore(bloomSource, p, vec4(max(exposed - 1.0, 0.0), luminanceBefore));
+}
+
+// Aerial perspective in linear light: Rayleigh scattering takes blue out of far scenery and
+// puts sky light in its place, Mie haze adds a forward glow around the sun, and both lift
+// far shadows before anything is hidden. Fog and rain thicken the haze.
+vec3 aerialPerspective(vec3 hdr, vec3 dir, float depth) {
+  float k = u.post2.z;
+  if (k <= 0.0 || depth <= 0.0) {
+    return hdr;
+  }
+  vec3 betaR = vec3(1.4e-5, 3.2e-5, 7.9e-5) * k;
+  float betaM = (2.0e-5 + 6.0e-5 * u.weather.y) * k;
+  vec3 beta = betaR + betaM;
+  vec3 transmittance = exp(-beta * depth);
+  float cosS = dot(dir, u.sun.xyz);
+  float rayleigh = 0.75 * (1.0 + cosS * cosS);
+  const float g = 0.76;
+  float mie = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosS, 1.5) * 0.25;
+  vec3 sun = u.sunColor.rgb * u.sun.w;
+  vec3 inscatter = sun * (betaR * rayleigh + betaM * mie) / beta * 0.6 + u.sky.rgb * 0.35;
+  return hdr * transmittance + inscatter * (1.0 - transmittance);
 }
 
 void writeOutput(ivec2 p, vec3 c) {
@@ -265,7 +288,7 @@ void main() {
     writeFilter(p, center);
     if (pc.last != 0) {
       vec3 sky = imageLoad(sampleImage, p).rgb + lightShafts(p) * u.params.y;
-      writeBright(p, sky);
+      writeBright(p, sky, luminance(sky) / u.params.y);
       writeOutput(p, precipitation(swampMist(sky, p, cameraRay(p), -1.0), p, -1.0));
     }
     return;
@@ -334,11 +357,11 @@ void main() {
 
   if (pc.last != 0) {
     vec3 albedo = imageLoad(albedoImage, p).rgb;
-    vec3 hdr = albedo * result.rgb + lightShafts(p);
-    writeBright(p, hdr * u.params.y);
+    float depth = imageLoad(currPos, p).w;
+    vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p), cameraRay(p), depth);
+    writeBright(p, hdr * u.params.y, luminance(hdr));
     vec3 c = tonemap(hdr);
     // Sky pixels carry a negative depth; they are fogged in the trace pass instead.
-    float depth = imageLoad(currPos, p).w;
     if (u.weather.y > 0.0 && depth > 0.0) {
       c = mix(c, u.fog.rgb, 1.0 - exp(-depth * u.weather.y * FOG_EXTINCTION));
     }

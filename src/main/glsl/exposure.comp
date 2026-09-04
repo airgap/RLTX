@@ -1,0 +1,70 @@
+#version 460
+
+// Auto exposure meter: one workgroup averages the log luminance the final denoiser pass
+// recorded, over a 64 by 64 grid of points across the frame, weighted towards the centre.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std140, set = 0, binding = 6) uniform Frame {
+  vec4 cam;
+  vec4 r0;
+  vec4 r1;
+  vec4 r2;
+  vec4 prevCam;
+  vec4 p0;
+  vec4 p1;
+  vec4 p2;
+  vec4 sun;
+  vec4 sky;
+  vec4 params;
+  uvec4 misc;   // frame, flags, width, height
+  vec4 extra;
+  vec4 denoise;
+  vec4 sunColor;
+  vec4 path;
+  vec4 motion;
+  vec4 weather;
+  vec4 weather2;
+  vec4 fog;
+  vec4 weather3;
+  vec4 mistColor;
+  vec4 post;
+  vec4 post2;
+} u;
+layout(set = 0, binding = 28, rgba16f) uniform readonly image2D bloomSource;
+layout(std430, set = 0, binding = 31) buffer Exposure { float meanLogLuminance; } result;
+
+shared float sums[256];
+shared float weights[256];
+
+void main() {
+  ivec2 size = ivec2(u.misc.zw);
+  ivec2 g = ivec2(gl_LocalInvocationID.xy);
+  float sum = 0.0;
+  float weight = 0.0;
+  for (int j = 0; j < 4; ++j) {
+    for (int i = 0; i < 4; ++i) {
+      vec2 f = (vec2(g * 4 + ivec2(i, j)) + 0.5) / 64.0;
+      ivec2 p = clamp(ivec2(f * vec2(size)), ivec2(0), size - 1);
+      float lum = imageLoad(bloomSource, p).a;
+      vec2 d = f - 0.5;
+      float w = 1.0 - 0.6 * dot(d, d) * 2.0;
+      sum += log(max(lum, 1e-4)) * w;
+      weight += w;
+    }
+  }
+  uint index = gl_LocalInvocationIndex;
+  sums[index] = sum;
+  weights[index] = weight;
+  barrier();
+  for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+    if (index < stride) {
+      sums[index] += sums[index + stride];
+      weights[index] += weights[index + stride];
+    }
+    barrier();
+  }
+  if (index == 0u) {
+    result.meanLogLuminance = sums[0] / weights[0];
+  }
+}

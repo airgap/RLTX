@@ -60,6 +60,11 @@ public final class FrameParams
 	public float distanceFade;
 	/** Film grain and chromatic aberration strengths, 0 to 1. */
 	public float filmGrain, chromaticAberration;
+	/** Aerial perspective strength, 0 disables. */
+	public float aerialPerspective;
+	/** Sine of the real sun's elevation, negative at night, for day and night blending in the sky. */
+	public float sunUp;
+	public boolean proceduralSky, clouds, cloudShadows, autoExposure;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

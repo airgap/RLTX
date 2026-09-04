@@ -472,11 +472,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		sunAzimuthNow = azimuth;
 		sunElevationNow = elevation;
 		phaseNow = phase;
-		Skybox desired = config.skybox().resolve(phase);
+		Skybox desired = config.proceduralSky() ? Skybox.NONE : config.skybox().resolve(phase);
 		if (desired != requestedSkybox)
 		{
 			loadSkybox(desired);
 		}
+		frame.sunUp = (float) Math.sin(Math.toRadians(elevation));
 
 		// Turn the sky so its painted sun or moon sits where the light comes from.
 		double alignment = Double.isNaN(skyboxSunAzimuth) ? 0.0 : skyboxSunAzimuth - lightAzimuth;
@@ -881,6 +882,53 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.mistB = tonemap((frame.sunB * frame.sunIntensity * 0.55f + horizon[2] * frame.skyB * 0.8f + frame.ambient) * 0.9f);
 	}
 
+	// The analytic sky's colour at the horizon, matching proceduralSky() in trace.comp, for the
+	// fog and distance fade to meet.
+	private float[] proceduralHorizon()
+	{
+		float day = smoothstep(-0.12f, 0.15f, frame.sunUp);
+		float low = (1f - smoothstep(0f, 0.35f, Math.abs(frame.sunUp))) * day;
+		float[] h = new float[3];
+		float[] night = {0.012f, 0.014f, 0.024f};
+		float[] dayColor = {0.62f, 0.74f, 0.90f};
+		float[] dusk = {0.95f, 0.45f, 0.2f};
+		for (int i = 0; i < 3; ++i)
+		{
+			float base = night[i] + (dayColor[i] - night[i]) * day;
+			h[i] = base + (dusk[i] - base) * low * 0.5f;
+		}
+		return h;
+	}
+
+	private static float smoothstep(float a, float b, float x)
+	{
+		float t = Math.max(0f, Math.min(1f, (x - a) / (b - a)));
+		return t * t * (3f - 2f * t);
+	}
+
+	private float autoExposureLevel = 1f;
+
+	// The meter reports the last frame's mean log luminance before exposure; the level chases
+	// the exposure that would put that mean at middle grey, faster when darkening.
+	private void fillExposure()
+	{
+		frame.autoExposure = config.autoExposure();
+		if (!frame.autoExposure)
+		{
+			frame.exposure = config.exposure() / 100f;
+			return;
+		}
+		double meanLog = renderer.averageLogLuminance();
+		if (!Double.isNaN(meanLog))
+		{
+			float target = (float) (0.18 / Math.max(Math.exp(meanLog), 1e-4));
+			target = Math.max(0.15f, Math.min(12f, target));
+			float tau = target > autoExposureLevel ? 1.2f : 0.5f;
+			autoExposureLevel += (target - autoExposureLevel) * (1f - (float) Math.exp(-weatherDt / tau));
+		}
+		frame.exposure = autoExposureLevel * config.exposure() / 100f;
+	}
+
 	// Same filmic curve as atrous.comp, so CPU-derived display colours match the scene.
 	private float tonemap(float c)
 	{
@@ -928,7 +976,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.backgroundR = sky.getRed() / 255f;
 		frame.backgroundG = sky.getGreen() / 255f;
 		frame.backgroundB = sky.getBlue() / 255f;
-		if (skyboxLoaded)
+		frame.proceduralSky = config.proceduralSky();
+		frame.clouds = true;
+		frame.cloudShadows = config.cloudShadows();
+		frame.aerialPerspective = config.aerialPerspective() / 100f;
+		if (skyboxLoaded || frame.proceduralSky)
 		{
 			frame.skyR = frame.skyG = frame.skyB = skyIntensity;
 		}
@@ -938,8 +990,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.skyG = frame.backgroundG * skyIntensity;
 			frame.skyB = frame.backgroundB * skyIntensity;
 		}
-		float[] horizon = skyboxLoaded && skyHorizon != null ? skyHorizon : new float[]{frame.backgroundR, frame.backgroundG, frame.backgroundB};
+		float[] horizon = frame.proceduralSky ? proceduralHorizon()
+			: skyboxLoaded && skyHorizon != null ? skyHorizon : new float[]{frame.backgroundR, frame.backgroundG, frame.backgroundB};
 		fillWeather(horizon);
+		fillExposure();
 	}
 
 	// The client decodes its textures lazily; once every one is available they are packed into

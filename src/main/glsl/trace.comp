@@ -32,7 +32,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 fog;      // fog colour in display space, lightning flash
   vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
   vec4 mistColor;
-  vec4 post;     // vignette, bloom, render distance in world units, unused
+  vec4 post;     // vignette, bloom, render distance in world units, fade share
+  vec4 post2;    // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -56,6 +57,9 @@ const uint FLAG_RESET_HISTORY = 8u;
 const uint FLAG_TEXTURES = 16u;
 const uint FLAG_ANTIALIAS = 64u;
 const uint FLAG_WATER = 128u;
+const uint FLAG_PROCEDURAL_SKY = 256u;
+const uint FLAG_CLOUDS = 512u;
+const uint FLAG_CLOUD_SHADOWS = 1024u;
 const uint WATER_BIT = 0x80000000u;
 const uint FLAG_SKYBOX = 32u;
 const uint DYN_BIT = 0x800000u;
@@ -303,6 +307,97 @@ vec2 skyUv(vec3 d) {
   return vec2(az / TWO_PI + 0.5, acos(clamp(-d.y, -1.0, 1.0)) / 3.14159265359);
 }
 
+float hash13(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float valueNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// Height of the cloud layer; up is -y and the ground lies near zero.
+const float CLOUD_Y = -3200.0;
+
+// Cloud density 0 to 1 over a point of the cloud layer: a drifting noise field thresholded by
+// the weather's cloud cover, so more cover means broader, thicker clouds.
+float cloudDensity(vec2 xz) {
+  float cover = u.weather.x;
+  if (cover <= 0.0) {
+    return 0.0;
+  }
+  vec2 q = (xz + vec2(u.weather2.z, u.weather2.w) * 0.6 + u.weather3.x * vec2(9.0, 3.0)) / 2200.0;
+  float n = 0.5 * valueNoise2(q) + 0.25 * valueNoise2(q * 2.03 + 3.1) + 0.125 * valueNoise2(q * 4.1 + 7.7) + 0.0625 * valueNoise2(q * 8.3 + 1.3);
+  n /= 0.9375;
+  float threshold = 1.0 - cover * 0.95;
+  return smoothstep(threshold - 0.1, threshold + 0.25, n);
+}
+
+// Sunlight reaching a point under the cloud layer, 1 in the open.
+float cloudShadow(vec3 p) {
+  if ((u.misc.y & FLAG_CLOUD_SHADOWS) == 0u || u.weather.x <= 0.0 || u.sun.y >= 0.0) {
+    return 1.0;
+  }
+  float t = (CLOUD_Y - p.y) / u.sun.y;
+  return 1.0 - 0.85 * cloudDensity(p.xz + u.sun.xz * t);
+}
+
+// Analytic sky: a zenith-to-horizon gradient following the real sun through the day, warmth
+// near a low sun, a glow and disc around the light, and stars at night. Up is -y.
+vec3 proceduralSky(vec3 d, bool withDisc) {
+  float up = clamp(-d.y, 0.0, 1.0);
+  float sunUp = u.post2.w;
+  float day = smoothstep(-0.12, 0.15, sunUp);
+  float low = (1.0 - smoothstep(0.0, 0.35, abs(sunUp))) * day;
+  float horizonWeight = pow(1.0 - up, 2.5);
+  vec3 zenith = mix(vec3(0.004, 0.006, 0.014), vec3(0.16, 0.36, 0.78), day);
+  vec3 horizon = mix(vec3(0.012, 0.014, 0.024), vec3(0.62, 0.74, 0.90), day);
+  vec3 sky = mix(zenith, horizon, horizonWeight);
+  vec2 flatDir = normalize(d.xz + 1e-5);
+  vec2 flatSun = normalize(u.sun.xz + 1e-5);
+  float towardSun = pow(max(dot(flatDir, flatSun), 0.0), 3.0);
+  sky = mix(sky, vec3(0.95, 0.45, 0.2), low * horizonWeight * (0.4 + 0.6 * towardSun));
+  float cosS = dot(d, u.sun.xyz);
+  sky += u.sunColor.rgb * (0.06 * mix(0.15, 1.0, day) * (1.0 + 4.0 * low)) * pow(max(cosS, 0.0), 8.0);
+  if (day < 0.5) {
+    // Sparse stars, fading with dawn.
+    float star = step(0.9985, hash13(floor(d * 220.0)));
+    sky += vec3(0.6) * star * (1.0 - day * 2.0);
+  }
+  if (withDisc) {
+    float r = u.params.x;
+    float disc = smoothstep(cos(r * 1.5), cos(r), cosS);
+    sky += u.sunColor.rgb * mix(2.0, 30.0, day) * disc;
+  }
+  return sky;
+}
+
+// Clouds painted onto the sky for the camera: the layer is a plane above the scene, lit from
+// above by day and dim at night, thicker parts darker.
+vec3 withClouds(vec3 sky, vec3 d) {
+  if ((u.misc.y & FLAG_CLOUDS) == 0u || d.y >= -0.02 || u.weather.x <= 0.0) {
+    return sky;
+  }
+  vec2 xz = u.cam.xz + d.xz * ((CLOUD_Y - u.cam.y) / d.y);
+  float density = cloudDensity(xz);
+  float day = smoothstep(-0.12, 0.15, u.post2.w);
+  vec3 bright = mix(vec3(0.02, 0.022, 0.03), vec3(1.0, 0.98, 0.95), day);
+  vec3 dark = mix(vec3(0.008, 0.009, 0.014), vec3(0.42, 0.45, 0.52), day);
+  vec3 cloud = mix(bright, dark, density * 0.7);
+  float fade = smoothstep(0.02, 0.18, -d.y);
+  return mix(sky, cloud, density * fade);
+}
+
 // Cloud cover greys and dims the sky towards a uniform overcast.
 vec3 overcast(vec3 c) {
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -311,15 +406,24 @@ vec3 overcast(vec3 c) {
 
 // Sky radiance used to light surfaces: the skybox or flat colour, scaled by the sky intensity.
 vec3 skyRadiance(vec3 d) {
-  vec3 c = (u.misc.y & FLAG_SKYBOX) == 0u ? u.sky.rgb : texture(skybox, skyUv(d)).rgb * u.sky.rgb;
+  vec3 c;
+  if ((u.misc.y & FLAG_PROCEDURAL_SKY) != 0u) {
+    c = proceduralSky(d, false) * u.sky.rgb;
+  } else {
+    c = (u.misc.y & FLAG_SKYBOX) == 0u ? u.sky.rgb : texture(skybox, skyUv(d)).rgb * u.sky.rgb;
+  }
   return overcast(c) + vec3(2.0 * u.fog.w);
 }
 
 // What the camera sees where no geometry is: the sky at its painted colours, shown as-is,
 // under the cloud cover, with fog thickening towards the horizon and lightning whitening it.
 vec3 skyBackground(vec3 d) {
-  vec3 c = (u.misc.y & FLAG_SKYBOX) == 0u ? u.extra.yzw : texture(skybox, skyUv(d)).rgb;
-  c = overcast(c);
+  vec3 c;
+  if ((u.misc.y & FLAG_PROCEDURAL_SKY) != 0u) {
+    c = withClouds(proceduralSky(d, true), d);
+  } else {
+    c = withClouds(overcast((u.misc.y & FLAG_SKYBOX) == 0u ? u.extra.yzw : texture(skybox, skyUv(d)).rgb), d);
+  }
   float horizon = 1.0 - clamp(-d.y * 4.0, 0.0, 1.0);
   c = mix(c, u.fog.rgb, clamp(u.weather.y, 0.0, 1.0) * horizon);
   return c + vec3(0.8 * u.fog.w);
@@ -359,7 +463,7 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
   float finalFresnel = clamp(mix(0.4, 1.0, (1.0 - viewDot) * 1.2), 0.0, 1.0);
 
   float ndl = max(dot(wn, sunDir), 0.0);
-  float lit = (shadows && ndl > 0.0 && occluded(hit.p, sunDir, seed)) ? 0.0 : 1.0;
+  float lit = (shadows && ndl > 0.0 && occluded(hit.p, sunDir, seed)) ? 0.0 : cloudShadow(hit.p);
   vec3 reflectDir = reflect(dir, wn);
   if (dot(reflectDir, hit.gn) < 0.0) {
     reflectDir = reflect(reflectDir, hit.gn);
@@ -428,7 +532,7 @@ vec3 directSun(Hit hit, vec3 sunDir, bool shadows, inout uint seed) {
   if (shadows && occluded(hit.p, sunDir, seed)) {
     return vec3(0.0);
   }
-  return u.sunColor.rgb * (u.sun.w * ndl);
+  return u.sunColor.rgb * (u.sun.w * ndl * cloudShadow(hit.p));
 }
 
 void main() {

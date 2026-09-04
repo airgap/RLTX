@@ -247,6 +247,44 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "proceduralSky",
+		name = "Procedural sky",
+		description = "Replace the skybox with an analytic sky: a gradient that follows the sun through the day, a sun or moon disc, stars at night, and clouds from the weather. The light then always matches the sky.",
+		section = skySection,
+		position = -3
+	)
+	default boolean proceduralSky()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "cloudShadows",
+		name = "Cloud shadows",
+		description = "Drifting cloud shadows over the ground whenever the weather has cloud cover.",
+		section = skySection,
+		position = -2
+	)
+	default boolean cloudShadows()
+	{
+		return true;
+	}
+
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "aerialPerspective",
+		name = "Aerial perspective",
+		description = "Air between you and distant scenery scatters blue into it by day and warmth at dusk, lifting far shadows before the fog hides them. 0 disables.",
+		section = skySection,
+		position = -1
+	)
+	default int aerialPerspective()
+	{
+		return 100;
+	}
+
+	@ConfigItem(
 		keyName = "skyboxDirectory",
 		name = "Skybox pack folder",
 		description = "Path to the Materials folder of the Fantasy Skybox pack",
@@ -543,6 +581,18 @@ public interface RltxConfig extends Config
 	default int chromaticAberration()
 	{
 		return 20;
+	}
+
+	@ConfigItem(
+		keyName = "autoExposure",
+		name = "Auto exposure",
+		description = "Meter the scene's brightness and adapt the exposure to it over a second or two, like the eye. The Exposure slider then biases the result.",
+		section = cameraSection,
+		position = 8
+	)
+	default boolean autoExposure()
+	{
+		return true;
 	}
 
 	@ConfigItem(

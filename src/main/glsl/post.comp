@@ -32,7 +32,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 weather3;
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
   vec4 post;      // vignette strength, bloom strength, render distance, fade share
-  vec4 post2;     // film grain, chromatic aberration
+  vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
 } u;
 layout(push_constant) uniform Push {
   int pass;

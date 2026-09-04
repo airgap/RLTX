@@ -107,6 +107,9 @@ public final class RtRenderer
 	private static final int FLAG_TEXTURES = 16;
 	private static final int FLAG_ANTIALIAS = 64;
 	private static final int FLAG_WATER = 128;
+	private static final int FLAG_PROCEDURAL_SKY = 256;
+	private static final int FLAG_CLOUDS = 512;
+	private static final int FLAG_CLOUD_SHADOWS = 1024;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -140,7 +143,8 @@ public final class RtRenderer
 	private static final int BINDING_BLOOM_SOURCE = 28;
 	private static final int BINDING_BLOOM_A = 29;
 	private static final int BINDING_BLOOM_B = 30;
-	private static final int BINDING_COUNT = 31;
+	private static final int BINDING_EXPOSURE = 31;
+	private static final int BINDING_COUNT = 32;
 	private static final int MIST_GRID_MAX = 185 * 185 * 2;
 	private static final int MAX_TEXTURES = 256;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -187,6 +191,7 @@ public final class RtRenderer
 	private long atrousPipeline;
 	private long postPipeline;
 	private long bloomPipeline;
+	private long exposurePipeline;
 	private long shaftsPipeline;
 
 	private final VkCommandBuffer cmd;
@@ -274,6 +279,8 @@ public final class RtRenderer
 	private VkBuf textureAnimation;
 	private VkBuf waterTypes;
 	private VkBuf mistGrid;
+	private VkBuf exposureReadback;
+	private double averageLogLuminance = Double.NaN;
 	private final Img[] historyColor = new Img[2];
 	private final Img[] historyPos = new Img[2];
 	private int outputWidth;
@@ -324,8 +331,12 @@ public final class RtRenderer
 		waterTypes.mapped.asFloatBuffer().put(waterTable);
 		mistGrid = ctx.createBuffer((long) MIST_GRID_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		exposureReadback = ctx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		exposureReadback.mapped.asFloatBuffer().put(0, Float.NaN);
 		for (long set : descriptorSets)
 		{
+			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
 			writeBufferDescriptor(set, BINDING_MIST, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, mistGrid);
@@ -539,6 +550,7 @@ public final class RtRenderer
 			types[BINDING_BLOOM_SOURCE] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_BLOOM_A] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_BLOOM_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_EXPOSURE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -553,7 +565,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(32);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(22);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(24);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -584,6 +596,7 @@ public final class RtRenderer
 		atrousPipeline = createComputePipeline("/rltx/atrous.comp.spv");
 		postPipeline = createComputePipeline("/rltx/post.comp.spv");
 		bloomPipeline = createComputePipeline("/rltx/bloom.comp.spv");
+		exposurePipeline = createComputePipeline("/rltx/exposure.comp.spv");
 		shaftsPipeline = createComputePipeline("/rltx/shafts.comp.spv");
 	}
 
@@ -1349,7 +1362,14 @@ public final class RtRenderer
 					lastGpuMillis = (stamps.get(1) - stamps.get(0)) * ctx.timestampPeriod / 1_000_000.0;
 				}
 			}
+			averageLogLuminance = exposureReadback.mapped.asFloatBuffer().get(0);
 		}
+	}
+
+	/** Mean log luminance of the last finished frame before exposure, or NaN before any frame. */
+	public double averageLogLuminance()
+	{
+		return averageLogLuminance;
 	}
 
 	/** GPU time of the most recently completed frame, in milliseconds. */
@@ -1721,6 +1741,12 @@ public final class RtRenderer
 					pushPass(cmd, push, passes, 1, 0, passes);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postPipeline);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
+					if (params.autoExposure)
+					{
+						// Meters the luminance the final denoiser pass recorded; one workgroup suffices.
+						vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, exposurePipeline);
+						vkCmdDispatch(cmd, 1, 1, 1);
+					}
 				}
 			}
 
@@ -1932,7 +1958,10 @@ public final class RtRenderer
 			| (p.skybox ? FLAG_SKYBOX : 0)
 			| (p.textures ? FLAG_TEXTURES : 0)
 			| (p.antialias ? FLAG_ANTIALIAS : 0)
-			| (p.water ? FLAG_WATER : 0);
+			| (p.water ? FLAG_WATER : 0)
+			| (p.proceduralSky ? FLAG_PROCEDURAL_SKY : 0)
+			| (p.clouds ? FLAG_CLOUDS : 0)
+			| (p.cloudShadows ? FLAG_CLOUD_SHADOWS : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(0f);
@@ -1945,7 +1974,7 @@ public final class RtRenderer
 		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
 		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);
 		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(p.renderDistance).putFloat(p.distanceFade);
-		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(0f).putFloat(0f);
+		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(p.aerialPerspective).putFloat(p.sunUp);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -1986,6 +2015,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(textureAnimation);
 		ctx.destroyBuffer(waterTypes);
 		ctx.destroyBuffer(mistGrid);
+		ctx.destroyBuffer(exposureReadback);
 		if (skybox != null)
 		{
 			destroyImage(skybox);
@@ -1996,6 +2026,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, atrousPipeline, null);
 		vkDestroyPipeline(device, postPipeline, null);
 		vkDestroyPipeline(device, bloomPipeline, null);
+		vkDestroyPipeline(device, exposurePipeline, null);
 		vkDestroyPipeline(device, shaftsPipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);

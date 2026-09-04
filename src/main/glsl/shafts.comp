@@ -33,6 +33,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 fog;
   vec4 weather3;
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
+  vec4 post;
+  vec4 post2;
 } u;
 layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
 layout(set = 0, binding = 27, rgba16f) uniform writeonly image2D shaftImage;
@@ -51,6 +53,36 @@ float phase(float cosTheta) {
   const float g = 0.6;
   float d = 1.0 + g * g - 2.0 * g * cosTheta;
   return (1.0 - g * g) / (4.0 * 3.14159265 * d * sqrt(d));
+}
+
+const uint FLAG_CLOUD_SHADOWS = 1024u;
+const float CLOUD_Y = -3200.0;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float valueNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// Same cloud field as the trace pass, so beams fall silent under the same clouds.
+float cloudShadow(vec3 p) {
+  float cover = u.weather.x;
+  if ((u.misc.y & FLAG_CLOUD_SHADOWS) == 0u || cover <= 0.0 || u.sun.y >= 0.0) {
+    return 1.0;
+  }
+  vec2 xz = p.xz + u.sun.xz * ((CLOUD_Y - p.y) / u.sun.y);
+  vec2 q = (xz + vec2(u.weather2.z, u.weather2.w) * 0.6 + u.weather3.x * vec2(9.0, 3.0)) / 2200.0;
+  float n = 0.5 * valueNoise2(q) + 0.25 * valueNoise2(q * 2.03 + 3.1) + 0.125 * valueNoise2(q * 4.1 + 7.7) + 0.0625 * valueNoise2(q * 8.3 + 1.3);
+  n /= 0.9375;
+  float threshold = 1.0 - cover * 0.95;
+  return 1.0 - 0.85 * smoothstep(threshold - 0.1, threshold + 0.25, n);
 }
 
 bool sunlit(vec3 p) {
@@ -91,7 +123,7 @@ void main() {
     vec3 p = u.cam.xyz + dir * t;
     if (sunlit(p)) {
       // The air between the camera and this point attenuates what it scatters back.
-      scatter += segment * exp(-DENSITY * t);
+      scatter += segment * exp(-DENSITY * t) * cloudShadow(p);
     }
   }
   // Cloud dims the beams along with the sun; heavier haze brightens them.
