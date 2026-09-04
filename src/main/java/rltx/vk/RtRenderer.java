@@ -1606,7 +1606,7 @@ public final class RtRenderer
 			stageDynamic(translucent, opaqueFaces, translucentFaces, shutterTime);
 		}
 
-		int instanceCount = writeInstances(opaqueFaces, translucentFaces);
+		int instanceCount = writeInstances(params, opaqueFaces, translucentFaces);
 		writeFrameUniforms(params);
 
 		try (MemoryStack stack = stackPush())
@@ -1832,7 +1832,24 @@ public final class RtRenderer
 		uv.put(source.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
 	}
 
-	private int writeInstances(int opaqueFaces, int translucentFaces)
+	// Whether an untransformed scene's zone lies within the render distance of the camera.
+	private static boolean zoneInRange(StaticSet set, int index, FrameParams params)
+	{
+		if (set.transform != null || params.renderDistance <= 0f)
+		{
+			return true;
+		}
+		int zx = index / set.zonesZ;
+		int zz = index % set.zonesZ;
+		int offsetTiles = (set.zonesX * 8 - 104) / 2;
+		float minX = (zx * 8 - offsetTiles) * 128f;
+		float minZ = (zz * 8 - offsetTiles) * 128f;
+		float dx = Math.max(0f, Math.max(minX - params.cameraX, params.cameraX - (minX + 1024f)));
+		float dz = Math.max(0f, Math.max(minZ - params.cameraZ, params.cameraZ - (minZ + 1024f)));
+		return dx * dx + dz * dz <= params.renderDistance * params.renderDistance;
+	}
+
+	private int writeInstances(FrameParams params, int opaqueFaces, int translucentFaces)
 	{
 		VkAccelerationStructureInstanceKHR.Buffer buffer = VkAccelerationStructureInstanceKHR.create(
 			MemoryUtil.memAddress(instances.mapped), MAX_INSTANCES);
@@ -1847,9 +1864,10 @@ public final class RtRenderer
 		}
 		for (StaticSet set : staticSets.values())
 		{
-			for (ZoneRes res : set.zones)
+			for (int z = 0; z < set.zones.length; ++z)
 			{
-				if (res == null)
+				ZoneRes res = set.zones[z];
+				if (res == null || !zoneInRange(set, z, params))
 				{
 					continue;
 				}
@@ -1926,7 +1944,7 @@ public final class RtRenderer
 		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
 		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
 		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);
-		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(0f).putFloat(0f);
+		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(p.renderDistance).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

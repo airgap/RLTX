@@ -403,13 +403,14 @@ public interface RltxConfig extends Config
 		return 6;
 	}
 
-	@Range(min = 25, max = 184)
+	@Range(min = 16, max = 92)
+	@Units(" tiles")
 	@ConfigItem(
 		keyName = "drawDistance",
-		name = "Draw distance",
-		description = "Radius in tiles within which the client processes actors, animated objects and mouse picking. The ray tracer itself always covers the whole loaded scene.",
-		section = debugSection,
-		position = -1
+		name = "Render distance",
+		description = "How far the scene is drawn, in tiles. Zones beyond it leave the ray tracer, the last stretch fades into the horizon, and the client stops processing actors and clicks there.",
+		section = cameraSection,
+		position = 11
 	)
 	default int drawDistance()
 	{

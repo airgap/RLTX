@@ -31,6 +31,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 weather2; // ground wetness, snow cover, accumulated wind displacement x and z in world units
   vec4 fog;      // fog colour in display space, lightning flash
   vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
+  vec4 mistColor;
+  vec4 post;     // vignette, bloom, render distance in world units, unused
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -249,9 +251,9 @@ bool occluded(vec3 origin, vec3 dir, inout uint seed) {
   return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
-bool trace(vec3 origin, vec3 dir, float tMin, uint rayFlags, uint mask, inout uint seed, out Hit hit) {
+bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint mask, inout uint seed, out Hit hit) {
   rayQueryEXT rq;
-  rayQueryInitializeEXT(rq, tlas, rayFlags, mask, origin, tMin, dir, FAR);
+  rayQueryInitializeEXT(rq, tlas, rayFlags, mask, origin, tMin, dir, tMax);
   float nearestTranslucent = resolveCandidates(rq, seed);
   if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
     return false;
@@ -369,7 +371,7 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
 
   vec3 reflection;
   Hit mirror;
-  if (trace(hit.p, reflectDir, RAY_EPS, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
+  if (trace(hit.p, reflectDir, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
     reflection = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, sunDir, shadows, seed) + 0.5 * skyRadiance(mirror.n));
   } else {
     reflection = skyBackground(reflectDir);
@@ -386,7 +388,7 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
   if (!wt.isFlat) {
     vec3 refracted = refract(dir, wn, 1.0 / 1.33);
     Hit bed;
-    if (dot(refracted, refracted) > 0.0 && trace(hit.surface - hit.gn * RAY_EPS, refracted, RAY_EPS, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, bed)) {
+    if (dot(refracted, refracted) > 0.0 && trace(hit.surface - hit.gn * RAY_EPS, refracted, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, bed)) {
       sawBed = true;
       bedDepth = max(bed.surface.y - hit.surface.y, 0.0);
       under = bed.albedo * (vec3(u.sky.w) + directSun(bed, sunDir, shadows, seed));
@@ -472,8 +474,11 @@ void main() {
   uint primaryFlags = (flags & FLAG_CULL) != 0u ? gl_RayFlagsCullBackFacingTrianglesEXT : gl_RayFlagsNoneEXT;
 
   Hit hit;
-  if (!trace(origin, dir, 1.0, primaryFlags, MASK_ALL, seed, hit)) {
-    imageStore(sampleImage, ivec2(px), vec4(skyBackground(dir), 0.0));
+  if (!trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_ALL, seed, hit)) {
+    // A ray heading downward never reaches real sky; it ran out of render distance, so it
+    // shows the colour the fade at that distance meets.
+    vec3 background = dir.y > 0.02 ? u.fog.rgb : skyBackground(dir);
+    imageStore(sampleImage, ivec2(px), vec4(background, 0.0));
     imageStore(albedoImage, ivec2(px), vec4(1.0));
     imageStore(normalImage, ivec2(px), vec4(0.0));
     imageStore(currPos, ivec2(px), vec4(0.0, 0.0, 0.0, -1.0));
@@ -510,7 +515,7 @@ void main() {
       bounceDir = reflect(bounceDir, current.gn);
     }
     Hit next;
-    if (!trace(current.p, bounceDir, RAY_EPS, gl_RayFlagsNoneEXT, MASK_ALL, seed, next)) {
+    if (!trace(current.p, bounceDir, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_ALL, seed, next)) {
       light += throughput * skyRadiance(bounceDir);
       break;
     }
@@ -535,7 +540,7 @@ void main() {
     }
     vec3 reflection;
     Hit mirror;
-    if (trace(hit.p, reflectDir, RAY_EPS, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
+    if (trace(hit.p, reflectDir, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
       reflection = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, sunDir, shadows, seed) + 0.5 * skyRadiance(mirror.n));
     } else {
       reflection = skyBackground(reflectDir);
@@ -553,7 +558,7 @@ void main() {
   if (hit.covered && !waterPixel) {
     if (hit.translucent) {
       Hit solid;
-      if (trace(origin, dir, 1.0, primaryFlags, MASK_OPAQUE, seed, solid)) {
+      if (trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_OPAQUE, seed, solid)) {
         stable = solid;
       }
     }
