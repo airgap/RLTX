@@ -1,0 +1,107 @@
+plugins {
+	id 'java'
+}
+
+repositories {
+	mavenLocal()
+	maven {
+		url = 'https://repo.runelite.net'
+		content {
+			includeGroupByRegex("net\\.runelite.*")
+		}
+	}
+	mavenCentral()
+}
+
+def runeLiteVersion = 'latest.release'
+// Must match the LWJGL core RuneLite ships; the Vulkan module shares its natives.
+def lwjglVersion = '3.3.2'
+def pluginMainClass = 'rltx.RltxPluginTest'
+
+dependencies {
+	compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
+	compileOnly group: 'net.runelite', name: 'rlawt', version: '1.8'
+	compileOnly "org.lwjgl:lwjgl-opengl:${lwjglVersion}"
+
+	compileOnly 'org.projectlombok:lombok:1.18.30'
+	annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+	implementation "org.lwjgl:lwjgl-vulkan:${lwjglVersion}"
+
+	testImplementation 'junit:junit:4.13.2'
+	testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
+	testImplementation group: 'net.runelite', name: 'jshell', version: runeLiteVersion
+}
+
+group = 'rltx'
+version = '0.1.0-SNAPSHOT'
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release.set(11)
+}
+
+def spvDir = layout.buildDirectory.dir('generated/spv')
+
+// One SPIR-V compile task per compute shader in src/main/glsl.
+def shaderTasks = fileTree('src/main/glsl').matching { include '*.comp' }.files.sort().collect { src ->
+	def out = spvDir.get().file("rltx/${src.name}.spv").asFile
+	tasks.register("compileShader_${src.name.replace('.', '_')}", Exec) {
+		inputs.file src
+		outputs.file out
+		doFirst { out.parentFile.mkdirs() }
+		executable 'glslangValidator'
+		args '--target-env', 'vulkan1.2', '-V', src.absolutePath, '-o', out.absolutePath
+	}
+}
+
+sourceSets.main.resources.srcDir(spvDir)
+tasks.named('processResources') { dependsOn shaderTasks }
+
+tasks.register('run', JavaExec) {
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = pluginMainClass
+	jvmArgs "-ea", "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED"
+	// -PruneliteHome=/some/dir runs against a separate ~/.runelite so the real profile is untouched.
+	if (project.hasProperty('runeliteHome')) {
+		jvmArgs "-Duser.home=${project.property('runeliteHome')}"
+	}
+	args "--developer-mode"
+}
+
+// Writes a script that starts the dev client on this machine's resolved classpath. The Jagex
+// Launcher can be pointed at it; it passes the JX_* login environment through to the client.
+tasks.register('launchScript') {
+	dependsOn 'testClasses'
+	def out = layout.buildDirectory.file('rltx-client.sh')
+	outputs.file out
+	doLast {
+		def javaBin = new File(System.getProperty('java.home'), 'bin/java').absolutePath
+		def cp = sourceSets.test.runtimeClasspath.asPath
+		// Console output goes to a file: the Jagex Launcher gives the client a stdout pipe it never
+		// drains, and once that fills every log write blocks the client.
+		out.get().asFile.text = """#!/bin/sh
+exec "${javaBin}" -ea --add-opens java.base/java.lang.reflect=ALL-UNNAMED -Xss2m -cp "${cp}" ${pluginMainClass} --developer-mode "\$@" > "\$HOME/.runelite/logs/rltx-console.log" 2>&1
+"""
+		out.get().asFile.setExecutable(true, false)
+	}
+}
+
+// Sideloadable jar: the plugin plus the LWJGL Vulkan bindings. LWJGL core ships with RuneLite
+// already, so it is left out to avoid shadowing the client's copy.
+tasks.register('shadowJar', Jar) {
+	dependsOn configurations.runtimeClasspath
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+	from sourceSets.main.output
+	from {
+		configurations.runtimeClasspath
+			.filter { file -> file.name.startsWith('lwjgl-vulkan') }
+			.collect { file -> zipTree(file) }
+	}
+	exclude 'META-INF/INDEX.LIST'
+	exclude 'META-INF/*.SF'
+	exclude 'META-INF/*.DSA'
+	exclude 'META-INF/*.RSA'
+	exclude '**/module-info.class'
+	archiveFileName.set("${rootProject.name}-${project.version}-all.jar")
+}
