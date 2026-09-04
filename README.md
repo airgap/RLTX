@@ -6,6 +6,26 @@ path traced bounce light, water with refraction and reflection, weather, volumet
 light shafts, and a photo mode. The Vulkan output is composited through the client's OpenGL
 canvas, so RuneLite's own interface is untouched.
 
+## Screenshots
+
+All three were taken in game with the plugin's photo mode.
+
+![Night rain outside a stone house, lit by two wall torches and a window](docs/screenshots/rain-at-the-door.jpg)
+
+Night rain in front of a stone house. The only light is the two wall torches and the window;
+the rain and the wet ground pick it up, and the shallow focus comes from the depth of field
+setting.
+
+![A cottage under a full moon, its windows and doorway glowing](docs/screenshots/moonlit-cottage.jpg)
+
+A cottage under the full moon, with the photo tilt lowering the camera. Moonlight and the
+warm light spilling from the windows and doorway are both ray traced, shadows included.
+
+![The player silhouetted against the rising moon](docs/screenshots/moonrise.jpg)
+
+The moon rising behind the player, seen from the free camera. Sun and moon follow the real
+time and place, so this is what the sky looked like when the photo was taken.
+
 ## Requirements
 
 - A GPU and driver with Vulkan 1.2 ray queries (`VK_KHR_ray_query`) and external memory and
