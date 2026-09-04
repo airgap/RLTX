@@ -25,7 +25,7 @@ Launcher's RuneLite install.
 
 ## Third-party components and notices
 
-This project has no licence of its own yet; see the note at the end.
+RLTX itself is released under the BSD 2-Clause License; see `LICENSE`.
 
 **117 HD** (https://github.com/117HD/RLHD), BSD 2-Clause, copyright (c) 2021, 117. Its licence is
 bundled as `src/main/resources/rltx/hd/LICENSE-117HD.txt`. The plugin uses, in original or
@@ -70,6 +70,5 @@ distributed here.
 
 ### Licence of this project
 
-No licence file has been chosen for RLTX's own code yet, so by default all rights are reserved
-to its author. Because the project incorporates BSD 2-Clause code and data from 117 HD, a
-BSD 2-Clause licence would be the compatible and conventional choice when one is added.
+RLTX is licensed under the BSD 2-Clause License, the same terms as the 117 HD code and data it
+incorporates; the full text is in `LICENSE`.
