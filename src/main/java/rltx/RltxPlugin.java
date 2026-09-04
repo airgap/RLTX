@@ -634,9 +634,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.sunG = 0.72f;
 			frame.sunB = 1.00f;
 		}
-		// A sky showing its own sun or moon puts the light where that body is painted so shadows
-		// match what is seen; the passage of time then turns the sky rather than raising the light.
-		if (skyboxLoaded && !Double.isNaN(skyboxSunElevation))
+		// In manual mode a sky showing its own sun or moon puts the light where that body is
+		// painted so shadows match what is seen. Real time and place is authoritative: the light
+		// takes the computed height and the sky is only turned to follow its azimuth.
+		if (config.sunMode() == RltxConfig.SunMode.MANUAL && skyboxLoaded && !Double.isNaN(skyboxSunElevation))
 		{
 			lightElevation = skyboxSunElevation;
 		}

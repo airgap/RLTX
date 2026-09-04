@@ -87,7 +87,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "sunMode",
 		name = "Sun position",
-		description = "Follow the real sun for the latitude, longitude and clock below, or use the manual azimuth and elevation",
+		description = "Follow the real sun for the latitude, longitude and clock below, overriding every other sun setting including a skybox's painted sun; or use the manual azimuth and elevation.",
 		section = sunSection,
 		position = -5
 	)
@@ -171,7 +171,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "sunElevation",
 		name = "Elevation",
-		description = "Height of the sun above the horizon in manual mode. A skybox with a visible sun or moon overrides this so shadows match it.",
+		description = "Height of the sun above the horizon in manual mode. In manual mode a skybox with a visible sun or moon overrides this so shadows match it.",
 		section = sunSection,
 		position = 1
 	)
