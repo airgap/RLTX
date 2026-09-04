@@ -11,11 +11,14 @@ public final class Palette
 	private final int[] table = new int[65536];
 	private final TextureProvider textureProvider;
 	private final double brightness;
+	/** Whether the vanilla renderer's baked shading is reversed out of face and tile colours. */
+	public final boolean undoShading;
 
-	public Palette(TextureProvider textureProvider)
+	public Palette(TextureProvider textureProvider, boolean undoShading)
 	{
 		this.textureProvider = textureProvider;
 		this.brightness = textureProvider.getBrightness();
+		this.undoShading = undoShading;
 		for (int hsl = 0; hsl < table.length; ++hsl)
 		{
 			table[hsl] = convert(hsl, brightness);
@@ -35,6 +38,45 @@ public final class Palette
 	public int texture(int textureId)
 	{
 		return table[textureProvider.getDefaultColor(textureId) & 0xffff];
+	}
+
+	private static final int BASE_LIGHTEN = 10;
+	private static final int IGNORE_LOW_LIGHTNESS = 3;
+	private static final float LIGHTNESS_MULTIPLIER = 3f;
+	private static final int[] MAX_BRIGHTNESS = {127, 61, 59, 57, 56, 56, 55, 55};
+
+	/**
+	 * Approximately reverses the vanilla per-face shading of a model colour from its normal,
+	 * following 117 HD: faces the vanilla light darkened are brightened back, capped so
+	 * saturated colours do not blow out.
+	 */
+	public static int undoModelShading(int hsl, float nx, float ny, float nz)
+	{
+		int s = (hsl >> 7) & 7;
+		int l = hsl & 127;
+		float adjust = BASE_LIGHTEN - l + (l < IGNORE_LOW_LIGHTNESS ? 0f : (l - IGNORE_LOW_LIGHTNESS) * LIGHTNESS_MULTIPLIER);
+		float len = nx * nx + ny * ny + nz * nz;
+		if (len > 0f)
+		{
+			float lightDotNormal = (nx + ny + nz) * 0.57735026f / (float) Math.sqrt(len);
+			if (lightDotNormal > 0f)
+			{
+				l += (int) (lightDotNormal * adjust);
+			}
+		}
+		l = Math.min(l, MAX_BRIGHTNESS[s]);
+		return (hsl & 0xFC00) | (s << 7) | l;
+	}
+
+	/**
+	 * Reverses the vanilla terrain lighting of a tile colour given the light value the client
+	 * computed for that grid point, which scales lightness by light/128.
+	 */
+	public static int undoTerrainShading(int hsl, int light)
+	{
+		int l = hsl & 127;
+		l = Math.max(0, Math.min(127, l * 128 / Math.max(light, 1)));
+		return (hsl & 0xFF80) | l;
 	}
 
 	private static int convert(int hsl, double brightness)

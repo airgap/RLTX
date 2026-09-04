@@ -14,7 +14,13 @@ import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -79,7 +85,7 @@ import rltx.scene.StaticScene;
 public final class RtRenderer
 {
 	public static final int MAX_DYNAMIC_FACES = 1 << 19;
-	private static final int MAX_INSTANCES = 4096;
+	private static final int MAX_INSTANCES = 8192;
 	private static final int MAX_FACE_BASE = 1 << 23;
 	private static final int DYNAMIC_INSTANCE_BIT = 1 << 23;
 	// Instance masks matching trace.comp: rays that must see only solid surfaces use MASK_OPAQUE.
@@ -197,18 +203,47 @@ public final class RtRenderer
 	private VkBuf instances;
 	private Accel tlas;
 
+	// Static geometry of every loaded scene lives in one face pool so the shader indexes a single
+	// set of buffers; each zone owns a slot in it and its own acceleration structures.
+	private static final int POOL_FACES = 3 << 20;
 	private VkBuf staticPos;
 	private VkBuf staticCol;
 	private VkBuf staticTex;
 	private VkBuf staticUv;
-	private VkBuf staticStorage;
-	private long[] staticHandles = new long[0];
-	private long[] staticAddresses = new long[0];
-	private int[] staticLevel = new int[0];
-	private int[] staticRoof = new int[0];
-	private int[] staticFaceBase = new int[0];
-	private boolean[] staticTranslucent = new boolean[0];
-	private final boolean[] levelHasRoofs = new boolean[4];
+	private final List<int[]> poolFree = new ArrayList<>();
+	private final Map<Integer, StaticSet> staticSets = new LinkedHashMap<>();
+
+	private static final class ZoneRes
+	{
+		int faceBase;
+		int capacity;
+		VkBuf storage;
+		long[] handles = new long[0];
+		long[] addresses = new long[0];
+		int[] level = new int[0];
+		int[] roof = new int[0];
+		int[] faceOffset = new int[0];
+		boolean[] translucent = new boolean[0];
+	}
+
+	private static final class StaticSet
+	{
+		final int id;
+		int zonesX;
+		int zonesZ;
+		ZoneRes[] zones;
+		float[] transform;
+		int minLevel;
+		int level;
+		int maxLevel = 3;
+		Set<Integer> hiddenRoofIds = Collections.emptySet();
+		final boolean[] levelHasRoofs = new boolean[4];
+
+		StaticSet(int id)
+		{
+			this.id = id;
+		}
+	}
 
 	private Img output;
 	private Img sample;
@@ -280,11 +315,12 @@ public final class RtRenderer
 			MemoryUtil.memFree(whiteTexel);
 		}
 
-		// Placeholder static buffers keep the descriptor sets complete before a scene loads.
-		staticPos = ctx.createBuffer(BYTES_PER_FACE_POS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticCol = ctx.createBuffer(Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticTex = ctx.createBuffer(Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticUv = ctx.createBuffer(BYTES_PER_FACE_UV, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		int plainUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		staticPos = ctx.createBuffer((long) POOL_FACES * BYTES_PER_FACE_POS, geometryUsage(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		staticCol = ctx.createBuffer((long) POOL_FACES * Integer.BYTES, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		staticTex = ctx.createBuffer((long) POOL_FACES * Integer.BYTES, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		staticUv = ctx.createBuffer((long) POOL_FACES * BYTES_PER_FACE_UV, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		poolFree.add(new int[]{0, POOL_FACES});
 
 		for (long set : descriptorSets)
 		{
@@ -875,153 +911,370 @@ public final class RtRenderer
 		}
 	}
 
+	// ---- static geometry: pool slots, zones and their acceleration structures ----
+
+	private int allocateFaces(int faces)
+	{
+		for (int i = 0; i < poolFree.size(); ++i)
+		{
+			int[] range = poolFree.get(i);
+			if (range[1] >= faces)
+			{
+				int start = range[0];
+				range[0] += faces;
+				range[1] -= faces;
+				if (range[1] == 0)
+				{
+					poolFree.remove(i);
+				}
+				return start;
+			}
+		}
+		return -1;
+	}
+
+	private void freeFaces(int start, int length)
+	{
+		poolFree.add(new int[]{start, length});
+		poolFree.sort((a, b) -> Integer.compare(a[0], b[0]));
+		for (int i = 0; i + 1 < poolFree.size(); )
+		{
+			int[] a = poolFree.get(i);
+			int[] b = poolFree.get(i + 1);
+			if (a[0] + a[1] == b[0])
+			{
+				a[1] += b[1];
+				poolFree.remove(i + 1);
+			}
+			else
+			{
+				++i;
+			}
+		}
+	}
+
+	// Slack so a zone can gain a few objects (an opened door, a spawned object) without a
+	// whole-scene rebuild.
+	private static int slotCapacity(int faces)
+	{
+		return faces + faces / 4 + 32;
+	}
+
 	/**
-	 * Replaces the static geometry. Blocks until the acceleration structures are built.
+	 * Replaces the static geometry of one scene (the top-level scene or a nested world view).
+	 * Blocks until every zone's acceleration structures are built.
 	 */
-	public void setStaticScene(StaticScene scene)
+	public void setStaticSet(int id, StaticScene scene, float[] transform)
 	{
 		idle();
-		freeStatic();
+		removeStaticSet(id);
+		StaticSet set = new StaticSet(id);
+		set.transform = transform;
+		set.zonesX = scene.zonesX;
+		set.zonesZ = scene.zonesZ;
+		set.zones = new ZoneRes[scene.zones.length];
 
-		GeometryBuffer geometry = scene.geometry;
-		int faces = Math.max(geometry.faces(), 1);
-		long posBytes = (long) faces * BYTES_PER_FACE_POS;
-		long colBytes = (long) faces * Integer.BYTES;
-		int hostFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-		long uvBytes = (long) faces * BYTES_PER_FACE_UV;
-		VkBuf stagingPos = ctx.createBuffer(posBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags);
-		VkBuf stagingCol = ctx.createBuffer(colBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags);
-		VkBuf stagingTex = ctx.createBuffer(colBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags);
-		VkBuf stagingUv = ctx.createBuffer(uvBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags);
-		stagingPos.mapped.asFloatBuffer().put(geometry.positions(), 0, geometry.faces() * GeometryBuffer.FLOATS_PER_FACE);
-		stagingCol.mapped.asIntBuffer().put(geometry.colors(), 0, geometry.faces());
-		stagingTex.mapped.asIntBuffer().put(geometry.textures(), 0, geometry.faces());
-		stagingUv.mapped.asFloatBuffer().put(geometry.uvs(), 0, geometry.faces() * GeometryBuffer.UV_FLOATS_PER_FACE);
-
-		int plainUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-		staticPos = ctx.createBuffer(posBytes, geometryUsage(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticCol = ctx.createBuffer(colBytes, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticTex = ctx.createBuffer(colBytes, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticUv = ctx.createBuffer(uvBytes, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		int groups = scene.groupCount();
-		long[] accelSize = new long[groups];
-		long[] accelOffset = new long[groups];
-		long totalStorage = 0;
+		int totalFaces = 0;
 		long maxScratch = 0;
-		for (int g = 0; g < groups; ++g)
+		for (int i = 0; i < scene.zones.length; ++i)
 		{
-			if (scene.groupFaceBase[g] + scene.groupFaceCount[g] > MAX_FACE_BASE)
+			StaticScene.Zone zone = scene.zones[i];
+			if (zone == null)
 			{
-				throw new IllegalStateException("Static scene exceeds " + MAX_FACE_BASE + " faces");
+				continue;
 			}
-			try (MemoryStack stack = stackPush())
+			ZoneRes res = new ZoneRes();
+			res.capacity = slotCapacity(zone.geometry.faces());
+			res.faceBase = allocateFaces(res.capacity);
+			if (res.faceBase < 0)
 			{
-				VkAccelerationStructureGeometryKHR.Buffer geom = VkAccelerationStructureGeometryKHR.calloc(1, stack);
-				fillTriangles(geom.get(0), staticPos.address + (long) scene.groupFaceBase[g] * BYTES_PER_FACE_POS, scene.groupFaceCount[g], !scene.groupTranslucent[g]);
-				VkAccelerationStructureBuildGeometryInfoKHR info = buildInfo(stack, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-					VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, geom);
-				VkAccelerationStructureBuildSizesInfoKHR sizes = querySizes(stack, info, scene.groupFaceCount[g]);
-				accelSize[g] = sizes.accelerationStructureSize();
-				accelOffset[g] = totalStorage;
-				totalStorage += alignUp(accelSize[g], AS_OFFSET_ALIGNMENT);
-				maxScratch = Math.max(maxScratch, sizes.buildScratchSize());
+				log.warn("Static face pool exhausted; zone {},{} of scene {} dropped", zone.zx, zone.zz, id);
+				continue;
 			}
+			set.zones[i] = res;
+			totalFaces += zone.geometry.faces();
+			maxScratch = Math.max(maxScratch, prepareZoneAccel(res, zone));
 		}
 
-		staticStorage = ctx.createBuffer(Math.max(totalStorage, AS_OFFSET_ALIGNMENT), accelStorageUsage(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VkBuf staging = createStaging(totalFaces);
 		VkBuf scratch = createScratch(Math.max(maxScratch, 1));
-
-		staticHandles = new long[groups];
-		staticAddresses = new long[groups];
-		staticLevel = scene.groupLevel.clone();
-		staticRoof = scene.groupRoofId.clone();
-		staticFaceBase = scene.groupFaceBase.clone();
-		staticTranslucent = scene.groupTranslucent.clone();
-		Arrays.fill(levelHasRoofs, false);
-		for (int g = 0; g < groups; ++g)
-		{
-			staticHandles[g] = createAccel(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, staticStorage.buffer, accelOffset[g], accelSize[g]);
-			staticAddresses[g] = accelAddress(staticHandles[g]);
-			if (staticRoof[g] > 0)
-			{
-				levelHasRoofs[staticLevel[g]] = true;
-			}
-		}
-
 		VkCommandBuffer upload = ctx.beginOneTime();
-		try (MemoryStack stack = stackPush())
+		int stagingFace = 0;
+		for (int i = 0; i < scene.zones.length; ++i)
 		{
-			VkBufferCopy.Buffer copy = VkBufferCopy.calloc(1, stack);
-			copy.get(0).srcOffset(0).dstOffset(0).size(posBytes);
-			vkCmdCopyBuffer(upload, stagingPos.buffer, staticPos.buffer, copy);
-			copy.get(0).size(colBytes);
-			vkCmdCopyBuffer(upload, stagingCol.buffer, staticCol.buffer, copy);
-			vkCmdCopyBuffer(upload, stagingTex.buffer, staticTex.buffer, copy);
-			copy.get(0).size(uvBytes);
-			vkCmdCopyBuffer(upload, stagingUv.buffer, staticUv.buffer, copy);
+			StaticScene.Zone zone = scene.zones[i];
+			ZoneRes res = set.zones[i];
+			if (zone == null || res == null)
+			{
+				continue;
+			}
+			stageZone(upload, staging, stagingFace, zone.geometry, res.faceBase);
+			stagingFace += zone.geometry.faces();
 		}
 		memoryBarrier(upload,
 			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+		for (int i = 0; i < scene.zones.length; ++i)
+		{
+			if (scene.zones[i] != null && set.zones[i] != null)
+			{
+				buildZoneAccel(upload, set.zones[i], scene.zones[i], scratch);
+			}
+		}
+		ctx.endOneTimeAndWait(upload);
+		ctx.destroyBuffer(staging);
+		ctx.destroyBuffer(scratch);
+
+		refreshRoofFlags(set);
+		staticSets.put(id, set);
+		log.info("Static scene {}: {} faces in {} zones", id, totalFaces, scene.zones.length);
+	}
+
+	/**
+	 * Replaces one zone of a loaded scene in place. Returns false when the zone no longer fits
+	 * its slot, in which case the caller should rebuild the whole scene.
+	 */
+	public boolean updateZone(int id, int zx, int zz, StaticScene.Zone zone)
+	{
+		StaticSet set = staticSets.get(id);
+		if (set == null)
+		{
+			return false;
+		}
+		int index = zx * set.zonesZ + zz;
+		ZoneRes res = set.zones[index];
+		if (zone == null)
+		{
+			if (res != null)
+			{
+				idle();
+				destroyZoneAccel(res);
+				refreshRoofFlags(set);
+			}
+			return true;
+		}
+		if (res == null)
+		{
+			res = new ZoneRes();
+			res.capacity = slotCapacity(zone.geometry.faces());
+			res.faceBase = allocateFaces(res.capacity);
+			if (res.faceBase < 0)
+			{
+				return false;
+			}
+			set.zones[index] = res;
+		}
+		else if (zone.geometry.faces() > res.capacity)
+		{
+			return false;
+		}
+
+		idle();
+		destroyZoneAccel(res);
+		long scratchSize = prepareZoneAccel(res, zone);
+		VkBuf staging = createStaging(zone.geometry.faces());
+		VkBuf scratch = createScratch(Math.max(scratchSize, 1));
+		VkCommandBuffer upload = ctx.beginOneTime();
+		stageZone(upload, staging, 0, zone.geometry, res.faceBase);
+		memoryBarrier(upload,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+		buildZoneAccel(upload, res, zone, scratch);
+		ctx.endOneTimeAndWait(upload);
+		ctx.destroyBuffer(staging);
+		ctx.destroyBuffer(scratch);
+		refreshRoofFlags(set);
+		return true;
+	}
+
+	public void removeStaticSet(int id)
+	{
+		StaticSet set = staticSets.remove(id);
+		if (set == null)
+		{
+			return;
+		}
+		idle();
+		for (ZoneRes res : set.zones)
+		{
+			if (res != null)
+			{
+				destroyZoneAccel(res);
+				freeFaces(res.faceBase, res.capacity);
+			}
+		}
+	}
+
+	/** Per-frame placement and visibility of a loaded scene. */
+	public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds)
+	{
+		StaticSet set = staticSets.get(id);
+		if (set == null)
+		{
+			return;
+		}
+		set.transform = transform;
+		set.minLevel = minLevel;
+		set.level = level;
+		set.maxLevel = maxLevel;
+		set.hiddenRoofIds = hiddenRoofIds;
+	}
+
+	public boolean hasStaticSet(int id)
+	{
+		return staticSets.containsKey(id);
+	}
+
+	private VkBuf createStaging(int faces)
+	{
+		int n = Math.max(faces, 1);
+		return ctx.createBuffer((long) n * (BYTES_PER_FACE_POS + Integer.BYTES + Integer.BYTES + BYTES_PER_FACE_UV),
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	}
+
+	// The staging buffer holds each zone's four attribute streams back to back; each is copied
+	// into its pool buffer at the zone's slot.
+	private void stageZone(VkCommandBuffer upload, VkBuf staging, int stagingFace, GeometryBuffer geometry, int poolFace)
+	{
+		int faces = geometry.faces();
+		long posBytes = (long) faces * BYTES_PER_FACE_POS;
+		long colBytes = (long) faces * Integer.BYTES;
+		long uvBytes = (long) faces * BYTES_PER_FACE_UV;
+		long base = (long) stagingFace * (BYTES_PER_FACE_POS + Integer.BYTES + Integer.BYTES + BYTES_PER_FACE_UV);
+		ByteBuffer m = staging.mapped;
+		m.position((int) base);
+		m.asFloatBuffer().put(geometry.positions(), 0, faces * GeometryBuffer.FLOATS_PER_FACE);
+		m.position((int) (base + posBytes));
+		m.asIntBuffer().put(geometry.colors(), 0, faces);
+		m.position((int) (base + posBytes + colBytes));
+		m.asIntBuffer().put(geometry.textures(), 0, faces);
+		m.position((int) (base + posBytes + 2 * colBytes));
+		m.asFloatBuffer().put(geometry.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
+		m.position(0);
+
+		try (MemoryStack stack = stackPush())
+		{
+			VkBufferCopy.Buffer copy = VkBufferCopy.calloc(1, stack);
+			copy.get(0).srcOffset(base).dstOffset((long) poolFace * BYTES_PER_FACE_POS).size(posBytes);
+			vkCmdCopyBuffer(upload, staging.buffer, staticPos.buffer, copy);
+			copy.get(0).srcOffset(base + posBytes).dstOffset((long) poolFace * Integer.BYTES).size(colBytes);
+			vkCmdCopyBuffer(upload, staging.buffer, staticCol.buffer, copy);
+			copy.get(0).srcOffset(base + posBytes + colBytes).dstOffset((long) poolFace * Integer.BYTES).size(colBytes);
+			vkCmdCopyBuffer(upload, staging.buffer, staticTex.buffer, copy);
+			copy.get(0).srcOffset(base + posBytes + 2 * colBytes).dstOffset((long) poolFace * BYTES_PER_FACE_UV).size(uvBytes);
+			vkCmdCopyBuffer(upload, staging.buffer, staticUv.buffer, copy);
+		}
+	}
+
+	// Sizes and creates the acceleration structures of a zone's groups; returns the scratch
+	// size the largest build needs.
+	private long prepareZoneAccel(ZoneRes res, StaticScene.Zone zone)
+	{
+		int groups = zone.groupCount();
+		long[] size = new long[groups];
+		long[] offset = new long[groups];
+		long total = 0;
+		long maxScratch = 0;
 		for (int g = 0; g < groups; ++g)
 		{
 			try (MemoryStack stack = stackPush())
 			{
 				VkAccelerationStructureGeometryKHR.Buffer geom = VkAccelerationStructureGeometryKHR.calloc(1, stack);
-				fillTriangles(geom.get(0), staticPos.address + (long) scene.groupFaceBase[g] * BYTES_PER_FACE_POS, scene.groupFaceCount[g], !scene.groupTranslucent[g]);
+				fillTriangles(geom.get(0), zoneVertexAddress(res, zone, g), zone.groupFaceCount[g], !zone.groupTranslucent[g]);
 				VkAccelerationStructureBuildGeometryInfoKHR info = buildInfo(stack, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
 					VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, geom);
-				recordBuild(upload, info, staticHandles[g], scratchAddress(scratch), scene.groupFaceCount[g]);
+				VkAccelerationStructureBuildSizesInfoKHR sizes = querySizes(stack, info, zone.groupFaceCount[g]);
+				size[g] = sizes.accelerationStructureSize();
+				offset[g] = total;
+				total += alignUp(size[g], AS_OFFSET_ALIGNMENT);
+				maxScratch = Math.max(maxScratch, sizes.buildScratchSize());
+			}
+		}
+		res.storage = ctx.createBuffer(Math.max(total, AS_OFFSET_ALIGNMENT), accelStorageUsage(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		res.handles = new long[groups];
+		res.addresses = new long[groups];
+		res.level = zone.groupLevel.clone();
+		res.roof = zone.groupRoofId.clone();
+		res.faceOffset = zone.groupFaceBase.clone();
+		res.translucent = zone.groupTranslucent.clone();
+		for (int g = 0; g < groups; ++g)
+		{
+			res.handles[g] = createAccel(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, res.storage.buffer, offset[g], size[g]);
+			res.addresses[g] = accelAddress(res.handles[g]);
+		}
+		return maxScratch;
+	}
+
+	private long zoneVertexAddress(ZoneRes res, StaticScene.Zone zone, int group)
+	{
+		return staticPos.address + ((long) res.faceBase + zone.groupFaceBase[group]) * BYTES_PER_FACE_POS;
+	}
+
+	private void buildZoneAccel(VkCommandBuffer upload, ZoneRes res, StaticScene.Zone zone, VkBuf scratch)
+	{
+		for (int g = 0; g < zone.groupCount(); ++g)
+		{
+			try (MemoryStack stack = stackPush())
+			{
+				VkAccelerationStructureGeometryKHR.Buffer geom = VkAccelerationStructureGeometryKHR.calloc(1, stack);
+				fillTriangles(geom.get(0), zoneVertexAddress(res, zone, g), zone.groupFaceCount[g], !zone.groupTranslucent[g]);
+				VkAccelerationStructureBuildGeometryInfoKHR info = buildInfo(stack, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+					VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, geom);
+				recordBuild(upload, info, res.handles[g], scratchAddress(scratch), zone.groupFaceCount[g]);
 			}
 			// The scratch buffer is reused by the next build.
 			memoryBarrier(upload,
 				VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
 				VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 		}
-		ctx.endOneTimeAndWait(upload);
-
-		ctx.destroyBuffer(stagingPos);
-		ctx.destroyBuffer(stagingCol);
-		ctx.destroyBuffer(stagingTex);
-		ctx.destroyBuffer(stagingUv);
-		ctx.destroyBuffer(scratch);
-
-		for (long set : descriptorSets)
-		{
-			writeBufferDescriptor(set, BINDING_STATIC_POS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, staticPos);
-			writeBufferDescriptor(set, BINDING_STATIC_COL, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, staticCol);
-			writeBufferDescriptor(set, BINDING_STATIC_TEX, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, staticTex);
-			writeBufferDescriptor(set, BINDING_STATIC_UV, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, staticUv);
-		}
-		log.info("Static scene: {} faces in {} groups, {} MiB of acceleration structures",
-			geometry.faces(), groups, totalStorage >> 20);
 	}
 
-	private void freeStatic()
+	private void destroyZoneAccel(ZoneRes res)
 	{
-		for (long handle : staticHandles)
+		for (long handle : res.handles)
 		{
 			vkDestroyAccelerationStructureKHR(device, handle, null);
 		}
-		staticHandles = new long[0];
-		staticAddresses = new long[0];
-		staticLevel = new int[0];
-		staticRoof = new int[0];
-		staticFaceBase = new int[0];
-		staticTranslucent = new boolean[0];
-		ctx.destroyBuffer(staticStorage);
-		ctx.destroyBuffer(staticPos);
-		ctx.destroyBuffer(staticCol);
-		ctx.destroyBuffer(staticTex);
-		ctx.destroyBuffer(staticUv);
-		staticStorage = null;
-		staticPos = null;
-		staticCol = null;
-		staticTex = null;
-		staticUv = null;
+		res.handles = new long[0];
+		res.addresses = new long[0];
+		res.level = new int[0];
+		res.roof = new int[0];
+		res.faceOffset = new int[0];
+		res.translucent = new boolean[0];
+		if (res.storage != null)
+		{
+			ctx.destroyBuffer(res.storage);
+			res.storage = null;
+		}
+	}
+
+	private static void refreshRoofFlags(StaticSet set)
+	{
+		Arrays.fill(set.levelHasRoofs, false);
+		for (ZoneRes res : set.zones)
+		{
+			if (res == null)
+			{
+				continue;
+			}
+			for (int g = 0; g < res.roof.length; ++g)
+			{
+				if (res.roof[g] > 0)
+				{
+					set.levelHasRoofs[res.level[g]] = true;
+				}
+			}
+		}
+	}
+
+	private void freeAllStatic()
+	{
+		for (Integer id : new ArrayList<>(staticSets.keySet()))
+		{
+			removeStaticSet(id);
+		}
 	}
 
 	// Drains the queue and puts the frame fence back into the unsignalled state the next submit
@@ -1291,7 +1544,7 @@ public final class RtRenderer
 			stageDynamic(translucent, opaqueFaces, translucentFaces, shutterTime);
 		}
 
-		int instanceCount = writeInstances(params, opaqueFaces, translucentFaces);
+		int instanceCount = writeInstances(opaqueFaces, translucentFaces);
 		writeFrameUniforms(params);
 
 		try (MemoryStack stack = stackPush())
@@ -1489,24 +1742,35 @@ public final class RtRenderer
 		uv.put(source.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
 	}
 
-	private int writeInstances(FrameParams params, int opaqueFaces, int translucentFaces)
+	private int writeInstances(int opaqueFaces, int translucentFaces)
 	{
 		VkAccelerationStructureInstanceKHR.Buffer buffer = VkAccelerationStructureInstanceKHR.create(
 			MemoryUtil.memAddress(instances.mapped), MAX_INSTANCES);
 		int count = 0;
 		if (opaqueFaces > 0)
 		{
-			writeInstance(buffer.get(count++), DYNAMIC_INSTANCE_BIT, dynamicBlas.address, MASK_OPAQUE);
+			writeInstance(buffer.get(count++), DYNAMIC_INSTANCE_BIT, dynamicBlas.address, MASK_OPAQUE, null);
 		}
 		if (translucentFaces > 0)
 		{
-			writeInstance(buffer.get(count++), DYNAMIC_INSTANCE_BIT | opaqueFaces, dynamicTranslucentBlas.address, MASK_TRANSLUCENT);
+			writeInstance(buffer.get(count++), DYNAMIC_INSTANCE_BIT | opaqueFaces, dynamicTranslucentBlas.address, MASK_TRANSLUCENT, null);
 		}
-		for (int g = 0; g < staticHandles.length && count < MAX_INSTANCES; ++g)
+		for (StaticSet set : staticSets.values())
 		{
-			if (staticGroupVisible(g, params))
+			for (ZoneRes res : set.zones)
 			{
-				writeInstance(buffer.get(count++), staticFaceBase[g], staticAddresses[g], staticTranslucent[g] ? MASK_TRANSLUCENT : MASK_OPAQUE);
+				if (res == null)
+				{
+					continue;
+				}
+				for (int g = 0; g < res.handles.length && count < MAX_INSTANCES; ++g)
+				{
+					if (groupVisible(set, res.level[g], res.roof[g]))
+					{
+						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g],
+							res.translucent[g] ? MASK_TRANSLUCENT : MASK_OPAQUE, set.transform);
+					}
+				}
 			}
 		}
 		return count;
@@ -1514,28 +1778,25 @@ public final class RtRenderer
 
 	// Same rule as the GPU plugin's Zone.renderOpaque: whole levels within range are drawn,
 	// except roofs above the current level that the client asked to hide.
-	private boolean staticGroupVisible(int g, FrameParams params)
+	private static boolean groupVisible(StaticSet set, int level, int roof)
 	{
-		int level = staticLevel[g];
-		if (level < params.minLevel || level > params.maxLevel)
+		if (level < set.minLevel || level > set.maxLevel)
 		{
 			return false;
 		}
-		int roof = staticRoof[g];
-		if (roof == 0 || !levelHasRoofs[level] || params.hiddenRoofIds.isEmpty() || level <= params.level)
+		if (roof == 0 || !set.levelHasRoofs[level] || set.hiddenRoofIds.isEmpty() || level <= set.level)
 		{
 			return true;
 		}
-		return !params.hiddenRoofIds.contains(roof);
+		return !set.hiddenRoofIds.contains(roof);
 	}
 
-	private static void writeInstance(VkAccelerationStructureInstanceKHR instance, int customIndex, long accelAddress, int mask)
+	private static void writeInstance(VkAccelerationStructureInstanceKHR instance, int customIndex, long accelAddress, int mask, float[] transform)
 	{
-		VkTransformMatrixKHR transform = instance.transform();
-		FloatBuffer m = transform.matrix();
+		FloatBuffer m = instance.transform().matrix();
 		for (int i = 0; i < 12; ++i)
 		{
-			m.put(i, i == 0 || i == 5 || i == 10 ? 1f : 0f);
+			m.put(i, transform == null ? (i == 0 || i == 5 || i == 10 ? 1f : 0f) : transform[i]);
 		}
 		instance.instanceCustomIndex(customIndex)
 			.mask(mask)
@@ -1569,7 +1830,7 @@ public final class RtRenderer
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(0f);
 		b.putFloat(p.sunR).putFloat(p.sunG).putFloat(p.sunB).putFloat(0f);
 		b.putFloat(p.bounces).putFloat(p.aperture).putFloat(p.focusDistance).putFloat(p.waveStrength);
-		b.putFloat(p.shutter).putFloat(p.gameCycle).putFloat(0f).putFloat(0f);
+		b.putFloat(p.shutter).putFloat(p.gameCycle).putFloat(p.bumpStrength).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -1584,7 +1845,11 @@ public final class RtRenderer
 	{
 		vkDeviceWaitIdle(device);
 		destroyOutput();
-		freeStatic();
+		freeAllStatic();
+		ctx.destroyBuffer(staticPos);
+		ctx.destroyBuffer(staticCol);
+		ctx.destroyBuffer(staticTex);
+		ctx.destroyBuffer(staticUv);
 		destroyAccel(tlas);
 		destroyAccel(dynamicBlas);
 		destroyAccel(dynamicTranslucentBlas);

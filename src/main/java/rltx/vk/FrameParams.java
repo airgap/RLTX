@@ -36,10 +36,10 @@ public final class FrameParams
 	public float shutter;
 	/** Client cycle counter, driving scrolling textures. */
 	public float gameCycle;
+	/** Tilt of the shading normal by texture brightness gradients, 0 to 1; 0 disables. */
+	public float bumpStrength;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */
 	public float aperture, focusDistance;
 	/** Diffuse bounces per path; 0 leaves only direct light and the ambient floor. */
 	public int bounces;
-	public int minLevel, level, maxLevel;
-	public Set<Integer> hiddenRoofIds = Collections.emptySet();
 }

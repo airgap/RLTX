@@ -54,6 +54,12 @@ public final class MotionHistory
 		return out;
 	}
 
+	/** Whether the renderable has already been recorded this frame. */
+	public boolean seen(Renderable renderable)
+	{
+		return next.containsKey(renderable);
+	}
+
 	/** Ends the frame: this frame's positions become the next frame's history. */
 	public void endFrame()
 	{

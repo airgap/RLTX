@@ -490,6 +490,32 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "unlitColours",
+		name = "Remove baked shading",
+		description = "Reverse the vanilla renderer's fixed-direction shading out of model and terrain colours so only the ray traced lighting shapes them. Approximate for models.",
+		section = surfacesSection,
+		position = -1
+	)
+	default boolean unlitColours()
+	{
+		return true;
+	}
+
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "bumpStrength",
+		name = "Texture relief",
+		description = "Treats the brightness of a texture as height and tilts the lighting normal across it, giving brick and stone textures relief. Only applies with textures on. 0 disables.",
+		section = surfacesSection,
+		position = 1
+	)
+	default int bumpStrength()
+	{
+		return 35;
+	}
+
+	@ConfigItem(
 		keyName = "water",
 		name = "Reflective water",
 		description = "Render water tiles as a reflective surface with animated waves and a sun glint",

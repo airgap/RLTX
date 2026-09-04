@@ -11,7 +11,11 @@ import java.nio.ByteBuffer;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
@@ -27,7 +31,12 @@ import net.runelite.api.Projection;
 import net.runelite.api.Renderable;
 import net.runelite.api.Scene;
 import net.runelite.api.Texture;
+import net.runelite.api.Actor;
+import net.runelite.api.FloatProjection;
+import net.runelite.api.NPC;
+import net.runelite.api.Player;
 import net.runelite.api.TextureProvider;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.hooks.DrawCallbacks;
@@ -102,9 +111,30 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private double sunAzimuthNow, sunElevationNow;
 	private Skybox.Phase phaseNow;
 	private volatile double skyboxSunAzimuth = Double.NaN;
-	private volatile StaticScene pendingStatic;
-	private boolean staticLoaded;
+	private static final class LoadedScene
+	{
+		final Scene scene;
+		final StaticScene built;
+		int[][][] terrainLight;
+
+		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight)
+		{
+			this.scene = scene;
+			this.built = built;
+			this.terrainLight = terrainLight;
+		}
+	}
+
+	// Scenes are keyed by world view id; nested world views (boats, the top-level scene's
+	// moving sub-scenes) each carry their placement matrix for the frame.
+	private final Map<Integer, LoadedScene> pendingScenes = new ConcurrentHashMap<>();
+	private final Map<Integer, LoadedScene> scenes = new HashMap<>();
+	private final Map<Integer, float[]> subTransforms = new HashMap<>();
+	private final Set<Long> dirtyZones = new LinkedHashSet<>();
 	private boolean staticDirty;
+	// Actors the client did not draw this frame still cast shadows and bounce light; only those
+	// this close to the player are worth animating for it.
+	private static final int OFFSCREEN_ACTOR_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
 
 	private final GeometryBuffer dynamic = new GeometryBuffer(1 << 16);
 	private final GeometryBuffer dynamicTranslucent = new GeometryBuffer(1 << 12);
@@ -118,7 +148,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private boolean glSignalPending;
 	private boolean patternSampled;
 
-	private int statDynamicCalls, statTempCalls, statFrames, statInactive, statSubScene;
+	private int statDynamicCalls, statTempCalls, statFrames, statInactive, statSubScene, statOffscreen;
 	private long statSubmitNanos, statLastReport;
 
 	@Provides
@@ -162,7 +192,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				client.setDrawCallbacks(this);
 				// UNLIT_FACE_COLORS is deliberately absent: with it set from client start, actors stop
 				// being handed to drawDynamic. Face colours fall back to the client's lit colours.
-				client.setGpuFlags(DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.RENDER_THREADS(0));
+				client.setGpuFlags(DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0));
 				// Rebuilds the interface buffer with an alpha channel.
 				client.resizeCanvas();
 
@@ -229,8 +259,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				canvas.setIgnoreRepaint(false);
 				canvas = null;
 			}
-			pendingStatic = null;
-			staticLoaded = false;
+			pendingScenes.clear();
+			scenes.clear();
+			subTransforms.clear();
+			dirtyZones.clear();
 			staticDirty = false;
 			frameActive = false;
 			sceneFramePending = false;
@@ -252,6 +284,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			// The next frame resolves the choice against the time of day and reloads.
 			requestedSkybox = null;
+		}
+		if ("unlitColours".equals(event.getKey()))
+		{
+			staticDirty = true;
 		}
 	}
 
@@ -412,9 +448,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Palette palette()
 	{
 		Palette p = palette;
-		if (p == null || p.brightness() != client.getTextureProvider().getBrightness())
+		boolean undo = config.unlitColours();
+		if (p == null || p.brightness() != client.getTextureProvider().getBrightness() || p.undoShading != undo)
 		{
-			p = new Palette(client.getTextureProvider());
+			p = new Palette(client.getTextureProvider(), undo);
 			palette = p;
 		}
 		return p;
@@ -423,41 +460,80 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Override
 	public void loadScene(WorldView worldView, Scene scene)
 	{
-		if (scene.getWorldViewId() != WorldView.TOPLEVEL)
-		{
-			return;
-		}
 		long start = System.nanoTime();
-		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, palette());
-		log.debug("Built static scene: {} faces, {} groups in {} ms", built.geometry.faces(), built.groupCount(), (System.nanoTime() - start) / 1_000_000);
-		pendingStatic = built;
+		Palette p = palette();
+		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p);
+		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
+		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p)));
 	}
 
 	@Override
 	public void swapScene(Scene scene)
 	{
-		if (scene.getWorldViewId() != WorldView.TOPLEVEL)
+		int id = scene.getWorldViewId();
+		LoadedScene loaded = pendingScenes.remove(id);
+		if (loaded == null)
 		{
 			return;
 		}
-		StaticScene built = pendingStatic;
-		if (built == null)
+		renderer.setStaticSet(id, loaded.built, subTransforms.get(id));
+		scenes.put(id, loaded);
+		dirtyZones.removeIf(key -> (int) (key >> 32) == id);
+		if (id == WorldView.TOPLEVEL)
 		{
-			return;
+			staticDirty = false;
 		}
-		pendingStatic = null;
-		renderer.setStaticScene(built);
-		staticLoaded = true;
-		staticDirty = false;
+	}
+
+	@Override
+	public void despawnWorldView(WorldView worldView)
+	{
+		int id = worldView.getId();
+		renderer.removeStaticSet(id);
+		pendingScenes.remove(id);
+		scenes.remove(id);
+		subTransforms.remove(id);
+		dirtyZones.removeIf(key -> (int) (key >> 32) == id);
 	}
 
 	@Override
 	public void invalidateZone(Scene scene, int zx, int zz)
 	{
-		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
+		dirtyZones.add((long) scene.getWorldViewId() << 32 | (long) zx << 16 | zz);
+	}
+
+	private void rebuildStatic()
+	{
+		if (staticDirty)
 		{
-			staticDirty = true;
+			staticDirty = false;
+			dirtyZones.clear();
+			Palette p = palette();
+			for (Map.Entry<Integer, LoadedScene> e : scenes.entrySet())
+			{
+				LoadedScene loaded = e.getValue();
+				loaded.terrainLight = StaticSceneBuilder.terrainLight(loaded.scene, p);
+				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p), subTransforms.get(e.getKey()));
+			}
+			return;
 		}
+		for (long key : dirtyZones)
+		{
+			int id = (int) (key >> 32);
+			int zx = (int) (key >> 16) & 0xffff;
+			int zz = (int) key & 0xffff;
+			LoadedScene loaded = scenes.get(id);
+			if (loaded == null)
+			{
+				continue;
+			}
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight);
+			if (!renderer.updateZone(id, zx, zz, zone))
+			{
+				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette()), subTransforms.get(id));
+			}
+		}
+		dirtyZones.clear();
 	}
 
 	@Override
@@ -465,15 +541,24 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float cameraX, float cameraY, float cameraZ, float cameraPitch, float cameraYaw,
 		int minLevel, int level, int maxLevel, Set<Integer> hideRoofIds)
 	{
-		if (scene.getWorldViewId() != WorldView.TOPLEVEL)
+		int id = scene.getWorldViewId();
+		if (id != WorldView.TOPLEVEL)
 		{
+			// The entity projection is a column-major 4x4; the instance transform wants the top
+			// three rows.
+			float[] m = ((FloatProjection) entityProjection).getProjection();
+			float[] rows = subTransforms.computeIfAbsent(id, k -> new float[12]);
+			for (int r = 0; r < 3; ++r)
+			{
+				for (int c = 0; c < 4; ++c)
+				{
+					rows[r * 4 + c] = m[c * 4 + r];
+				}
+			}
+			renderer.setStaticView(id, rows, minLevel, level, maxLevel, hideRoofIds);
 			return;
 		}
-		if (staticDirty && staticLoaded)
-		{
-			staticDirty = false;
-			renderer.setStaticScene(StaticSceneBuilder.build(scene, renderCallbackManager, palette()));
-		}
+		rebuildStatic();
 
 		// The client only processes zones within this radius: actors, temporary objects and tile
 		// picking all depend on it. Our own rendering covers the whole scene regardless.
@@ -489,20 +574,30 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.zoom = client.getScale();
 		CameraMath.inverseRotation(cameraPitch, cameraYaw, frame.inverseRotation);
 		CameraMath.forwardRotation(cameraPitch, cameraYaw, frame.forwardRotation);
-		frame.minLevel = minLevel;
-		frame.level = level;
-		frame.maxLevel = maxLevel;
-		frame.hiddenRoofIds = hideRoofIds;
+		renderer.setStaticView(id, null, minLevel, level, maxLevel, hideRoofIds);
 		frameActive = true;
+	}
+
+	// Returns the placement of a scene's local space, or null for the top level; sub-scene draws
+	// arriving before their placement is known are dropped for this frame.
+	private float[] sceneTransform(Scene scene)
+	{
+		return scene.getWorldViewId() == WorldView.TOPLEVEL ? null : subTransforms.get(scene.getWorldViewId());
 	}
 
 	@Override
 	public void drawDynamic(int renderThreadId, Projection worldProjection, Scene scene, TileObject tileObject,
 		Renderable renderable, Model model, int orientation, int x, int y, int z)
 	{
-		if (!frameActive || scene.getWorldViewId() != WorldView.TOPLEVEL)
+		if (!frameActive)
 		{
-			countDropped(scene);
+			++statInactive;
+			return;
+		}
+		float[] transform = sceneTransform(scene);
+		if (transform == null && scene.getWorldViewId() != WorldView.TOPLEVEL)
+		{
+			++statSubScene;
 			return;
 		}
 		if (!renderCallbackManager.drawObject(scene, tileObject))
@@ -512,16 +607,22 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		++statDynamicCalls;
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
-		framePusher.push(model, orientation, x, y, z, palette(), dynamic, dynamicTranslucent);
+		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		motion.record(renderable, dynamic, opaqueStart, dynamicTranslucent, translucentStart);
 	}
 
 	@Override
 	public void drawTemp(Projection worldProjection, Scene scene, GameObject gameObject, Model model, int orientation, int x, int y, int z)
 	{
-		if (!frameActive || scene.getWorldViewId() != WorldView.TOPLEVEL)
+		if (!frameActive)
 		{
-			countDropped(scene);
+			++statInactive;
+			return;
+		}
+		float[] transform = sceneTransform(scene);
+		if (transform == null && scene.getWorldViewId() != WorldView.TOPLEVEL)
+		{
+			++statSubScene;
 			return;
 		}
 		if (!renderCallbackManager.drawObject(scene, gameObject))
@@ -531,20 +632,56 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		++statTempCalls;
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
-		framePusher.push(model, orientation, x, y, z, palette(), dynamic, dynamicTranslucent);
+		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		motion.record(gameObject.getRenderable(), dynamic, opaqueStart, dynamicTranslucent, translucentStart);
 	}
 
-	private void countDropped(Scene scene)
+	private void addOffscreenActors()
 	{
-		if (scene.getWorldViewId() != WorldView.TOPLEVEL)
+		WorldView wv = client.getTopLevelWorldView();
+		Player local = client.getLocalPlayer();
+		if (wv == null || local == null)
 		{
-			++statSubScene;
+			return;
 		}
-		else
+		LocalPoint centre = local.getLocalLocation();
+		if (centre == null)
 		{
-			++statInactive;
+			return;
 		}
+		for (NPC npc : wv.npcs())
+		{
+			pushOffscreenActor(npc, centre);
+		}
+		for (Player player : wv.players())
+		{
+			pushOffscreenActor(player, centre);
+		}
+	}
+
+	private void pushOffscreenActor(Actor actor, LocalPoint centre)
+	{
+		if (actor == null || motion.seen(actor))
+		{
+			return;
+		}
+		LocalPoint lp = actor.getLocalLocation();
+		if (lp == null || lp.distanceTo(centre) > OFFSCREEN_ACTOR_RANGE)
+		{
+			return;
+		}
+		Model model = actor.getModel();
+		if (model == null)
+		{
+			return;
+		}
+		int plane = actor.getWorldLocation().getPlane();
+		int height = Perspective.getTileHeight(client, lp, plane) - actor.getAnimationHeightOffset();
+		int opaqueStart = dynamic.faces();
+		int translucentStart = dynamicTranslucent.faces();
+		framePusher.push(model, actor.getCurrentOrientation(), lp.getX(), height, lp.getY(), null, palette(), dynamic, dynamicTranslucent);
+		motion.record(actor, dynamic, opaqueStart, dynamicTranslucent, translucentStart);
+		++statOffscreen;
 	}
 
 	@Override
@@ -575,6 +712,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillLighting();
 		frame.pattern = false;
 		long start = System.nanoTime();
+		addOffscreenActors();
 		renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending);
 		motion.endFrame();
 		statSubmitNanos += System.nanoTime() - start;
@@ -584,10 +722,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		++statFrames;
 		if (start - statLastReport > 5_000_000_000L)
 		{
-			log.debug("frames={} dynamicCalls={} tempCalls={} droppedInactive={} droppedSubScene={} dynamicFaces={} submitAvgMs={} gpuMs={} levels={}/{}/{}",
+			log.debug("frames={} dynamicCalls={} tempCalls={} droppedInactive={} droppedSubScene={} dynamicFaces={} submitAvgMs={} gpuMs={} offscreenActors={}",
 				statFrames, statDynamicCalls, statTempCalls, statInactive, statSubScene, dynamic.faces() + dynamicTranslucent.faces(),
 				String.format("%.2f", statSubmitNanos / 1_000_000.0 / Math.max(statFrames, 1)), String.format("%.2f", renderer.lastGpuMillis()),
-				frame.minLevel, frame.level, frame.maxLevel);
+				statOffscreen);
 			log.debug("sun: mode={} azimuth={} elevation={} phase={} intensity={} skybox={}",
 				config.sunMode(), Math.round(sunAzimuthNow), Math.round(sunElevationNow), phaseNow,
 				String.format("%.2f", frame.sunIntensity), requestedSkybox);
@@ -608,6 +746,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			statDynamicCalls = 0;
 			statTempCalls = 0;
 			statInactive = 0;
+			statOffscreen = 0;
 			statSubScene = 0;
 			statSubmitNanos = 0;
 		}
@@ -627,6 +766,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.denoiseLuminance = config.denoiserStrength();
 		frame.cullBackfaces = config.cullBackfaces();
 		frame.textures = config.textures();
+		frame.bumpStrength = config.bumpStrength() / 100f;
 		frame.antialias = config.antialias();
 		frame.water = config.water();
 		// Wrapped where every integer scroll speed lands on a whole texture repeat.

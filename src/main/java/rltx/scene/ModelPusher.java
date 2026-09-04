@@ -20,7 +20,11 @@ public final class ModelPusher
 	// pushed out along the face normal instead.
 	private static final float BIAS_OFFSET = 0.6f;
 
-	public void push(Model m, int orientation, int x, int y, int z, Palette palette, GeometryBuffer opaque, GeometryBuffer translucent)
+	/**
+	 * @param transform row-major 3x4 matrix placing a nested world view's local space in the
+	 *                  world, or null for the top-level scene
+	 */
+	public void push(Model m, int orientation, int x, int y, int z, float[] transform, Palette palette, GeometryBuffer opaque, GeometryBuffer translucent)
 	{
 		final int vertexCount = m.getVerticesCount();
 		if (vertexCount > tx.length)
@@ -52,9 +56,19 @@ public final class ModelPusher
 				px = pz * sin + x0 * cos;
 				pz = pz * cos - x0 * sin;
 			}
-			tx[v] = px + x;
-			ty[v] = vy[v] + y;
-			tz[v] = pz + z;
+			px += x;
+			float py = vy[v] + y;
+			pz += z;
+			if (transform != null)
+			{
+				tx[v] = transform[0] * px + transform[1] * py + transform[2] * pz + transform[3];
+				ty[v] = transform[4] * px + transform[5] * py + transform[6] * pz + transform[7];
+				tz[v] = transform[8] * px + transform[9] * py + transform[10] * pz + transform[11];
+				continue;
+			}
+			tx[v] = px;
+			ty[v] = py;
+			tz[v] = pz;
 		}
 
 		final int faceCount = m.getFaceCount();
@@ -72,6 +86,10 @@ public final class ModelPusher
 		final byte[] transparencies = m.getFaceTransparencies();
 		final byte[] biases = m.getFaceBias();
 		final int modelTransparency = m.getTransparency() & 0xff;
+		final int[] nX = m.getVertexNormalsX();
+		final int[] nY = m.getVertexNormalsY();
+		final int[] nZ = m.getVertexNormalsZ();
+		final boolean undo = palette.undoShading && unlit == null && nX != null && nY != null && nZ != null;
 
 		opaque.ensure(faceCount);
 		for (int f = 0; f < faceCount; ++f)
@@ -115,7 +133,12 @@ public final class ModelPusher
 					palette.texture(textures[f]) & 0xffffff | opacity, WaterTextures.encode(textures[f]), u[0], v[0], u[1], v[1], u[2], v[2]);
 				continue;
 			}
-			int rgb = (unlit != null ? palette.hsl(unlit[f]) : palette.hsl(c1[f])) & 0xffffff;
+			int hsl = unlit != null ? unlit[f] & 0xffff : c1[f] & 0xffff;
+			if (undo)
+			{
+				hsl = Palette.undoModelShading(hsl, nX[a] + nX[b] + nX[c], nY[a] + nY[b] + nY[c], nZ[a] + nZ[b] + nZ[c]);
+			}
+			int rgb = palette.hsl(hsl) & 0xffffff;
 			out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz, rgb | opacity);
 		}
 	}

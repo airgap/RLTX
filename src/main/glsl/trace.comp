@@ -63,7 +63,8 @@ struct Hit {
   float t;
   vec3 surface; // exact hit point, stored for reprojection
   vec3 p;       // hit point nudged along the normal, origin for secondary rays
-  vec3 n;
+  vec3 n;       // shading normal, tilted by texture relief where enabled
+  vec3 gn;      // geometric normal, used for ray offsets and the denoiser
   vec3 albedo;
   bool dyn;
   bool translucent; // the accepted surface itself is translucent
@@ -125,15 +126,49 @@ float opacity(bool dyn, uint face) {
   return float(c >> 24) / 255.0;
 }
 
+vec2 cornerUv(bool dyn, uint o) {
+  return dyn ? vec2(dynUv.v[o], dynUv.v[o + 1u]) : vec2(staticUv.v[o], staticUv.v[o + 1u]);
+}
+
 // Interpolated texture coordinates of a face at given barycentrics, including scrolling.
 vec2 faceUv(bool dyn, uint face, vec2 bary, uint tex) {
   uint o = face * 6u;
-  vec2 uv0 = dyn ? vec2(dynUv.v[o], dynUv.v[o + 1u]) : vec2(staticUv.v[o], staticUv.v[o + 1u]);
-  vec2 uv1 = dyn ? vec2(dynUv.v[o + 2u], dynUv.v[o + 3u]) : vec2(staticUv.v[o + 2u], staticUv.v[o + 3u]);
-  vec2 uv2 = dyn ? vec2(dynUv.v[o + 4u], dynUv.v[o + 5u]) : vec2(staticUv.v[o + 4u], staticUv.v[o + 5u]);
+  vec2 uv0 = cornerUv(dyn, o);
+  vec2 uv1 = cornerUv(dyn, o + 2u);
+  vec2 uv2 = cornerUv(dyn, o + 4u);
   vec2 uv = uv0 * (1.0 - bary.x - bary.y) + uv1 * bary.x + uv2 * bary.y;
   // Scrolling textures move one 128th of a texture per client cycle per unit of speed.
   return uv + texAnim.v[tex - 1u] * (u.motion.y / 128.0);
+}
+
+float texHeight(vec2 uv, float layer) {
+  return dot(texture(gameTextures, vec3(uv, layer)).rgb, vec3(0.299, 0.587, 0.114));
+}
+
+// Texture relief: texel brightness stands in for height, and its gradient along the face's
+// tangent directions tilts the shading normal. Heights are in world units, so a texture
+// stretched across a large face gets proportionally gentler slopes.
+vec3 bumpNormal(vec3 n, vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, float strength) {
+  uint o = face * 6u;
+  vec2 uv0 = cornerUv(dyn, o);
+  vec2 d1 = cornerUv(dyn, o + 2u) - uv0;
+  vec2 d2 = cornerUv(dyn, o + 4u) - uv0;
+  float det = d1.x * d2.y - d1.y * d2.x;
+  if (abs(det) < 1e-6) {
+    return n;
+  }
+  vec3 e1 = v1 - v0;
+  vec3 e2 = v2 - v0;
+  vec3 t = (e1 * d2.y - e2 * d1.y) / det;
+  vec3 b = (e2 * d1.x - e1 * d2.x) / det;
+  float texel = 1.0 / 128.0;
+  float dhdu = (texHeight(uv + vec2(texel, 0.0), layer) - texHeight(uv - vec2(texel, 0.0), layer)) / (2.0 * texel);
+  float dhdv = (texHeight(uv + vec2(0.0, texel), layer) - texHeight(uv - vec2(0.0, texel), layer)) / (2.0 * texel);
+  // The full brightness range stands for this many world units of height at full strength.
+  float amplitude = strength * 24.0;
+  vec3 grad = (dhdu * t / dot(t, t) + dhdv * b / dot(b, b)) * amplitude;
+  grad -= n * dot(grad, n);
+  return normalize(n - grad);
 }
 
 // Translucent geometry is built without the opaque flag, so only its triangles show up as
@@ -192,6 +227,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, uint rayFlags, uint mask, inout ui
     n = -n;
   }
   hit.n = n;
+  hit.gn = n;
   hit.surface = origin + dir * hit.t;
   hit.p = hit.surface + n * RAY_EPS;
   uint packed = hit.dyn ? dynCol.c[face] : staticCol.c[face];
@@ -207,6 +243,9 @@ bool trace(vec3 origin, vec3 dir, float tMin, uint rayFlags, uint mask, inout ui
     vec2 uv = faceUv(hit.dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, true), tex);
     vec4 texel = texture(gameTextures, vec3(uv, float(tex - 1u)));
     hit.albedo = mix(hit.albedo, texel.rgb, texel.a);
+    if (u.motion.z > 0.0) {
+      hit.n = bumpNormal(n, v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), u.motion.z);
+    }
   }
   return true;
 }
@@ -327,6 +366,10 @@ void main() {
   Hit current = hit;
   for (int b = 0; b < bounces; ++b) {
     vec3 bounceDir = cosineDirection(current.n, seed);
+    // A relief-tilted normal can send the bounce under the real surface.
+    if (dot(bounceDir, current.gn) < 0.0) {
+      bounceDir = reflect(bounceDir, current.gn);
+    }
     Hit next;
     if (!trace(current.p, bounceDir, RAY_EPS, gl_RayFlagsNoneEXT, MASK_ALL, seed, next)) {
       light += throughput * skyRadiance(bounceDir);
@@ -381,6 +424,6 @@ void main() {
   float cosine = max(abs(dot(stable.n, dir)), 0.01);
   imageStore(sampleImage, ivec2(px), vec4(sample_, (stable.dyn || waterPixel) ? -cosine : cosine));
   imageStore(albedoImage, ivec2(px), vec4(hit.albedo, 1.0));
-  imageStore(normalImage, ivec2(px), vec4(stable.n, 0.0));
+  imageStore(normalImage, ivec2(px), vec4(stable.gn, 0.0));
   imageStore(currPos, ivec2(px), vec4(stable.surface, stable.t));
 }

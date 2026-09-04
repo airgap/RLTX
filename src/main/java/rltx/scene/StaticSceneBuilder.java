@@ -16,83 +16,135 @@ import net.runelite.api.SceneTileModel;
 import net.runelite.api.SceneTilePaint;
 import net.runelite.api.Tile;
 import net.runelite.api.WallObject;
+import net.runelite.api.WorldView;
 import net.runelite.client.callback.RenderCallbackManager;
 
 /**
- * Walks the extended scene and buckets every static triangle by
- * (render level, roof id), following the grouping the GPU plugin's
- * SceneUploader uses so the same per-frame visibility rules apply.
+ * Walks a scene zone by zone and buckets every static triangle by (render level, roof id,
+ * translucency), following the grouping the GPU plugin's SceneUploader uses so the same
+ * per-frame visibility rules apply. The top-level scene carries a margin of extended tiles
+ * around the 104 by 104 playable area; nested world views do not.
  */
 public final class StaticSceneBuilder
 {
-	private static final int SCENE_OFFSET = (Constants.EXTENDED_SCENE_SIZE - Constants.SCENE_SIZE) / 2;
+	private static final int TOPLEVEL_OFFSET = (Constants.EXTENDED_SCENE_SIZE - Constants.SCENE_SIZE) / 2;
 	private static final int HIDDEN_COLOR = 12345678;
 
 	private final Scene scene;
 	private final RenderCallbackManager renderCallbacks;
 	private final Palette palette;
+	private final int offset;
+	private final int[][][] terrainLight;
 	private final ModelPusher pusher = new ModelPusher();
-	private final Map<Long, Bucket> groups = new LinkedHashMap<>();
 
 	private static final class Bucket
 	{
-		final GeometryBuffer opaque = new GeometryBuffer(1024);
-		final GeometryBuffer translucent = new GeometryBuffer(64);
+		final GeometryBuffer opaque = new GeometryBuffer(256);
+		final GeometryBuffer translucent = new GeometryBuffer(32);
 	}
 
-	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette)
+	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight)
 	{
 		this.scene = scene;
 		this.renderCallbacks = renderCallbacks;
 		this.palette = palette;
+		this.offset = scene.getWorldViewId() == WorldView.TOPLEVEL ? TOPLEVEL_OFFSET : 0;
+		this.terrainLight = terrainLight;
 	}
 
+	/** Number of zones along each axis of the scene's extended tile grid. */
+	public static int zoneCount(Scene scene)
+	{
+		return scene.getExtendedTiles()[0].length >> 3;
+	}
+
+	/** Builds every zone of the scene. */
 	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette)
 	{
-		StaticSceneBuilder b = new StaticSceneBuilder(scene, renderCallbacks, palette);
-		b.walk();
-		return b.finish();
+		int[][][] light = terrainLight(scene, palette);
+		int zones = zoneCount(scene);
+		StaticScene.Zone[] out = new StaticScene.Zone[zones * zones];
+		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light);
+		for (int zx = 0; zx < zones; ++zx)
+		{
+			for (int zz = 0; zz < zones; ++zz)
+			{
+				out[zx * zones + zz] = builder.zone(zx, zz);
+			}
+		}
+		return new StaticScene(zones, zones, out);
 	}
 
-	private void walk()
+	/** Rebuilds a single zone, for example after a door changed. */
+	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight)
+	{
+		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight).zone(zx, zz);
+	}
+
+	/**
+	 * The vanilla terrain light per plane and grid point, needed to divide the baked terrain
+	 * shading out of tile colours, or null when that shading is kept.
+	 */
+	public static int[][][] terrainLight(Scene scene, Palette palette)
+	{
+		return palette.undoShading ? computeTerrainLight(scene.getTileHeights()) : null;
+	}
+
+	// The client lights each terrain grid point from the slope of the height field around it,
+	// using a fixed light direction; the same formula here lets that shading be divided out.
+	private static int[][][] computeTerrainLight(int[][][] heights)
+	{
+		int planes = heights.length;
+		int size = heights[0].length;
+		int[][][] light = new int[planes][size][size];
+		for (int z = 0; z < planes; ++z)
+		{
+			for (int x = 0; x < size; ++x)
+			{
+				for (int y = 0; y < size; ++y)
+				{
+					int dx = heights[z][Math.min(x + 1, size - 1)][y] - heights[z][Math.max(x - 1, 0)][y];
+					int dy = heights[z][x][Math.min(y + 1, size - 1)] - heights[z][x][Math.max(y - 1, 0)];
+					int len = (int) Math.sqrt(dx * dx + 65536 + dy * dy);
+					int nx = (dx << 8) / len;
+					int ny = 65536 / len;
+					int nz = (dy << 8) / len;
+					light[z][x][y] = (nx * -50 + ny * -10 + nz * -50) / 256 + 96;
+				}
+			}
+		}
+		return light;
+	}
+
+	private StaticScene.Zone zone(int zx, int zz)
 	{
 		Tile[][][] tiles = scene.getExtendedTiles();
 		byte[][][] settings = scene.getExtendedTileSettings();
 		int[][][] roofs = scene.getRoofs();
+		Map<Long, Bucket> groups = new LinkedHashMap<>();
 
 		for (int level = 0; level <= 3; ++level)
 		{
-			for (int msx = 0; msx < Constants.EXTENDED_SCENE_SIZE; ++msx)
+			for (int msx = zx << 3; msx < (zx + 1) << 3; ++msx)
 			{
-				for (int msz = 0; msz < Constants.EXTENDED_SCENE_SIZE; ++msz)
+				for (int msz = zz << 3; msz < (zz + 1) << 3; ++msz)
 				{
 					Tile t = tiles[level][msx][msz];
 					if (t == null)
 					{
 						continue;
 					}
-
 					boolean bridge = (settings[1][msx][msz] & Constants.TILE_FLAG_BRIDGE) != 0;
 					int mapLevel = bridge ? level + 1 : level;
 					boolean visBelow = mapLevel <= 3 && (settings[mapLevel][msx][msz] & Constants.TILE_FLAG_VIS_BELOW) != 0;
-
 					int roofId = visBelow || mapLevel == 0 ? 0 : roofs[mapLevel - 1][msx][msz];
 					int groupLevel = visBelow ? 0 : level;
-
-					uploadTile(t, group(groupLevel, roofId));
+					long key = (long) groupLevel << 32 | (roofId & 0xffffffffL);
+					uploadTile(t, groups.computeIfAbsent(key, k -> new Bucket()));
 				}
 			}
 		}
-	}
 
-	private Bucket group(int level, int roofId)
-	{
-		long key = (long) level << 32 | (roofId & 0xffffffffL);
-		return groups.computeIfAbsent(key, k -> new Bucket());
-	}
-
-	private StaticScene finish()
-	{
 		int total = 0;
 		int count = 0;
 		for (Bucket b : groups.values())
@@ -100,8 +152,12 @@ public final class StaticSceneBuilder
 			total += b.opaque.faces() + b.translucent.faces();
 			count += (b.opaque.faces() > 0 ? 1 : 0) + (b.translucent.faces() > 0 ? 1 : 0);
 		}
+		if (count == 0)
+		{
+			return null;
+		}
 
-		GeometryBuffer all = new GeometryBuffer(Math.max(total, 1));
+		GeometryBuffer all = new GeometryBuffer(total);
 		int[] level = new int[count];
 		int[] roof = new int[count];
 		int[] base = new int[count];
@@ -127,12 +183,11 @@ public final class StaticSceneBuilder
 				++i;
 			}
 		}
-		return new StaticScene(all, level, roof, base, faces, translucent);
+		return new StaticScene.Zone(zx, zz, all, level, roof, base, faces, translucent);
 	}
 
 	private void uploadTile(Tile t, Bucket bucket)
 	{
-		GeometryBuffer out = bucket.opaque;
 		boolean drawTile = renderCallbacks.drawTile(scene, t);
 
 		SceneTilePaint paint = t.getSceneTilePaint();
@@ -146,7 +201,7 @@ public final class StaticSceneBuilder
 		if (model != null && drawTile)
 		{
 			Point p = t.getSceneLocation();
-			uploadTileModel(model, p.getX() * Perspective.LOCAL_TILE_SIZE, p.getY() * Perspective.LOCAL_TILE_SIZE, bucket);
+			uploadTileModel(model, p.getX() * Perspective.LOCAL_TILE_SIZE, p.getY() * Perspective.LOCAL_TILE_SIZE, t.getRenderLevel(), bucket);
 		}
 
 		WallObject wall = t.getWallObject();
@@ -206,8 +261,28 @@ public final class StaticSceneBuilder
 		}
 		if (m != null)
 		{
-			pusher.push(m, orientation, x, y, z, palette, bucket.opaque, bucket.translucent);
+			pusher.push(m, orientation, x, y, z, null, palette, bucket.opaque, bucket.translucent);
 		}
+	}
+
+	private int cornerColor(int hsl, int plane, int gridX, int gridY)
+	{
+		if (terrainLight == null)
+		{
+			return palette.hsl(hsl);
+		}
+		int size = terrainLight[0].length;
+		int x = Math.max(0, Math.min(size - 1, gridX));
+		int y = Math.max(0, Math.min(size - 1, gridY));
+		return palette.hsl(Palette.undoTerrainShading(hsl, terrainLight[plane][x][y]));
+	}
+
+	// Tile model vertices sit on tile corners or edges; use the light of the nearest grid point.
+	private int vertexColor(int hsl, int sceneX, int sceneZ, int plane)
+	{
+		int gx = Math.round(sceneX / (float) Perspective.LOCAL_TILE_SIZE) + offset;
+		int gy = Math.round(sceneZ / (float) Perspective.LOCAL_TILE_SIZE) + offset;
+		return cornerColor(hsl, plane, gx, gy);
 	}
 
 	private void uploadPaint(SceneTilePaint tile, int renderLevel, int sceneX, int sceneY, Bucket bucket)
@@ -219,8 +294,8 @@ public final class StaticSceneBuilder
 			return;
 		}
 
-		int tx = sceneX + SCENE_OFFSET;
-		int ty = sceneY + SCENE_OFFSET;
+		int tx = sceneX + offset;
+		int ty = sceneY + offset;
 		int[][][] heights = scene.getTileHeights();
 		float swH = heights[renderLevel][tx][ty];
 		float seH = heights[renderLevel][tx + 1][ty];
@@ -242,15 +317,15 @@ public final class StaticSceneBuilder
 			target.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, rgba, texture, 0f, 0f, 1f, 0f, 0f, 1f);
 			return;
 		}
-		int sw = palette.hsl(tile.getSwColor());
-		int se = palette.hsl(tile.getSeColor());
-		int ne = palette.hsl(neColor);
-		int nw = palette.hsl(tile.getNwColor());
+		int sw = cornerColor(tile.getSwColor(), renderLevel, tx, ty);
+		int se = cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty);
+		int ne = cornerColor(neColor, renderLevel, tx + 1, ty + 1);
+		int nw = cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1);
 		out.face(hx, neH, hz, lx, nwH, hz, hx, seH, lz, average(ne, nw, se));
 		out.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, average(sw, se, nw));
 	}
 
-	private void uploadTileModel(SceneTileModel model, int tileX, int tileZ, Bucket bucket)
+	private void uploadTileModel(SceneTileModel model, int tileX, int tileZ, int renderLevel, Bucket bucket)
 	{
 		GeometryBuffer out = bucket.opaque;
 		int[] fx = model.getFaceX();
@@ -283,7 +358,7 @@ public final class StaticSceneBuilder
 					(vx[c] - tileX) * scale, (vz[c] - tileZ) * scale);
 				continue;
 			}
-			int rgba = average(palette.hsl(ca[i]), palette.hsl(cb[i]), palette.hsl(cc[i]));
+			int rgba = average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel));
 			out.face(vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c], rgba);
 		}
 	}
