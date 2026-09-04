@@ -88,6 +88,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "sunEnabled",
+		name = "Sun and moon",
+		description = "Untick to remove the sun and moon entirely, for caves and mines: no direct light, shadows, glints or beams, leaving the sky, local lights and the ambient floor.",
+		section = sunSection,
+		position = -6
+	)
+	default boolean sunEnabled()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "sunMode",
 		name = "Sun position",
 		description = "Real time and place follows the real sun for where this machine actually is, found from its network address, and the real clock, overriding every other sun setting including a skybox's painted sun. Real time, chosen place uses the latitude, longitude and time offset below instead. Manual uses the azimuth and elevation.",
