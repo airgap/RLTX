@@ -1046,7 +1046,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.zoom = client.getScale();
 		CameraMath.inverseRotation(cameraPitch, cameraYaw, frame.inverseRotation);
 		CameraMath.forwardRotation(cameraPitch, cameraYaw, frame.forwardRotation);
-		if (config.photoTilt() != 0)
+		if (config.photoTiltEnabled() && config.photoTilt() != 0)
 		{
 			// The rendered camera swings about the focus point to a lower pitch than the client
 			// allows; the client's own camera, and so its picking, is untouched.

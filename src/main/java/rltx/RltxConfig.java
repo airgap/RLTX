@@ -719,11 +719,23 @@ public interface RltxConfig extends Config
 		return 0;
 	}
 
+	@ConfigItem(
+		keyName = "photoTiltEnabled",
+		name = "Photo tilt",
+		description = "Render from a pitch below the client's limit, by the angle set below; rendering only, so clicks do not line up while it is on.",
+		section = cameraSection,
+		position = 20
+	)
+	default boolean photoTiltEnabled()
+	{
+		return false;
+	}
+
 	@Range(min = -60, max = 60)
 	@Units("°")
 	@ConfigItem(
 		keyName = "photoTilt",
-		name = "Photo tilt",
+		name = "Photo tilt angle",
 		description = "Lowers the rendered camera by this many degrees below the client's pitch, pivoting about what you are looking at, for shots from nearer the ground. Rendering only: the client still picks clicks from its own camera, so use it for photos.",
 		section = cameraSection,
 		position = 20
