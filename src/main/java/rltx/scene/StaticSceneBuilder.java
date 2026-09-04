@@ -154,10 +154,12 @@ public final class StaticSceneBuilder
 
 	/**
 	 * The ground grid of the lowest plane: height at each vertex, a mist coverage that is 1
-	 * over swamp water and fades out over a few tiles around it, and a puddle coverage where the
-	 * ground dips below its surroundings.
+	 * over swamp water and around objects that call for mist, such as graves, fading out over a
+	 * few tiles, and a puddle coverage where the ground dips below its surroundings.
+	 *
+	 * @param misty object ids around which mist gathers
 	 */
-	public static float[] mistGrid(Scene scene)
+	public static float[] mistGrid(Scene scene, IntPredicate misty)
 	{
 		Tile[][][] tiles = scene.getExtendedTiles();
 		int size = tiles[0].length;
@@ -172,7 +174,16 @@ public final class StaticSceneBuilder
 			for (int y = 0; y < size; ++y)
 			{
 				Tile t = tiles[0][x][y];
-				if (t == null || t.getSceneTilePaint() == null || WaterType.forTexture(t.getSceneTilePaint().getTexture()) != WaterType.SWAMP_WATER_FLAT)
+				if (t == null)
+				{
+					continue;
+				}
+				boolean seed = t.getSceneTilePaint() != null && WaterType.forTexture(t.getSceneTilePaint().getTexture()) == WaterType.SWAMP_WATER_FLAT;
+				for (GameObject go : t.getGameObjects())
+				{
+					seed |= go != null && misty.test(go.getId());
+				}
+				if (!seed)
 				{
 					continue;
 				}
@@ -561,7 +572,7 @@ public final class StaticSceneBuilder
 			}
 			int kind = foliageKind.applyAsInt(go.getId());
 			pusher.flames = lit.test(go.getId());
-			if (kind > 0)
+			if (kind == 1 || kind == 2)
 			{
 				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), kind == 2 ? treeScale : 1f, bucket);
 			}

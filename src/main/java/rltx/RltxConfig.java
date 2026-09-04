@@ -1228,6 +1228,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "mistEverywhere",
+		name = "Mist everywhere",
+		description = "Lay the ground mist over the whole scene instead of only swamps and graveyards.",
+		section = weatherSection,
+		position = 4
+	)
+	default boolean mistEverywhere()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "lightning",
 		name = "Lightning",
 		description = "Flashes of light during thunderstorms.",

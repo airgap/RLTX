@@ -117,6 +117,7 @@ public final class RtRenderer
 	private static final int FLAG_TERRAIN_TEXTURES = 16384;
 	private static final int FLAG_SMOOTH_TERRAIN = 32768;
 	private static final int FLAG_RUNOFF = 65536;
+	private static final int FLAG_MIST_EVERYWHERE = 131072;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -2065,7 +2066,8 @@ public final class RtRenderer
 			| (p.puddles ? FLAG_PUDDLES : 0)
 			| (p.terrainTextures ? FLAG_TERRAIN_TEXTURES : 0)
 			| (p.terrainSmoothing ? FLAG_SMOOTH_TERRAIN : 0)
-			| (p.runoff ? FLAG_RUNOFF : 0);
+			| (p.runoff ? FLAG_RUNOFF : 0)
+			| (p.mistEverywhere ? FLAG_MIST_EVERYWHERE : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(0f);

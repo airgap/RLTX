@@ -444,7 +444,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	private static final String[] TREE_WORDS = {"tree", "oak", "willow", "yew", "maple", "palm", "mahogany", "teak", "redwood"};
 	private static final String[] FOLIAGE_WORDS = {"bush", "shrub", "fern", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
-	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales. */
+	private static final String[] GRAVE_WORDS = {"grave", "tomb", "coffin", "headstone", "crypt", "sarcophag", "mausoleum"};
+	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales, 3 a grave that gathers mist. */
 	private final Map<Integer, Integer> foliageIds = new ConcurrentHashMap<>();
 	private static final float SWAY_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
 	private static final int SWAY_FACE_BUDGET = 150_000;
@@ -453,6 +454,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private int foliageKind(int objectId)
 	{
 		return foliageIds.getOrDefault(objectId, 0);
+	}
+
+	private boolean isMisty(int objectId)
+	{
+		return foliageKind(objectId) == 3;
 	}
 
 	// Object names live in the client's cache, which the scene loader thread must not touch, so
@@ -494,6 +500,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 						if (name.contains(FOLIAGE_WORDS[i]))
 						{
 							kind = 1;
+						}
+					}
+					for (int i = 0; kind == 0 && i < GRAVE_WORDS.length; ++i)
+					{
+						if (name.contains(GRAVE_WORDS[i]))
+						{
+							kind = 3;
 						}
 					}
 				}
@@ -1075,7 +1088,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setStaticSet(id, loaded.built, subTransforms.get(id));
 		if (id == WorldView.TOPLEVEL)
 		{
-			renderer.setMistGrid(StaticSceneBuilder.mistGrid(scene));
+			renderer.setMistGrid(StaticSceneBuilder.mistGrid(scene, this::isMisty));
 			int[][][] heights = scene.getTileHeights();
 			int side = heights[0].length;
 			float[] flat = new float[heights.length * side * side];
@@ -1478,6 +1491,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.snowCover = snowCover;
 		frame.flash = flash;
 		frame.mist = config.mist() / 100f;
+		frame.mistEverywhere = config.mistEverywhere();
 		frame.lightShafts = config.lightShafts() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
 		// Wind blows away from its meteorological direction; full strength carries particles

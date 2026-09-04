@@ -85,6 +85,7 @@ public final class FrameParams
 	public boolean glossyReflections;
 	public boolean caustics, rainRipples, puddles, runoff;
 	public boolean terrainTextures, terrainSmoothing;
+	public boolean mistEverywhere;
 	/** Strength of terrain normal maps, 0 to 2. */
 	public float terrainBump;
 	/** Colour grading: contrast about mid grey, saturation, and warm or cool shift from -1 to 1. */
