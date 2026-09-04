@@ -645,6 +645,21 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frameActive = false;
 			sceneFramePending = false;
 			glSignalPending = false;
+			// Everything the new renderer must be given again on the next start.
+			gameTexturesUploaded = false;
+			skyboxLoaded = false;
+			requestedSkybox = null;
+			skyHorizon = null;
+			skyboxSunAzimuth = Double.NaN;
+			skyboxSunElevation = Double.NaN;
+			patternSampled = false;
+			runoffUploaded = false;
+			palette = null;
+			lastWeatherNanos = 0;
+			autoExposureLevel = 1f;
+			wetness = 0f;
+			snowCover = 0f;
+			flash = 0f;
 
 			// Restores the interface buffer without an alpha channel.
 			client.resizeCanvas();
