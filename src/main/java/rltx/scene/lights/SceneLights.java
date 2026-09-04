@@ -143,10 +143,11 @@ public final class SceneLights
 	 * Packs this frame's lights, nearest to the camera first, up to the buffer's capacity.
 	 *
 	 * @param npcs      NPCs currently in the world view, for attached lights
-	 * @param npcHeight ground height under an NPC's position
+	 * @param npcHeight  ground height under an NPC's position
+	 * @param rangeScale multiplier on every light's radius
 	 * @return how many lights were packed
 	 */
-	public int pack(Iterable<? extends NPC> npcs, LightLibrary library, HeightLookup npcHeight, float camX, float camY, float camZ, float seconds)
+	public int pack(Iterable<? extends NPC> npcs, LightLibrary library, HeightLookup npcHeight, float camX, float camY, float camZ, float seconds, float rangeScale)
 	{
 		frame.clear();
 		frame.addAll(scene);
@@ -180,7 +181,7 @@ public final class SceneLights
 		{
 			Placed p = frame.get(i);
 			float strength = Math.min(p.def.strength, MAX_STRENGTH);
-			float radius = p.def.radius;
+			float radius = p.def.radius * rangeScale;
 			switch (p.def.type)
 			{
 				case FLICKER:

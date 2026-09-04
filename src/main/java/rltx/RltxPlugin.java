@@ -473,7 +473,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		int count = top.lights.pack(wv.npcs(), lightLibrary(),
 			(lp, plane) -> Perspective.getTileHeight(client, lp, plane),
-			frame.cameraX, frame.cameraY, frame.cameraZ, frame.timeSeconds);
+			frame.cameraX, frame.cameraY, frame.cameraZ, frame.timeSeconds, config.lightRange() / 100f);
 		renderer.setLights(top.lights.packed(), count);
 		frame.lightCount = count;
 		// 117 HD's strengths are tuned for its light units, which run brighter than ours.

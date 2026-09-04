@@ -301,6 +301,20 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@Range(min = 50, max = 400)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "lightRange",
+		name = "Local light range",
+		description = "Scales how far every local light reaches. Braziers and torches in mines carry further with more.",
+		section = skySection,
+		position = -4
+	)
+	default int lightRange()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "proceduralSky",
 		name = "Procedural sky",
