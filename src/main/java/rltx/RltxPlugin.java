@@ -1394,7 +1394,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.contrast = config.contrast() / 100f;
 		frame.saturation = config.saturation() / 100f;
 		frame.temperature = config.temperature() / 100f;
-		frame.diffusion = config.diffusion() / 100f;
+		frame.diffusion = config.softGlow() ? config.diffusion() / 100f : 0f;
 		frame.diffusionRadius = config.diffusionRadius();
 		frame.antialias = config.antialias();
 		frame.water = config.water();

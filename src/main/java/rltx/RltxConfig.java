@@ -637,11 +637,23 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
+	@ConfigItem(
+		keyName = "softGlow",
+		name = "Soft glow",
+		description = "Blend a blurred copy of the whole frame back over it; the sliders below set how much and how wide.",
+		section = cameraSection,
+		position = 17
+	)
+	default boolean softGlow()
+	{
+		return true;
+	}
+
 	@Range(max = 100)
 	@Units(Units.PERCENT)
 	@ConfigItem(
 		keyName = "diffusion",
-		name = "Soft glow",
+		name = "Soft glow opacity",
 		description = "A blurred copy of the whole frame blended back over it, softening contrast into a dreamy haze. 0 disables.",
 		section = cameraSection,
 		position = 18
