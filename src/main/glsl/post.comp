@@ -1,7 +1,8 @@
 #version 460
 
-// Depth of field as a gather over the finished image: each pixel collects neighbours whose
-// circle of confusion, from a thin lens focused at the focus distance, reaches it. Running
+// Final post-processing over the finished image: depth of field as a gather where each pixel
+// collects neighbours whose circle of confusion, from a thin lens focused at the focus
+// distance, reaches it; bloom added from the blurred bright pass; and the vignette. Running
 // after the denoiser keeps the blur free of the sampling noise a jittered lens would add.
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -29,6 +30,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 weather2;
   vec4 fog;
   vec4 weather3;
+  vec4 mistColor; // display-space colour of lit mist, light shaft strength
+  vec4 post;      // vignette strength, bloom strength
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -39,6 +42,7 @@ layout(push_constant) uniform Push {
 layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
 layout(set = 0, binding = 17, rgba16f) uniform readonly image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform readonly image2D filterB;
+layout(set = 0, binding = 30, rgba16f) uniform readonly image2D bloomBlur;
 
 const float MAX_COC = 20.0;
 const int TAPS = 48;
@@ -56,18 +60,36 @@ float coc(float depth) {
   return min(u.cam.w * u.path.y * abs(d - focus) / (focus * d), MAX_COC);
 }
 
-void main() {
-  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
-  ivec2 size = ivec2(u.misc.zw);
-  if (p.x >= size.x || p.y >= size.y) {
-    return;
-  }
+// The blurred bright pass at quarter resolution, sampled bilinearly, softened so a very bright
+// source glows without whiting out.
+vec3 bloom(ivec2 p) {
+  ivec2 quarter = (ivec2(u.misc.zw) + 3) / 4;
+  vec2 q = (vec2(p) + 0.5) / 4.0 - 0.5;
+  ivec2 i = ivec2(floor(q));
+  vec2 f = q - vec2(i);
+  ivec2 i0 = clamp(i, ivec2(0), quarter - 1);
+  ivec2 i1 = clamp(i + 1, ivec2(0), quarter - 1);
+  vec3 a = imageLoad(bloomBlur, ivec2(i0.x, i0.y)).rgb;
+  vec3 b = imageLoad(bloomBlur, ivec2(i1.x, i0.y)).rgb;
+  vec3 c = imageLoad(bloomBlur, ivec2(i0.x, i1.y)).rgb;
+  vec3 d = imageLoad(bloomBlur, ivec2(i1.x, i1.y)).rgb;
+  vec3 v = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  return v / (1.0 + v);
+}
+
+// Corner darkening, measured so the very corners reach the full strength at any aspect ratio.
+vec3 vignette(ivec2 p, vec3 c) {
+  vec2 size = vec2(u.misc.zw);
+  vec2 uv = ((vec2(p) + 0.5) / size - 0.5) * vec2(size.x / size.y, 1.0);
+  float r = length(uv) / length(vec2(size.x / size.y, 1.0) * 0.5);
+  return c * (1.0 - u.post.x * pow(smoothstep(0.3, 1.0, r), 1.5));
+}
+
+vec3 depthOfField(ivec2 p, ivec2 size, vec3 centre) {
   float depth = imageLoad(currPos, p).w;
   float own = coc(depth);
-  vec3 centre = readColor(p);
   if (own < 0.5) {
-    imageStore(outImage, p, vec4(centre, 1.0));
-    return;
+    return centre;
   }
   // Taps fill this pixel's own blur disc, turned per pixel so the sparse spiral reads as
   // fine grain rather than as repeated copies.
@@ -85,5 +107,24 @@ void main() {
     sum += readColor(q) * w;
     weight += w;
   }
-  imageStore(outImage, p, vec4(sum / weight, 1.0));
+  return sum / weight;
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 size = ivec2(u.misc.zw);
+  if (p.x >= size.x || p.y >= size.y) {
+    return;
+  }
+  vec3 c = readColor(p);
+  if (u.path.y > 0.0) {
+    c = depthOfField(p, size, c);
+  }
+  if (u.post.y > 0.0) {
+    c += u.post.y * bloom(p);
+  }
+  if (u.post.x > 0.0) {
+    c = vignette(p, c);
+  }
+  imageStore(outImage, p, vec4(c, 1.0));
 }

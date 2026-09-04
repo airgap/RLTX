@@ -137,7 +137,10 @@ public final class RtRenderer
 	private static final int BINDING_WATER_TYPES = 25;
 	private static final int BINDING_MIST = 26;
 	private static final int BINDING_SHAFTS = 27;
-	private static final int BINDING_COUNT = 28;
+	private static final int BINDING_BLOOM_SOURCE = 28;
+	private static final int BINDING_BLOOM_A = 29;
+	private static final int BINDING_BLOOM_B = 30;
+	private static final int BINDING_COUNT = 31;
 	private static final int MIST_GRID_MAX = 185 * 185 * 2;
 	private static final int MAX_TEXTURES = 256;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -182,7 +185,8 @@ public final class RtRenderer
 	private long tracePipeline;
 	private long resolvePipeline;
 	private long atrousPipeline;
-	private long dofPipeline;
+	private long postPipeline;
+	private long bloomPipeline;
 	private long shaftsPipeline;
 
 	private final VkCommandBuffer cmd;
@@ -258,6 +262,8 @@ public final class RtRenderer
 	private Img sample;
 	private Img albedo;
 	private Img shafts;
+	private Img bloomSource;
+	private final Img[] bloomBlur = new Img[2];
 	private Img normal;
 	private final Img[] moments = new Img[2];
 	private final Img[] filter = new Img[2];
@@ -530,6 +536,9 @@ public final class RtRenderer
 			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MIST] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_SHAFTS] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_BLOOM_SOURCE] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_BLOOM_A] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_BLOOM_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -543,7 +552,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(26);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(32);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(22);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
@@ -573,7 +582,8 @@ public final class RtRenderer
 		tracePipeline = createComputePipeline("/rltx/trace.comp.spv");
 		resolvePipeline = createComputePipeline("/rltx/resolve.comp.spv");
 		atrousPipeline = createComputePipeline("/rltx/atrous.comp.spv");
-		dofPipeline = createComputePipeline("/rltx/dof.comp.spv");
+		postPipeline = createComputePipeline("/rltx/post.comp.spv");
+		bloomPipeline = createComputePipeline("/rltx/bloom.comp.spv");
 		shaftsPipeline = createComputePipeline("/rltx/shafts.comp.spv");
 	}
 
@@ -1368,6 +1378,11 @@ public final class RtRenderer
 		albedo = createImage(width, height, OUTPUT_FORMAT, scratchUsage, false);
 		normal = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		shafts = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		bloomSource = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		for (int i = 0; i < 2; ++i)
+		{
+			bloomBlur[i] = createImage((width + 3) / 4, (height + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		}
 		for (int i = 0; i < 2; ++i)
 		{
 			historyColor[i] = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
@@ -1391,6 +1406,9 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
 			writeImageDescriptor(handle, BINDING_SHAFTS, shafts.view);
+			writeImageDescriptor(handle, BINDING_BLOOM_SOURCE, bloomSource.view);
+			writeImageDescriptor(handle, BINDING_BLOOM_A, bloomBlur[0].view);
+			writeImageDescriptor(handle, BINDING_BLOOM_B, bloomBlur[1].view);
 			writeImageDescriptor(handle, BINDING_PREV_MOMENTS, moments[set].view);
 			writeImageDescriptor(handle, BINDING_CURR_MOMENTS, moments[1 - set].view);
 			writeImageDescriptor(handle, BINDING_FILTER_A, filter[0].view);
@@ -1499,7 +1517,7 @@ public final class RtRenderer
 			VkClearColorValue clear = VkClearColorValue.calloc(stack);
 			VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
 			fillColorRange(range.get(0));
-			for (Img img : new Img[]{sample, albedo, normal, shafts, historyColor[0], historyPos[0], moments[0], filter[0],
+			for (Img img : new Img[]{sample, albedo, normal, shafts, bloomSource, bloomBlur[0], bloomBlur[1], historyColor[0], historyPos[0], moments[0], filter[0],
 				historyColor[1], historyPos[1], moments[1], filter[1]})
 			{
 				imageBarrier(init, img.image, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1525,11 +1543,17 @@ public final class RtRenderer
 		destroyImage(albedo);
 		destroyImage(normal);
 		destroyImage(shafts);
+		destroyImage(bloomSource);
+		destroyImage(bloomBlur[0]);
+		destroyImage(bloomBlur[1]);
 		output = null;
 		sample = null;
 		albedo = null;
 		normal = null;
 		shafts = null;
+		bloomSource = null;
+		bloomBlur[0] = null;
+		bloomBlur[1] = null;
 		for (int i = 0; i < 2; ++i)
 		{
 			destroyImage(historyColor[i]);
@@ -1665,9 +1689,8 @@ public final class RtRenderer
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				}
 				int passes = Math.min(Math.max(params.denoisePasses, 0), MAX_DENOISE_PASSES);
-				// Depth of field is a gather over the finished image, so the last denoiser pass
-				// leaves its result in the filter image for it instead of writing the output.
-				boolean dof = params.aperture > 0f && passes > 0;
+				// The post pass gathers over the finished image, so the last denoiser pass leaves
+				// its result in the filter image for it instead of writing the output.
 				ByteBuffer push = stack.malloc(PUSH_CONSTANT_SIZE);
 				computeBarrier(cmd);
 				pushPass(cmd, push, 0, 1, 0, passes);
@@ -1677,14 +1700,26 @@ public final class RtRenderer
 				for (int pass = 0; pass < passes; ++pass)
 				{
 					computeBarrier(cmd);
-					pushPass(cmd, push, pass, 1 << pass, pass == passes - 1 ? (dof ? 2 : 1) : 0, passes);
+					pushPass(cmd, push, pass, 1 << pass, pass == passes - 1 ? 2 : 0, passes);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				}
-				if (dof)
+				if (passes > 0)
 				{
+					if (params.bloom > 0f)
+					{
+						int quarterX = ((outputWidth + 3) / 4 + 7) / 8;
+						int quarterY = ((outputHeight + 3) / 4 + 7) / 8;
+						vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bloomPipeline);
+						computeBarrier(cmd);
+						pushPass(cmd, push, 0, 0, 0, passes);
+						vkCmdDispatch(cmd, quarterX, quarterY, 1);
+						computeBarrier(cmd);
+						pushPass(cmd, push, 1, 0, 0, passes);
+						vkCmdDispatch(cmd, quarterX, quarterY, 1);
+					}
 					computeBarrier(cmd);
 					pushPass(cmd, push, passes, 1, 0, passes);
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dofPipeline);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postPipeline);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				}
 			}
@@ -1729,8 +1764,8 @@ public final class RtRenderer
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 	}
 
-	// Layout must match the Push block in resolve.comp, atrous.comp and dof.comp; last is 0, 1 for
-	// the final pass writing the output, or 2 for the final pass handing over to depth of field.
+	// Layout must match the Push block in resolve.comp, atrous.comp, bloom.comp and post.comp; last
+	// is 0, 1 for a final pass writing the output, or 2 for a final pass handing over to post.
 	private void pushPass(VkCommandBuffer commandBuffer, ByteBuffer push, int pass, int step, int last, int passes)
 	{
 		push.clear();
@@ -1891,6 +1926,7 @@ public final class RtRenderer
 		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
 		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
 		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);
+		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(0f).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -1939,7 +1975,8 @@ public final class RtRenderer
 		vkDestroyPipeline(device, tracePipeline, null);
 		vkDestroyPipeline(device, resolvePipeline, null);
 		vkDestroyPipeline(device, atrousPipeline, null);
-		vkDestroyPipeline(device, dofPipeline, null);
+		vkDestroyPipeline(device, postPipeline, null);
+		vkDestroyPipeline(device, bloomPipeline, null);
 		vkDestroyPipeline(device, shaftsPipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);

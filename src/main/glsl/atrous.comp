@@ -31,6 +31,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 fog;      // fog colour in display space, lightning flash
   vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
+  vec4 post;      // vignette strength, bloom strength
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -48,6 +49,7 @@ layout(set = 0, binding = 17, rgba16f) uniform image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
 layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec2 v[]; } mistGrid;
 layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
+layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
 
@@ -220,8 +222,8 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
   return c;
 }
 
-// The finished pixel goes to the output, or to the filter image when a depth of field pass
-// follows and gathers from it.
+// The finished pixel goes to the output, or to the filter image when the post pass follows
+// and gathers from it.
 void writeOutput(ivec2 p, vec3 c);
 
 vec4 readFilter(ivec2 q) {
@@ -234,6 +236,11 @@ void writeFilter(ivec2 q, vec4 v) {
   } else {
     imageStore(filterA, q, v);
   }
+}
+
+// What exceeds white after exposure feeds the bloom blur.
+void writeBright(ivec2 p, vec3 exposed) {
+  imageStore(bloomSource, p, vec4(max(exposed - 1.0, 0.0), 1.0));
 }
 
 void writeOutput(ivec2 p, vec3 c) {
@@ -257,7 +264,8 @@ void main() {
   if (position.w < 0.0) {
     writeFilter(p, center);
     if (pc.last != 0) {
-      vec3 sky = imageLoad(sampleImage, p).rgb + lightShafts(p);
+      vec3 sky = imageLoad(sampleImage, p).rgb + lightShafts(p) * u.params.y;
+      writeBright(p, sky);
       writeOutput(p, precipitation(swampMist(sky, p, cameraRay(p), -1.0), p, -1.0));
     }
     return;
@@ -326,7 +334,9 @@ void main() {
 
   if (pc.last != 0) {
     vec3 albedo = imageLoad(albedoImage, p).rgb;
-    vec3 c = tonemap(albedo * result.rgb + lightShafts(p));
+    vec3 hdr = albedo * result.rgb + lightShafts(p);
+    writeBright(p, hdr * u.params.y);
+    vec3 c = tonemap(hdr);
     // Sky pixels carry a negative depth; they are fogged in the trace pass instead.
     float depth = imageLoad(currPos, p).w;
     if (u.weather.y > 0.0 && depth > 0.0) {

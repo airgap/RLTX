@@ -474,6 +474,34 @@ public interface RltxConfig extends Config
 		return 50;
 	}
 
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "vignette",
+		name = "Vignette",
+		description = "Darkens the corners of the view. 0 disables.",
+		section = cameraSection,
+		position = 9
+	)
+	default int vignette()
+	{
+		return 25;
+	}
+
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "bloom",
+		name = "Bloom",
+		description = "Glow bled out of anything brighter than white after exposure. 0 disables.",
+		section = cameraSection,
+		position = 10
+	)
+	default int bloom()
+	{
+		return 35;
+	}
+
 	@ConfigItem(
 		keyName = "focusMode",
 		name = "Focus",

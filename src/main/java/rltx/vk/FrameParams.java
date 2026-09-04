@@ -50,6 +50,10 @@ public final class FrameParams
 	public float mistR, mistG, mistB;
 	/** Strength of sunlight scattered by the air along view rays; 0 disables the pass. */
 	public float lightShafts;
+	/** Corner darkening of the final image, 0 to 1. */
+	public float vignette;
+	/** Strength of the glow blurred out of what exceeds white, 0 to 1. */
+	public float bloom;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

@@ -1,0 +1,74 @@
+#version 460
+
+// Bloom: the bright pass the denoiser's final pass wrote is blurred at quarter resolution
+// with a separable Gaussian, horizontally in pass 0 straight from the full-resolution source,
+// then vertically in pass 1.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std140, set = 0, binding = 6) uniform Frame {
+  vec4 cam;     // camera position, zoom
+  vec4 r0;
+  vec4 r1;
+  vec4 r2;
+  vec4 prevCam;
+  vec4 p0;
+  vec4 p1;
+  vec4 p2;
+  vec4 sun;
+  vec4 sky;
+  vec4 params;
+  uvec4 misc;   // frame, flags, width, height
+  vec4 extra;
+  vec4 denoise;
+  vec4 sunColor;
+  vec4 path;    // diffuse bounce count, lens aperture radius, focus distance, wave strength
+  vec4 motion;
+  vec4 weather;
+  vec4 weather2;
+  vec4 fog;
+  vec4 weather3;
+  vec4 mistColor; // display-space colour of lit mist, light shaft strength
+  vec4 post;      // vignette strength, bloom strength
+} u;
+layout(push_constant) uniform Push {
+  int pass;
+  int step;
+  int last;
+  int passes;
+} pc;
+layout(set = 0, binding = 28, rgba16f) uniform readonly image2D bloomSource;
+layout(set = 0, binding = 29, rgba16f) uniform image2D bloomA;
+layout(set = 0, binding = 30, rgba16f) uniform image2D bloomB;
+
+const int RADIUS = 6;
+const float WEIGHTS[7] = float[7](0.1329, 0.1257, 0.1063, 0.0805, 0.0545, 0.0330, 0.0179);
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 full = ivec2(u.misc.zw);
+  ivec2 quarter = (full + 3) / 4;
+  if (q.x >= quarter.x || q.y >= quarter.y) {
+    return;
+  }
+  vec3 sum = vec3(0.0);
+  if (pc.pass == 0) {
+    ivec2 centre = q * 4 + 1;
+    for (int i = -RADIUS; i <= RADIUS; ++i) {
+      ivec2 s = clamp(centre + ivec2(i * 4, 0), ivec2(0), full - 1);
+      // Four rows average the quarter cell vertically as the horizontal taps run.
+      vec3 column = vec3(0.0);
+      for (int r = 0; r < 4; ++r) {
+        column += imageLoad(bloomSource, clamp(ivec2(s.x, q.y * 4 + r), ivec2(0), full - 1)).rgb;
+      }
+      sum += WEIGHTS[abs(i)] * column * 0.25;
+    }
+    imageStore(bloomA, q, vec4(sum, 1.0));
+  } else {
+    for (int i = -RADIUS; i <= RADIUS; ++i) {
+      ivec2 s = clamp(q + ivec2(0, i), ivec2(0), quarter - 1);
+      sum += WEIGHTS[abs(i)] * imageLoad(bloomA, s).rgb;
+    }
+    imageStore(bloomB, q, vec4(sum, 1.0));
+  }
+}
