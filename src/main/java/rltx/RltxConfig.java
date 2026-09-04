@@ -208,6 +208,20 @@ public interface RltxConfig extends Config
 		return 3;
 	}
 
+	@Range(min = 2, max = 100)
+	@Units(" ⁄10°")
+	@ConfigItem(
+		keyName = "sunDiscSize",
+		name = "Sun disc size",
+		description = "Apparent diameter of the sun or moon disc in the procedural sky, in tenths of a degree; the real sun is about 5. Visual only: shadow softness comes from Sun size.",
+		section = sunSection,
+		position = 6
+	)
+	default int sunDiscSize()
+	{
+		return 5;
+	}
+
 	@ConfigItem(
 		keyName = "shadows",
 		name = "Ray traced shadows",

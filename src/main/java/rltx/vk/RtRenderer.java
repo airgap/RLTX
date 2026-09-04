@@ -2069,7 +2069,7 @@ public final class RtRenderer
 		// The blur runs at quarter resolution and the visible radius spans about two and a half sigmas.
 		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(p.terrainBump).putFloat(p.diffusionRadius / 2.5f / 4f);
 		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(p.diffusion);
-		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(0f).putFloat(0f);
+		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(p.sunDiscRadius).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

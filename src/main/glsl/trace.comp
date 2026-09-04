@@ -35,7 +35,9 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 post;     // vignette, bloom, render distance in world units, fade share
   vec4 post2;    // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
   vec4 lights;   // local light count, local light strength scale, default sheen strength, default sheen exponent
-  vec4 material; // emissive glow scale, glossy reflections flag
+  vec4 material; // emissive glow scale, glossy reflections flag, terrain relief, soft glow sigma
+  vec4 post3;
+  vec4 wind;     // wind velocity x and z, angular radius of the sky's light disc
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -541,8 +543,8 @@ vec3 proceduralSky(vec3 d, bool withDisc) {
     sky += vec3(0.6) * star * (1.0 - day * 2.0);
   }
   if (withDisc) {
-    // The disc is the real sun's half degree, independent of the shadow softness setting.
-    float r = 0.0047;
+    // The disc's size is its own setting, independent of the shadow softness.
+    float r = max(u.wind.z, 0.001);
     float disc = smoothstep(cos(r * 1.6), cos(r), cosS);
     sky += u.sunColor.rgb * mix(2.0, 30.0, day) * disc;
   }

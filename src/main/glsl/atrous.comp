@@ -38,7 +38,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 lights;    // local light count, local light strength scale
   vec4 material;
   vec4 post3;
-  vec4 wind;      // wind velocity x and z in world units per second
+  vec4 wind;      // wind velocity x and z in world units per second, light disc radius
 } u;
 layout(push_constant) uniform Push {
   int pass;

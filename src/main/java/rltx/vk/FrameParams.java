@@ -44,6 +44,8 @@ public final class FrameParams
 	public float wetness, snowCover, windOffsetX, windOffsetZ;
 	/** Current wind velocity in world units per second, for the slant of falling rain. */
 	public float windVelocityX, windVelocityZ;
+	/** Angular radius of the procedural sky's light disc, radians. */
+	public float sunDiscRadius;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */

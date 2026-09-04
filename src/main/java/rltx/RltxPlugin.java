@@ -1182,6 +1182,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		// Cloud cover dims the sun and spreads it into soft shadows.
 		frame.sunIntensity *= 1f - 0.92f * weatherNow.cloud;
 		frame.sunAngularRadius = (float) Math.toRadians(config.sunSize() / 2.0 * (1.0 + 6.0 * weatherNow.cloud));
+		frame.sunDiscRadius = (float) Math.toRadians(config.sunDiscSize() / 10.0 / 2.0);
 		frame.shadows = config.shadows();
 		frame.bounces = config.bounces();
 		frame.ambient = config.ambient() / 100f;
