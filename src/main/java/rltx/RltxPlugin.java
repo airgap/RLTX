@@ -90,6 +90,7 @@ import rltx.scene.Palette;
 import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.scene.TextureCutouts;
+import rltx.scene.WaterSim;
 import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
@@ -253,6 +254,25 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Gson gson;
 
 	private WeatherService weatherService;
+	private boolean runoffUploaded;
+
+	// Steps the runoff simulation and uploads it while any water lies on the ground, plus one
+	// final upload of the dry state so the shader stops seeing stale water.
+	private void fillRunoff()
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		frame.runoff = config.runoff() && top != null && top.water != null;
+		if (!frame.runoff)
+		{
+			return;
+		}
+		boolean wet = top.water.step(weatherDt, weatherNow.rain);
+		if (wet || !runoffUploaded)
+		{
+			renderer.setRunoff(top.water.packed());
+			runoffUploaded = !wet;
+		}
+	}
 	private volatile LightLibrary lightLibrary;
 
 	private synchronized LightLibrary lightLibrary()
@@ -461,6 +481,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		final SceneLights lights;
 		/** Zones whose foliage was drawn swayed last frame. */
 		boolean[] swayed;
+		/** Rain runoff over the ground; null for nested world views. */
+		WaterSim water;
 		int[][][] terrainLight;
 
 		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed, SceneLights lights)
@@ -872,6 +894,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				}
 			}
 			renderer.setTerrainHeights(flat);
+			loaded.water = new WaterSim(heights[0]);
+			runoffUploaded = false;
 			frame.mistGridSize = scene.getExtendedTiles()[0].length + 1;
 			frame.mistGridOffset = (scene.getExtendedTiles()[0].length - Constants.SCENE_SIZE) / 2;
 		}
@@ -1133,6 +1157,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		addOffscreenActors();
 		pushFoliage();
 		fillLights();
+		fillRunoff();
 		renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending);
 		motion.endFrame();
 		statSubmitNanos += System.nanoTime() - start;

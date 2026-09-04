@@ -1075,6 +1075,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "runoff",
+		name = "Rain runoff",
+		description = "Simulate water on the terrain while it rains: it collects in hollows, runs down slopes into streams, and drains away afterwards, replacing the fixed puddle spots.",
+		section = weatherSection,
+		position = 7
+	)
+	default boolean runoff()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "puddles",
 		name = "Puddles",
 		description = "Dips in the ground fill with mirror-like water while it rains and dry out afterwards.",

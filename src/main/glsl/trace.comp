@@ -61,6 +61,8 @@ layout(std430, set = 0, binding = 33) readonly buffer Materials { vec4 v[]; } ma
 layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } groundGrid;
 // Tile heights of the top-level scene, plane-major then x then y, for smooth terrain normals.
 layout(std430, set = 0, binding = 36) readonly buffer Heights { float v[]; } tileHeights;
+// Rain runoff per ground vertex: water depth, flow x, flow z.
+layout(std430, set = 0, binding = 37) readonly buffer Runoff { vec4 v[]; } runoff;
 
 const uint FLAG_CULL = 1u;
 const uint FLAG_SHADOWS = 2u;
@@ -77,6 +79,7 @@ const uint FLAG_RAIN_RIPPLES = 4096u;
 const uint FLAG_PUDDLES = 8192u;
 const uint FLAG_TERRAIN_TEXTURES = 16384u;
 const uint FLAG_SMOOTH_TERRAIN = 32768u;
+const uint FLAG_RUNOFF = 65536u;
 const uint WATER_BIT = 0x80000000u;
 const uint TERRAIN_BIT = 0x40000000u;
 const uint FLAG_SKYBOX = 32u;
@@ -509,6 +512,25 @@ float puddleAt(vec2 xz) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// Standing and flowing rainwater under a world position: depth and flow, bilinear over the grid.
+vec4 runoffAt(vec2 xz) {
+  int side = int(u.weather3.z);
+  if (side < 2) {
+    return vec4(0.0);
+  }
+  vec2 g = xz / 128.0 + u.weather3.w;
+  if (g.x < 0.0 || g.y < 0.0 || g.x >= float(side - 1) || g.y >= float(side - 1)) {
+    return vec4(0.0);
+  }
+  ivec2 i = ivec2(g);
+  vec2 f = g - vec2(i);
+  vec4 a = runoff.v[i.x * side + i.y];
+  vec4 b = runoff.v[(i.x + 1) * side + i.y];
+  vec4 c = runoff.v[i.x * side + i.y + 1];
+  vec4 d = runoff.v[(i.x + 1) * side + i.y + 1];
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 // Sunlight reaching a point under the cloud layer, 1 in the open.
 float cloudShadow(vec3 p) {
   if ((u.misc.y & FLAG_CLOUD_SHADOWS) == 0u || u.weather.x <= 0.0 || u.sun.y >= 0.0) {
@@ -797,21 +819,33 @@ void main() {
     if (u.weather2.y > 0.0) {
       hit.albedo = mix(hit.albedo, vec3(0.85), u.weather2.y * upFacing);
     }
-    if (u.weather2.x > 0.0 && u.weather2.y < 0.5) {
+    vec4 water = (flags & FLAG_RUNOFF) != 0u ? runoffAt(hit.surface.xz) : vec4(0.0);
+    float standing = smoothstep(0.4, 4.0, water.x);
+    float wetness = max(u.weather2.x, smoothstep(0.0, 1.0, water.x));
+    if (wetness > 0.0 && u.weather2.y < 0.5) {
       wetPixel = true;
-      puddle = (flags & FLAG_PUDDLES) != 0u ? puddleAt(hit.surface.xz) * u.weather2.x : 0.0;
-      float wet = u.weather2.x * upFacing;
+      // Simulated water where it has gathered, or the fixed dips when the simulation is off.
+      puddle = (flags & FLAG_RUNOFF) != 0u ? standing : (flags & FLAG_PUDDLES) != 0u ? puddleAt(hit.surface.xz) * u.weather2.x : 0.0;
+      float wet = wetness * upFacing;
       hit.albedo *= 1.0 - mix(0.45, 0.75, puddle) * wet;
       // The film of water turns the surface glossy: the sun, local lights and the reflection ray
       // all see a strong, fairly sharp specular against the darkened ground.
       hit.material.x = max(hit.material.x, 0.45 * wet);
       hit.material.y = mix(hit.material.y, 60.0, wet);
+      vec2 ripple = vec2(0.0);
       if ((flags & FLAG_RAIN_RIPPLES) != 0u && u.weather.z > 0.0) {
         // Landing drops ripple the film, so highlights and reflections shimmer with the rain.
-        vec2 ripple = rainRippleGradient(hit.surface.xz) * wet;
-        hit.n = normalize(hit.n + vec3(-ripple.x, 0.0, -ripple.y) * 0.35);
-        puddleNormal = normalize(hit.gn + vec3(-ripple.x, 0.0, -ripple.y));
+        ripple += rainRippleGradient(hit.surface.xz) * wet;
       }
+      float speed = length(water.yz);
+      if (speed > 0.05) {
+        // Running water carries waves along its flow, steeper the faster it runs.
+        vec2 flowDir = water.yz / speed;
+        float phase = dot(hit.surface.xz, flowDir) * 0.25 - u.weather3.x * speed * 0.5;
+        ripple += flowDir * (cos(phase) * min(speed * 0.02, 0.35)) * standing;
+      }
+      hit.n = normalize(hit.n + vec3(-ripple.x, 0.0, -ripple.y) * 0.35);
+      puddleNormal = normalize(hit.gn + vec3(-ripple.x, 0.0, -ripple.y));
     }
   }
   // Radiance that does not scale with the albedo: highlights, reflections and glow.

@@ -116,6 +116,7 @@ public final class RtRenderer
 	private static final int FLAG_PUDDLES = 8192;
 	private static final int FLAG_TERRAIN_TEXTURES = 16384;
 	private static final int FLAG_SMOOTH_TERRAIN = 32768;
+	private static final int FLAG_RUNOFF = 65536;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -155,7 +156,8 @@ public final class RtRenderer
 	private static final int BINDING_DIFFUSE_A = 34;
 	private static final int BINDING_DIFFUSE_B = 35;
 	private static final int BINDING_HEIGHTS = 36;
-	private static final int BINDING_COUNT = 37;
+	private static final int BINDING_RUNOFF = 37;
+	private static final int BINDING_COUNT = 38;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -301,6 +303,7 @@ public final class RtRenderer
 	private VkBuf lights;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
+	private VkBuf runoff;
 	private double averageLogLuminance = Double.NaN;
 	private final Img[] historyColor = new Img[2];
 	private final Img[] historyPos = new Img[2];
@@ -361,8 +364,11 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		runoff = ctx.createBuffer((long) 185 * 185 * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		for (long set : descriptorSets)
 		{
+			writeBufferDescriptor(set, BINDING_RUNOFF, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, runoff);
 			writeBufferDescriptor(set, BINDING_HEIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, terrainHeights);
 			writeBufferDescriptor(set, BINDING_MATERIALS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materials);
 			writeBufferDescriptor(set, BINDING_LIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, lights);
@@ -586,6 +592,7 @@ public final class RtRenderer
 			types[BINDING_DIFFUSE_A] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_DIFFUSE_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_HEIGHTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_RUNOFF] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -600,7 +607,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(30);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(32);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -1205,6 +1212,12 @@ public final class RtRenderer
 	public void setLights(float[] packed, int count)
 	{
 		lights.mapped.asFloatBuffer().put(packed, 0, Math.min(count, MAX_LIGHTS) * 8);
+	}
+
+	/** Water depth and flow per ground vertex from the runoff simulation; written between beginFrame and submit. */
+	public void setRunoff(float[] packed)
+	{
+		runoff.mapped.asFloatBuffer().put(packed, 0, Math.min(packed.length, 185 * 185 * 4));
 	}
 
 	/** Tile heights of the top-level scene, plane-major then x then y, for smooth terrain normals. */
@@ -2051,7 +2064,8 @@ public final class RtRenderer
 			| (p.rainRipples ? FLAG_RAIN_RIPPLES : 0)
 			| (p.puddles ? FLAG_PUDDLES : 0)
 			| (p.terrainTextures ? FLAG_TERRAIN_TEXTURES : 0)
-			| (p.terrainSmoothing ? FLAG_SMOOTH_TERRAIN : 0);
+			| (p.terrainSmoothing ? FLAG_SMOOTH_TERRAIN : 0)
+			| (p.runoff ? FLAG_RUNOFF : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(0f);
@@ -2115,6 +2129,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(lights);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
+		ctx.destroyBuffer(runoff);
 		if (skybox != null)
 		{
 			destroyImage(skybox);

@@ -81,7 +81,7 @@ public final class FrameParams
 	/** Glow scale of unlit textures, 0 disables; and whether reflection rays are traced. */
 	public float emissiveStrength;
 	public boolean glossyReflections;
-	public boolean caustics, rainRipples, puddles;
+	public boolean caustics, rainRipples, puddles, runoff;
 	public boolean terrainTextures, terrainSmoothing;
 	/** Strength of terrain normal maps, 0 to 2. */
 	public float terrainBump;
