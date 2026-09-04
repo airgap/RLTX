@@ -65,6 +65,9 @@ public final class FrameParams
 	/** Sine of the real sun's elevation, negative at night, for day and night blending in the sky. */
 	public float sunUp;
 	public boolean proceduralSky, clouds, cloudShadows, autoExposure;
+	/** Number of local lights uploaded this frame and their brightness scale. */
+	public int lightCount;
+	public float lightStrength;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

@@ -247,6 +247,32 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "localLights",
+		name = "Local lights",
+		description = "Torches, fires, lamps and glowing things from 117 HD's light data, each casting ray traced shadows.",
+		section = skySection,
+		position = -5
+	)
+	default boolean localLights()
+	{
+		return true;
+	}
+
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "lightStrength",
+		name = "Local light strength",
+		description = "Scales the brightness of all local lights.",
+		section = skySection,
+		position = -4
+	)
+	default int lightStrength()
+	{
+		return 100;
+	}
+
+	@ConfigItem(
 		keyName = "proceduralSky",
 		name = "Procedural sky",
 		description = "Replace the skybox with an analytic sky: a gradient that follows the sun through the day, a sun or moon disc, stars at night, and clouds from the weather. The light then always matches the sky.",

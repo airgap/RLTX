@@ -67,6 +67,8 @@ import rltx.scene.Palette;
 import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.scene.TextureCutouts;
+import rltx.scene.lights.LightLibrary;
+import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
 import rltx.sky.SkyboxLoader;
 import rltx.sky.SolarPosition;
@@ -110,6 +112,36 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Gson gson;
 
 	private WeatherService weatherService;
+	private volatile LightLibrary lightLibrary;
+
+	private synchronized LightLibrary lightLibrary()
+	{
+		if (lightLibrary == null)
+		{
+			lightLibrary = LightLibrary.load(gson);
+		}
+		return lightLibrary;
+	}
+
+	// Uploads this frame's local lights: the scene's fixed and object lights plus those
+	// following NPCs, nearest first.
+	private void fillLights()
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		WorldView wv = client.getTopLevelWorldView();
+		if (!config.localLights() || top == null || top.lights == null || wv == null)
+		{
+			frame.lightCount = 0;
+			return;
+		}
+		int count = top.lights.pack(wv.npcs(), lightLibrary(),
+			(lp, plane) -> Perspective.getTileHeight(client, lp, plane),
+			frame.cameraX, frame.cameraY, frame.cameraZ, frame.timeSeconds);
+		renderer.setLights(top.lights.packed(), count);
+		frame.lightCount = count;
+		// 117 HD's strengths are tuned for its light units, which run brighter than ours.
+		frame.lightStrength = config.lightStrength() / 100f * 0.35f;
+	}
 	private static final WeatherState NO_WEATHER = new WeatherState();
 	private final WeatherState weatherNow = new WeatherState();
 	private WeatherState weatherTarget = NO_WEATHER;
@@ -139,14 +171,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		final Scene scene;
 		final StaticScene built;
 		final StaticSceneBuilder.WaterBed waterBed;
+		/** Lights placed in the scene; null for nested world views. */
+		final SceneLights lights;
 		int[][][] terrainLight;
 
-		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed)
+		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed, SceneLights lights)
 		{
 			this.scene = scene;
 			this.built = built;
 			this.terrainLight = terrainLight;
 			this.waterBed = waterBed;
+			this.lights = lights;
 		}
 	}
 
@@ -503,7 +538,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		Palette p = palette();
 		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
-		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterBed(scene)));
+		SceneLights lights = null;
+		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
+		{
+			lights = new SceneLights(RtRenderer.MAX_LIGHTS);
+			lights.collect(scene, lightLibrary());
+		}
+		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterBed(scene), lights));
 	}
 
 	@Override
@@ -758,6 +799,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.pattern = false;
 		long start = System.nanoTime();
 		addOffscreenActors();
+		fillLights();
 		renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending);
 		motion.endFrame();
 		statSubmitNanos += System.nanoTime() - start;
