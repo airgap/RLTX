@@ -459,15 +459,18 @@ vec3 proceduralSky(vec3 d, bool withDisc) {
   float towardSun = pow(max(dot(flatDir, flatSun), 0.0), 3.0);
   sky = mix(sky, vec3(0.95, 0.45, 0.2), low * horizonWeight * (0.4 + 0.6 * towardSun));
   float cosS = dot(d, u.sun.xyz);
-  sky += u.sunColor.rgb * (0.06 * mix(0.15, 1.0, day) * (1.0 + 4.0 * low)) * pow(max(cosS, 0.0), 8.0);
+  // A tight glow around the light with a faint wide halo, both stronger near the horizon.
+  float glow = pow(max(cosS, 0.0), 48.0) + 0.2 * pow(max(cosS, 0.0), 6.0);
+  sky += u.sunColor.rgb * (0.05 * mix(0.15, 1.0, day) * (1.0 + 4.0 * low)) * glow;
   if (day < 0.5) {
     // Sparse stars, fading with dawn.
     float star = step(0.9985, hash13(floor(d * 220.0)));
     sky += vec3(0.6) * star * (1.0 - day * 2.0);
   }
   if (withDisc) {
-    float r = u.params.x;
-    float disc = smoothstep(cos(r * 1.5), cos(r), cosS);
+    // The disc is the real sun's half degree, independent of the shadow softness setting.
+    float r = 0.0047;
+    float disc = smoothstep(cos(r * 1.6), cos(r), cosS);
     sky += u.sunColor.rgb * mix(2.0, 30.0, day) * disc;
   }
   return sky;
