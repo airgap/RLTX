@@ -1126,7 +1126,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (!Double.isNaN(meanLog))
 		{
 			float target = (float) (0.18 / Math.max(Math.exp(meanLog), 1e-4));
-			target = Math.max(0.15f, Math.min(12f, target));
+			target = Math.max(0.3f, Math.min(5f, target));
 			float tau = target > autoExposureLevel ? 1.2f : 0.5f;
 			autoExposureLevel += (target - autoExposureLevel) * (1f - (float) Math.exp(-weatherDt / tau));
 		}

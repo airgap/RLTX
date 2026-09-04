@@ -44,13 +44,14 @@ const uint MASK_SHADOW = 0x3u;
 const int STEPS = 16;
 const float RANGE = 4000.0;
 const float FAR = 1e6;
-// Haze density per world unit at full strength; the whole range, fully lit, scatters about a
-// fifth of the sun's radiance towards the camera before the phase function.
-const float DENSITY = 0.2 / RANGE;
+// Haze density per world unit at full strength; the whole range, fully lit, scatters about an
+// eighth of the sun's radiance towards the camera before the phase function.
+const float DENSITY = 0.12 / RANGE;
 
-// Henyey-Greenstein phase function, forward peaked so beams glow when looking sunward.
+// Henyey-Greenstein phase function, forward peaked so beams glow when looking sunward, but
+// gently enough that clear air toward the sun does not swallow the disc.
 float phase(float cosTheta) {
-  const float g = 0.6;
+  const float g = 0.4;
   float d = 1.0 + g * g - 2.0 * g * cosTheta;
   return (1.0 - g * g) / (4.0 * 3.14159265 * d * sqrt(d));
 }
@@ -129,5 +130,7 @@ void main() {
   // Cloud dims the beams along with the sun; heavier haze brightens them.
   float haze = DENSITY * strength * (1.0 + 2.0 * u.weather.y);
   vec3 light = u.sunColor.rgb * u.sun.w * phase(dot(dir, u.sun.xyz)) * 4.0 * 3.14159265 * haze * scatter;
+  // A soft knee keeps beams while stopping the glow from growing without bound with exposure.
+  light /= 1.0 + 0.6 * dot(light, vec3(0.2126, 0.7152, 0.0722));
   imageStore(shaftImage, px, vec4(light, 1.0));
 }
