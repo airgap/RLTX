@@ -779,6 +779,20 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@Range(min = 100, max = 250)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "treeScale",
+		name = "Tree scale",
+		description = "Draws trees larger about their base, purely visually: click boxes and collision stay where the game puts them, and a large canopy can reach into nearby roofs.",
+		section = surfacesSection,
+		position = 7
+	)
+	default int treeScale()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "caustics",
 		name = "Water caustics",

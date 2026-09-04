@@ -130,15 +130,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return lightLibrary;
 	}
 
-	private static final String[] FOLIAGE_WORDS = {"tree", "bush", "shrub", "fern", "palm", "willow", "oak", "yew", "maple", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
-	private final Map<Integer, Boolean> foliageIds = new ConcurrentHashMap<>();
+	private static final String[] TREE_WORDS = {"tree", "oak", "willow", "yew", "maple", "palm", "mahogany", "teak", "redwood"};
+	private static final String[] FOLIAGE_WORDS = {"bush", "shrub", "fern", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
+	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales. */
+	private final Map<Integer, Integer> foliageIds = new ConcurrentHashMap<>();
 	private static final float SWAY_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
 	private static final int SWAY_FACE_BUDGET = 150_000;
 	private float[] swayScratch = new float[0];
 
-	private boolean isFoliage(int objectId)
+	private int foliageKind(int objectId)
 	{
-		return foliageIds.getOrDefault(objectId, Boolean.FALSE);
+		return foliageIds.getOrDefault(objectId, 0);
 	}
 
 	// Object names live in the client's cache, which the scene loader thread must not touch, so
@@ -164,19 +166,26 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				ObjectComposition def = client.getObjectDefinition(id);
 				String name = def == null || def.getName() == null ? "" : def.getName().toLowerCase(Locale.ROOT);
-				boolean foliage = false;
+				int kind = 0;
 				if (!name.contains("stump"))
 				{
-					for (String word : FOLIAGE_WORDS)
+					for (String word : TREE_WORDS)
 					{
 						if (name.contains(word))
 						{
-							foliage = true;
+							kind = 2;
 							break;
 						}
 					}
+					for (int i = 0; kind == 0 && i < FOLIAGE_WORDS.length; ++i)
+					{
+						if (name.contains(FOLIAGE_WORDS[i]))
+						{
+							kind = 1;
+						}
+					}
 				}
-				foliageIds.put(id, foliage);
+				foliageIds.put(id, kind);
 			}
 			latch.countDown();
 		});
@@ -491,7 +500,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			// The next frame resolves the choice against the time of day and reloads.
 			requestedSkybox = null;
 		}
-		if ("unlitColours".equals(event.getKey()))
+		if ("unlitColours".equals(event.getKey()) || "treeScale".equals(event.getKey()))
 		{
 			staticDirty = true;
 		}
@@ -684,7 +693,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		long start = System.nanoTime();
 		Palette p = palette();
 		classifyFoliage(StaticSceneBuilder.gameObjectIds(scene));
-		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, this::isFoliage);
+		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
 		SceneLights lights = null;
 		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
@@ -747,7 +756,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				LoadedScene loaded = e.getValue();
 				loaded.terrainLight = StaticSceneBuilder.terrainLight(loaded.scene, p);
-				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, this::isFoliage), subTransforms.get(e.getKey()));
+				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f), subTransforms.get(e.getKey()));
 			}
 			return;
 		}
@@ -761,10 +770,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				continue;
 			}
-			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, this::isFoliage);
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, this::foliageKind, config.treeScale() / 100f);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
-				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), this::isFoliage), subTransforms.get(id));
+				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), this::foliageKind, config.treeScale() / 100f), subTransforms.get(id));
 			}
 			else
 			{

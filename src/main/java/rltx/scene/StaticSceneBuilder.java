@@ -4,7 +4,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.IntPredicate;
+import java.util.function.IntUnaryOperator;
 import net.runelite.api.Constants;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.DynamicObject;
@@ -39,7 +39,8 @@ public final class StaticSceneBuilder
 	private final int offset;
 	private final int[][][] terrainLight;
 	private final WaterBed waterBed;
-	private final IntPredicate foliage;
+	private final IntUnaryOperator foliageKind;
+	private final float treeScale;
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
@@ -51,7 +52,7 @@ public final class StaticSceneBuilder
 		float[] swayWeights = new float[64 * 3];
 	}
 
-	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntPredicate foliage)
+	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntUnaryOperator foliageKind, float treeScale)
 	{
 		this.scene = scene;
 		this.renderCallbacks = renderCallbacks;
@@ -59,7 +60,8 @@ public final class StaticSceneBuilder
 		this.offset = scene.getWorldViewId() == WorldView.TOPLEVEL ? TOPLEVEL_OFFSET : 0;
 		this.terrainLight = terrainLight;
 		this.waterBed = waterBed;
-		this.foliage = foliage;
+		this.foliageKind = foliageKind;
+		this.treeScale = treeScale;
 	}
 
 	/** Number of zones along each axis of the scene's extended tile grid. */
@@ -71,15 +73,16 @@ public final class StaticSceneBuilder
 	/**
 	 * Builds every zone of the scene.
 	 *
-	 * @param foliage which object ids are foliage that should sway in the wind
+	 * @param foliageKind 0 for rigid objects, 1 for foliage that sways, 2 for trees that sway and scale
+	 * @param treeScale   visual size multiplier for trees, about their base
 	 */
-	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, IntPredicate foliage)
+	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, IntUnaryOperator foliageKind, float treeScale)
 	{
 		int[][][] light = terrainLight(scene, palette);
 		WaterBed bed = waterBed(scene);
 		int zones = zoneCount(scene);
 		StaticScene.Zone[] out = new StaticScene.Zone[zones * zones];
-		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed, foliage);
+		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed, foliageKind, treeScale);
 		for (int zx = 0; zx < zones; ++zx)
 		{
 			for (int zz = 0; zz < zones; ++zz)
@@ -91,9 +94,9 @@ public final class StaticSceneBuilder
 	}
 
 	/** Rebuilds a single zone, for example after a door changed. */
-	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntPredicate foliage)
+	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntUnaryOperator foliageKind, float treeScale)
 	{
-		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed, foliage).zone(zx, zz);
+		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed, foliageKind, treeScale).zone(zx, zz);
 	}
 
 	/** Distinct ids of the game objects in the scene, for classifying foliage before a build. */
@@ -539,9 +542,10 @@ public final class StaticSceneBuilder
 			{
 				continue;
 			}
-			if (foliage.test(go.getId()))
+			int kind = foliageKind.applyAsInt(go.getId());
+			if (kind > 0)
 			{
-				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), bucket);
+				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), kind == 2 ? treeScale : 1f, bucket);
 			}
 			else
 			{
@@ -579,7 +583,7 @@ public final class StaticSceneBuilder
 
 	// Foliage goes to its own group with a weight per vertex: the base stays put and the
 	// canopy moves fully, so the wind bends the tree rather than sliding it.
-	private void pushFoliage(Renderable r, int orientation, int x, int y, int z, Bucket bucket)
+	private void pushFoliage(Renderable r, int orientation, int x, int y, int z, float scale, Bucket bucket)
 	{
 		Model m = r instanceof Model ? (Model) r : r instanceof DynamicObject ? ((DynamicObject) r).getModelZbuf() : null;
 		if (m == null)
@@ -588,7 +592,12 @@ public final class StaticSceneBuilder
 		}
 		int first = bucket.sway.faces();
 		int translucentBefore = bucket.translucent.faces();
-		pusher.push(m, orientation, x, y, z, null, palette, bucket.sway, bucket.translucent);
+		// Scaling about the object's own position keeps the trunk on the ground.
+		float[] grow = scale == 1f ? null : new float[]{
+			scale, 0f, 0f, x * (1f - scale),
+			0f, scale, 0f, y * (1f - scale),
+			0f, 0f, scale, z * (1f - scale)};
+		pusher.push(m, orientation, x, y, z, grow, palette, bucket.sway, bucket.translucent);
 		int added = bucket.sway.faces() - first;
 		if (added == 0)
 		{
@@ -599,7 +608,7 @@ public final class StaticSceneBuilder
 		{
 			bucket.swayWeights = java.util.Arrays.copyOf(bucket.swayWeights, Math.max(bucket.sway.faces() * 3, bucket.swayWeights.length * 2));
 		}
-		float height = Math.max(m.getModelHeight(), 1);
+		float height = Math.max(m.getModelHeight(), 1) * scale;
 		float[] pos = bucket.sway.positions();
 		for (int f = first; f < first + added; ++f)
 		{
