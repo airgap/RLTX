@@ -35,7 +35,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
   vec4 lights;
   vec4 material;
-  vec4 post3;     // contrast, saturation, colour temperature
+  vec4 post3;     // contrast, saturation, colour temperature, soft glow opacity
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -47,6 +47,7 @@ layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
 layout(set = 0, binding = 17, rgba16f) uniform readonly image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform readonly image2D filterB;
 layout(set = 0, binding = 30, rgba16f) uniform readonly image2D bloomBlur;
+layout(set = 0, binding = 35, rgba16f) uniform readonly image2D diffuseBlur;
 
 const float MAX_COC = 20.0;
 const int TAPS = 48;
@@ -64,20 +65,24 @@ float coc(float depth) {
   return min(u.cam.w * u.path.y * abs(d - focus) / (focus * d), MAX_COC);
 }
 
-// The blurred bright pass at quarter resolution, sampled bilinearly, softened so a very bright
-// source glows without whiting out.
-vec3 bloom(ivec2 p) {
+// A quarter-resolution image sampled bilinearly at a full-resolution pixel.
+vec3 upsample(ivec2 p, bool bright) {
   ivec2 quarter = (ivec2(u.misc.zw) + 3) / 4;
   vec2 q = (vec2(p) + 0.5) / 4.0 - 0.5;
   ivec2 i = ivec2(floor(q));
   vec2 f = q - vec2(i);
   ivec2 i0 = clamp(i, ivec2(0), quarter - 1);
   ivec2 i1 = clamp(i + 1, ivec2(0), quarter - 1);
-  vec3 a = imageLoad(bloomBlur, ivec2(i0.x, i0.y)).rgb;
-  vec3 b = imageLoad(bloomBlur, ivec2(i1.x, i0.y)).rgb;
-  vec3 c = imageLoad(bloomBlur, ivec2(i0.x, i1.y)).rgb;
-  vec3 d = imageLoad(bloomBlur, ivec2(i1.x, i1.y)).rgb;
-  vec3 v = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  vec3 a = bright ? imageLoad(bloomBlur, ivec2(i0.x, i0.y)).rgb : imageLoad(diffuseBlur, ivec2(i0.x, i0.y)).rgb;
+  vec3 b = bright ? imageLoad(bloomBlur, ivec2(i1.x, i0.y)).rgb : imageLoad(diffuseBlur, ivec2(i1.x, i0.y)).rgb;
+  vec3 c = bright ? imageLoad(bloomBlur, ivec2(i0.x, i1.y)).rgb : imageLoad(diffuseBlur, ivec2(i0.x, i1.y)).rgb;
+  vec3 d = bright ? imageLoad(bloomBlur, ivec2(i1.x, i1.y)).rgb : imageLoad(diffuseBlur, ivec2(i1.x, i1.y)).rgb;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// The blurred bright pass, softened so a very bright source glows without whiting out.
+vec3 bloom(ivec2 p) {
+  vec3 v = upsample(p, true);
   return v / (1.0 + v);
 }
 
@@ -168,6 +173,10 @@ void main() {
   vec3 c = u.post2.y > 0.0 ? aberrated(p, size) : readColor(p);
   if (u.path.y > 0.0) {
     c = depthOfField(p, size, c);
+  }
+  if (u.post3.w > 0.0) {
+    // Soft glow: the blurred whole frame laid back over itself.
+    c = mix(c, upsample(p, false), u.post3.w);
   }
   if (u.post.y > 0.0) {
     c += u.post.y * bloom(p);

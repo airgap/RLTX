@@ -621,6 +621,20 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "diffusion",
+		name = "Soft glow",
+		description = "A blurred copy of the whole frame blended back over it, softening contrast into a dreamy haze. 0 disables.",
+		section = cameraSection,
+		position = 18
+	)
+	default int diffusion()
+	{
+		return 25;
+	}
+
 	@Range(min = 50, max = 150)
 	@Units(Units.PERCENT)
 	@ConfigItem(

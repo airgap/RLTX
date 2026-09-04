@@ -150,7 +150,9 @@ public final class RtRenderer
 	private static final int BINDING_EXPOSURE = 31;
 	private static final int BINDING_LIGHTS = 32;
 	private static final int BINDING_MATERIALS = 33;
-	private static final int BINDING_COUNT = 34;
+	private static final int BINDING_DIFFUSE_A = 34;
+	private static final int BINDING_DIFFUSE_B = 35;
+	private static final int BINDING_COUNT = 36;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
@@ -280,6 +282,7 @@ public final class RtRenderer
 	private Img shafts;
 	private Img bloomSource;
 	private final Img[] bloomBlur = new Img[2];
+	private final Img[] diffuseBlur = new Img[2];
 	private Img normal;
 	private final Img[] moments = new Img[2];
 	private final Img[] filter = new Img[2];
@@ -572,6 +575,8 @@ public final class RtRenderer
 			types[BINDING_EXPOSURE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_LIGHTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MATERIALS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_DIFFUSE_A] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_DIFFUSE_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -585,7 +590,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(32);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(28);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
@@ -1452,6 +1457,7 @@ public final class RtRenderer
 		for (int i = 0; i < 2; ++i)
 		{
 			bloomBlur[i] = createImage((width + 3) / 4, (height + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
+			diffuseBlur[i] = createImage((width + 3) / 4, (height + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		}
 		for (int i = 0; i < 2; ++i)
 		{
@@ -1479,6 +1485,8 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_BLOOM_SOURCE, bloomSource.view);
 			writeImageDescriptor(handle, BINDING_BLOOM_A, bloomBlur[0].view);
 			writeImageDescriptor(handle, BINDING_BLOOM_B, bloomBlur[1].view);
+			writeImageDescriptor(handle, BINDING_DIFFUSE_A, diffuseBlur[0].view);
+			writeImageDescriptor(handle, BINDING_DIFFUSE_B, diffuseBlur[1].view);
 			writeImageDescriptor(handle, BINDING_PREV_MOMENTS, moments[set].view);
 			writeImageDescriptor(handle, BINDING_CURR_MOMENTS, moments[1 - set].view);
 			writeImageDescriptor(handle, BINDING_FILTER_A, filter[0].view);
@@ -1587,7 +1595,7 @@ public final class RtRenderer
 			VkClearColorValue clear = VkClearColorValue.calloc(stack);
 			VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
 			fillColorRange(range.get(0));
-			for (Img img : new Img[]{sample, albedo, normal, shafts, bloomSource, bloomBlur[0], bloomBlur[1], historyColor[0], historyPos[0], moments[0], filter[0],
+			for (Img img : new Img[]{sample, albedo, normal, shafts, bloomSource, bloomBlur[0], bloomBlur[1], diffuseBlur[0], diffuseBlur[1], historyColor[0], historyPos[0], moments[0], filter[0],
 				historyColor[1], historyPos[1], moments[1], filter[1]})
 			{
 				imageBarrier(init, img.image, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1616,6 +1624,8 @@ public final class RtRenderer
 		destroyImage(bloomSource);
 		destroyImage(bloomBlur[0]);
 		destroyImage(bloomBlur[1]);
+		destroyImage(diffuseBlur[0]);
+		destroyImage(diffuseBlur[1]);
 		output = null;
 		sample = null;
 		albedo = null;
@@ -1624,6 +1634,8 @@ public final class RtRenderer
 		bloomSource = null;
 		bloomBlur[0] = null;
 		bloomBlur[1] = null;
+		diffuseBlur[0] = null;
+		diffuseBlur[1] = null;
 		for (int i = 0; i < 2; ++i)
 		{
 			destroyImage(historyColor[i]);
@@ -1775,16 +1787,18 @@ public final class RtRenderer
 				}
 				if (passes > 0)
 				{
-					if (params.bloom > 0f)
+					if (params.bloom > 0f || params.diffusion > 0f)
 					{
+						// The blur pass reads the finished frame from the filter image the last denoiser
+						// pass wrote, so it is told that pass's parity through the step field.
 						int quarterX = ((outputWidth + 3) / 4 + 7) / 8;
 						int quarterY = ((outputHeight + 3) / 4 + 7) / 8;
 						vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bloomPipeline);
 						computeBarrier(cmd);
-						pushPass(cmd, push, 0, 0, 0, passes);
+						pushPass(cmd, push, 0, passes, 0, passes);
 						vkCmdDispatch(cmd, quarterX, quarterY, 1);
 						computeBarrier(cmd);
-						pushPass(cmd, push, 1, 0, 0, passes);
+						pushPass(cmd, push, 1, passes, 0, passes);
 						vkCmdDispatch(cmd, quarterX, quarterY, 1);
 					}
 					computeBarrier(cmd);
@@ -2035,7 +2049,7 @@ public final class RtRenderer
 		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(p.aerialPerspective).putFloat(p.sunUp);
 		b.putFloat(p.lightCount).putFloat(p.lightStrength).putFloat(p.surfaceGloss).putFloat(p.surfaceGlossExponent);
 		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(0f).putFloat(0f);
-		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(0f);
+		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(p.diffusion);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
