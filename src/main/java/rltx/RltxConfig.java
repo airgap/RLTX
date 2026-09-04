@@ -772,6 +772,32 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "freeCameraKey",
+		name = "Free camera key",
+		description = "Detaches the rendered camera where it is and lets you fly it: W A S D move, Q and E go down and up, Shift speeds up, middle-drag looks around. The game keeps running underneath; clicks do not line up while detached. Press again to reattach.",
+		section = cameraSection,
+		position = 24
+	)
+	default Keybind freeCameraKey()
+	{
+		return new Keybind(KeyEvent.VK_F10, 0);
+	}
+
+	@Range(min = 10, max = 500)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "freeCameraSpeed",
+		name = "Free camera speed",
+		description = "Flight speed of the detached camera; 100 is six tiles a second.",
+		section = cameraSection,
+		position = 25
+	)
+	default int freeCameraSpeed()
+	{
+		return 100;
+	}
+
+	@ConfigItem(
 		keyName = "lineOfSight",
 		name = "Line of sight",
 		description = "Darken what your character could not see from where they stand, so walls hide what lies beyond them. One extra ray per pixel from the character's eyes.",

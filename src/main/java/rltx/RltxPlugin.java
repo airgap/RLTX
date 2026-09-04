@@ -48,6 +48,8 @@ import java.util.Date;
 import javax.imageio.ImageIO;
 import net.runelite.api.ChatMessageType;
 import net.runelite.client.RuneLite;
+import java.awt.event.KeyEvent;
+import net.runelite.client.input.KeyListener;
 import net.runelite.client.input.KeyManager;
 import net.runelite.client.input.MouseAdapter;
 import net.runelite.client.input.MouseManager;
@@ -178,6 +180,121 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			return e;
 		}
 	};
+
+	// Free camera: detached from the client's, flown with the keyboard and turned by middle-drag.
+	private volatile boolean freeCamera;
+	private float freeX, freeY, freeZ, freePitch, freeYaw;
+	private float clientCamX, clientCamY, clientCamZ, clientPitch, clientYaw;
+	private long freeCameraNanos;
+	private final Set<Integer> heldKeys = ConcurrentHashMap.newKeySet();
+	private int lookX, lookY;
+	private boolean looking;
+	private static final Set<Integer> FLIGHT_KEYS = Set.of(KeyEvent.VK_W, KeyEvent.VK_A, KeyEvent.VK_S, KeyEvent.VK_D, KeyEvent.VK_Q, KeyEvent.VK_E, KeyEvent.VK_SHIFT);
+	private final HotkeyListener freeCameraKey = new HotkeyListener(() -> config.freeCameraKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			freeCamera = !freeCamera;
+			if (freeCamera)
+			{
+				freeX = clientCamX;
+				freeY = clientCamY;
+				freeZ = clientCamZ;
+				freePitch = clientPitch;
+				freeYaw = clientYaw;
+				freeCameraNanos = 0;
+			}
+			heldKeys.clear();
+		}
+	};
+	private final KeyListener flightKeys = new KeyListener()
+	{
+		@Override
+		public void keyTyped(KeyEvent e)
+		{
+			if (freeCamera && "wasdqeWASDQE".indexOf(e.getKeyChar()) >= 0)
+			{
+				e.consume();
+			}
+		}
+
+		@Override
+		public void keyPressed(KeyEvent e)
+		{
+			if (freeCamera && FLIGHT_KEYS.contains(e.getKeyCode()))
+			{
+				heldKeys.add(e.getKeyCode());
+				e.consume();
+			}
+		}
+
+		@Override
+		public void keyReleased(KeyEvent e)
+		{
+			if (heldKeys.remove(e.getKeyCode()) && freeCamera)
+			{
+				e.consume();
+			}
+		}
+	};
+	private final MouseAdapter freeLook = new MouseAdapter()
+	{
+		@Override
+		public MouseEvent mousePressed(MouseEvent e)
+		{
+			if (freeCamera && e.getButton() == MouseEvent.BUTTON2)
+			{
+				looking = true;
+				lookX = e.getX();
+				lookY = e.getY();
+				e.consume();
+			}
+			return e;
+		}
+
+		@Override
+		public MouseEvent mouseDragged(MouseEvent e)
+		{
+			if (looking)
+			{
+				freeYaw += (e.getX() - lookX) * 0.004f;
+				freePitch = Math.max(-1.45f, Math.min(1.45f, freePitch + (e.getY() - lookY) * 0.004f));
+				lookX = e.getX();
+				lookY = e.getY();
+				e.consume();
+			}
+			return e;
+		}
+
+		@Override
+		public MouseEvent mouseReleased(MouseEvent e)
+		{
+			if (looking && e.getButton() == MouseEvent.BUTTON2)
+			{
+				looking = false;
+				e.consume();
+			}
+			return e;
+		}
+	};
+
+	// Advances the detached camera by the held keys since the last frame.
+	private void flyFreeCamera()
+	{
+		long now = System.nanoTime();
+		float dt = freeCameraNanos == 0 ? 0f : Math.min((now - freeCameraNanos) / 1e9f, 0.1f);
+		freeCameraNanos = now;
+		float speed = 6f * Perspective.LOCAL_TILE_SIZE * config.freeCameraSpeed() / 100f * (heldKeys.contains(KeyEvent.VK_SHIFT) ? 3f : 1f) * dt;
+		float[] inv = new float[9];
+		CameraMath.inverseRotation(freePitch, freeYaw, inv);
+		float forward = (heldKeys.contains(KeyEvent.VK_W) ? 1f : 0f) - (heldKeys.contains(KeyEvent.VK_S) ? 1f : 0f);
+		float right = (heldKeys.contains(KeyEvent.VK_D) ? 1f : 0f) - (heldKeys.contains(KeyEvent.VK_A) ? 1f : 0f);
+		float up = (heldKeys.contains(KeyEvent.VK_E) ? 1f : 0f) - (heldKeys.contains(KeyEvent.VK_Q) ? 1f : 0f);
+		freeX += (inv[2] * forward + inv[0] * right) * speed;
+		freeY += (inv[5] * forward + inv[3] * right) * speed - up * speed;
+		freeZ += (inv[8] * forward + inv[6] * right) * speed;
+	}
 
 	private void takePhoto()
 	{
@@ -571,7 +688,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	protected void startUp()
 	{
 		keyManager.registerKeyListener(photoModeKey);
+		keyManager.registerKeyListener(freeCameraKey);
+		keyManager.registerKeyListener(flightKeys);
 		mouseManager.registerMouseListener(photoButtons);
+		mouseManager.registerMouseListener(freeLook);
 		clientThread.invoke(() ->
 		{
 			try
@@ -644,8 +764,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	protected void shutDown()
 	{
 		keyManager.unregisterKeyListener(photoModeKey);
+		keyManager.unregisterKeyListener(freeCameraKey);
+		keyManager.unregisterKeyListener(flightKeys);
 		mouseManager.unregisterMouseListener(photoButtons);
+		mouseManager.unregisterMouseListener(freeLook);
 		chromeHidden = false;
+		freeCamera = false;
+		heldKeys.clear();
 		clientThread.invoke(() ->
 		{
 			client.setGpuFlags(0);
@@ -1064,13 +1189,27 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		dynamic.clear();
 		dynamicTranslucent.clear();
 
+		clientCamX = cameraX;
+		clientCamY = cameraY;
+		clientCamZ = cameraZ;
+		clientPitch = cameraPitch;
+		clientYaw = cameraYaw;
+		if (freeCamera)
+		{
+			flyFreeCamera();
+			cameraX = freeX;
+			cameraY = freeY;
+			cameraZ = freeZ;
+			cameraPitch = freePitch;
+			cameraYaw = freeYaw;
+		}
 		frame.cameraX = cameraX;
 		frame.cameraY = cameraY;
 		frame.cameraZ = cameraZ;
 		frame.zoom = client.getScale();
 		CameraMath.inverseRotation(cameraPitch, cameraYaw, frame.inverseRotation);
 		CameraMath.forwardRotation(cameraPitch, cameraYaw, frame.forwardRotation);
-		if (config.photoTiltEnabled() && config.photoTilt() != 0)
+		if (config.photoTiltEnabled() && config.photoTilt() != 0 && !freeCamera)
 		{
 			// The rendered camera swings about the focus point to a lower pitch than the client
 			// allows; the client's own camera, and so its picking, is untouched.
