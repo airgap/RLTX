@@ -29,7 +29,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 weather;  // cloud cover, fog amount, rain, snow
   vec4 weather2; // ground wetness, snow cover, wind velocity x and z in world units per second
   vec4 fog;      // fog colour in display space, lightning flash
-  vec4 weather3; // seconds, unused
+  vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -45,6 +45,7 @@ layout(set = 0, binding = 14, rgba16f) uniform readonly image2D normalImage;
 // Ping-pong buffers: even passes read A and write B, odd passes the reverse.
 layout(set = 0, binding = 17, rgba16f) uniform image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
+layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec2 v[]; } mistGrid;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
 
@@ -67,6 +68,84 @@ float hash13(vec3 p) {
 // Fog per world unit of depth: at full amount, scenery four tiles away is two thirds hidden.
 const float FOG_EXTINCTION = 2.5 / 1280.0;
 
+// The camera ray through a pixel, as the trace pass builds it.
+vec3 cameraRay(ivec2 px) {
+  float zoom = u.cam.w;
+  vec3 v = vec3((float(px.x) + 0.5 - float(u.misc.z) * 0.5) / zoom, (float(px.y) + 0.5 - float(u.misc.w) * 0.5) / zoom, 1.0);
+  return normalize(vec3(dot(u.r0.xyz, v), dot(u.r1.xyz, v), dot(u.r2.xyz, v)));
+}
+
+float valueNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = hash13(i);
+  float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+  float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+  float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+  float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+  float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+  float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+  float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+  return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y), mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+
+// Ground height and mist coverage under a world position, from the per-scene grid.
+vec2 mistAt(vec2 xz) {
+  int side = int(u.weather3.z);
+  vec2 g = xz / 128.0 + u.weather3.w;
+  if (g.x < 0.0 || g.y < 0.0 || g.x >= float(side - 1) || g.y >= float(side - 1)) {
+    return vec2(0.0, 0.0);
+  }
+  ivec2 i = ivec2(g);
+  vec2 f = g - vec2(i);
+  vec2 a = mistGrid.v[i.x * side + i.y];
+  vec2 b = mistGrid.v[(i.x + 1) * side + i.y];
+  vec2 c = mistGrid.v[i.x * side + i.y + 1];
+  vec2 d = mistGrid.v[(i.x + 1) * side + i.y + 1];
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+const float MIST_HEIGHT = 90.0;
+const int MIST_STEPS = 32;
+const float MIST_RANGE = 3600.0;
+
+// Low mist over the swamps: a layer hugging the ground wherever the grid allows it, its
+// density a drifting noise field carried by the wind, integrated along the camera ray up to
+// the scene surface. The colour is the fog colour lifted towards white.
+vec3 swampMist(vec3 c, ivec2 px, vec3 dir, float depth) {
+  float amount = u.weather3.y;
+  if (amount <= 0.0 || u.weather3.z < 2.0) {
+    return c;
+  }
+  float tMax = min(depth > 0.0 ? depth : MIST_RANGE, MIST_RANGE);
+  float dt = tMax / float(MIST_STEPS);
+  // Interleaved gradient noise staggers the sample positions so the layer shows no bands.
+  float jitter = fract(52.9829189 * fract(0.06711056 * float(px.x) + 0.00583715 * float(px.y)));
+  float t = u.weather3.x;
+  vec3 drift = vec3(u.weather2.z * 0.4 + 12.0, 0.0, u.weather2.w * 0.4 + 5.0) * t;
+  float transmittance = 1.0;
+  for (int i = 0; i < MIST_STEPS && transmittance > 0.01; ++i) {
+    vec3 p = u.cam.xyz + dir * (dt * (float(i) + jitter));
+    vec2 ground = mistAt(p.xz);
+    if (ground.y <= 0.0) {
+      continue;
+    }
+    // Up is -y: the layer spans from the ground to MIST_HEIGHT above it.
+    float height = (ground.x - p.y) / MIST_HEIGHT;
+    if (height < -0.1 || height > 1.0) {
+      continue;
+    }
+    float vertical = 1.0 - clamp(height, 0.0, 1.0);
+    vec3 q = p + drift;
+    float n = 0.65 * valueNoise(q / 360.0) + 0.35 * valueNoise(q / 130.0 + vec3(0.0, t * 0.05, 0.0));
+    float density = ground.y * vertical * vertical * smoothstep(0.3, 0.75, n) * amount;
+    transmittance *= exp(-density * dt / 220.0);
+  }
+  vec3 mistColor = mix(u.fog.rgb, vec3(0.85), 0.35);
+  return mix(mistColor, c, transmittance);
+}
+
 // Falling rain and snow. Particles live on three shells around the camera, anchored to the
 // world so they parallax with the view, and a shell is hidden wherever the scene is nearer.
 // Rain falls fast as streaks, snow slowly as drifting flakes; both are carried by the wind.
@@ -78,9 +157,7 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
   }
   float t = u.weather3.x;
   float zoom = u.cam.w;
-  // The camera ray through the pixel, as the trace pass builds it.
-  vec3 v = vec3((float(px.x) + 0.5 - float(u.misc.z) * 0.5) / zoom, (float(px.y) + 0.5 - float(u.misc.w) * 0.5) / zoom, 1.0);
-  vec3 dir = normalize(vec3(dot(u.r0.xyz, v), dot(u.r1.xyz, v), dot(u.r2.xyz, v)));
+  vec3 dir = cameraRay(px);
   vec3 wind = vec3(u.weather2.z, 0.0, u.weather2.w);
   for (int layer = 0; layer < 3; ++layer) {
     float shell = 200.0 * pow(2.5, float(layer));
@@ -160,7 +237,7 @@ void main() {
   if (position.w < 0.0) {
     writeFilter(p, center);
     if (pc.last != 0) {
-      writeOutput(p, precipitation(imageLoad(sampleImage, p).rgb, p, -1.0));
+      writeOutput(p, precipitation(swampMist(imageLoad(sampleImage, p).rgb, p, cameraRay(p), -1.0), p, -1.0));
     }
     return;
   }
@@ -234,6 +311,7 @@ void main() {
     if (u.weather.y > 0.0 && depth > 0.0) {
       c = mix(c, u.fog.rgb, 1.0 - exp(-depth * u.weather.y * FOG_EXTINCTION));
     }
+    c = swampMist(c, p, cameraRay(p), depth);
     writeOutput(p, precipitation(c, p, depth));
   }
 }

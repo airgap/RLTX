@@ -30,7 +30,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 weather;  // cloud cover, fog amount, rain, snow
   vec4 weather2; // ground wetness, snow cover, wind velocity x and z in world units per second
   vec4 fog;      // fog colour in display space, lightning flash
-  vec4 weather3; // seconds, unused
+  vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -45,6 +45,7 @@ layout(std430, set = 0, binding = 21) readonly buffer DynTex { uint t[]; } dynTe
 layout(std430, set = 0, binding = 22) readonly buffer DynUv { float v[]; } dynUv;
 layout(set = 0, binding = 23) uniform sampler2DArray gameTextures;
 layout(std430, set = 0, binding = 24) readonly buffer TexAnim { vec2 v[]; } texAnim;
+layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } waterTypes;
 
 const uint FLAG_CULL = 1u;
 const uint FLAG_SHADOWS = 2u;
@@ -76,7 +77,44 @@ struct Hit {
   bool translucent; // the accepted surface itself is translucent
   bool covered;     // translucent geometry lies between the ray origin and the accepted surface
   bool water;
+  uint waterType;   // index into the water type table, 0 when not water
 };
+
+// Water appearance per type, four vec4s each as packed by WaterType.table().
+struct WaterType {
+  vec3 surface;
+  bool isFlat;
+  bool foam;
+  vec3 foamColor;
+  float duration;
+  vec3 depth;
+  float opacity;
+  float specularStrength;
+  float specularGloss;
+  float normalStrength;
+  float fresnelAmount;
+};
+
+WaterType waterType(uint index) {
+  vec4 a = waterTypes.v[index * 4u];
+  vec4 b = waterTypes.v[index * 4u + 1u];
+  vec4 c = waterTypes.v[index * 4u + 2u];
+  vec4 d = waterTypes.v[index * 4u + 3u];
+  WaterType t;
+  t.surface = a.rgb;
+  uint flags = uint(a.w);
+  t.isFlat = (flags & 1u) != 0u;
+  t.foam = (flags & 2u) != 0u;
+  t.foamColor = b.rgb;
+  t.duration = b.w;
+  t.depth = c.rgb;
+  t.opacity = c.w;
+  t.specularStrength = d.x;
+  t.specularGloss = d.y;
+  t.normalStrength = d.z;
+  t.fresnelAmount = d.w;
+  return t;
+}
 
 vec3 vertex(bool dyn, uint index) {
   uint o = index * 3u;
@@ -189,7 +227,7 @@ float resolveCandidates(rayQueryEXT rq, inout uint seed) {
     bool dyn = (custom & DYN_BIT) != 0u;
     uint face = (custom & 0x7FFFFFu) + uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
     uint texField = dyn ? dynTex.t[face] : staticTex.t[face];
-    uint tex = texField & ~WATER_BIT;
+    uint tex = texField & 0xFFFFu;
     if (tex != 0u && (texField & WATER_BIT) == 0u && (u.misc.y & FLAG_TEXTURES) != 0u) {
       vec2 uv = faceUv(dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, false), tex);
       if (texture(gameTextures, vec3(uv, float(tex - 1u))).a < 0.5) {
@@ -244,7 +282,8 @@ bool trace(vec3 origin, vec3 dir, float tMin, uint rayFlags, uint mask, inout ui
   // texture; fully transparent texels fall back to the face's flat colour.
   uint texField = hit.dyn ? dynTex.t[face] : staticTex.t[face];
   hit.water = (texField & WATER_BIT) != 0u && (u.misc.y & FLAG_WATER) != 0u;
-  uint tex = texField & ~WATER_BIT;
+  hit.waterType = hit.water ? (texField >> 16) & 0xFFu : 0u;
+  uint tex = texField & 0xFFFFu;
   if (tex != 0u && !hit.water && (u.misc.y & FLAG_TEXTURES) != 0u) {
     vec2 uv = faceUv(hit.dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, true), tex);
     vec4 texel = texture(gameTextures, vec3(uv, float(tex - 1u)));
@@ -284,13 +323,84 @@ vec3 skyBackground(vec3 d) {
   return c + vec3(0.8 * u.fog.w);
 }
 
-// Animated wave normal for a water surface; up is -y. Strength scales the slopes.
-vec3 waterNormal(vec3 p, float strength) {
-  float t = float(u.misc.x) / 50.0;
+// Animated wave normal for a water surface; up is -y. Strength scales the slopes and
+// duration stretches the animation, as 117 HD's water types define them.
+vec3 waterNormal(vec3 p, float strength, float duration) {
+  float t = float(u.misc.x) / (50.0 * max(duration, 0.05));
   float s = 1.0 / 90.0;
   float dx = cos(p.x * s + t * 1.3) + 0.6 * cos((p.x * 0.7 + p.z * 0.9) * s * 1.7 - t * 0.9) + 0.35 * cos((p.x * 1.3 - p.z * 0.4) * s * 3.1 + t * 2.1);
   float dz = cos(p.z * s * 1.2 - t * 1.1) + 0.6 * cos((-p.x * 0.8 + p.z * 0.6) * s * 1.9 + t * 1.4) + 0.35 * cos((p.x * 0.5 + p.z * 1.4) * s * 2.7 - t * 1.7);
   return normalize(vec3(-dx * strength, -1.0, -dz * strength));
+}
+
+vec3 directSun(Hit hit, vec3 sunDir, bool shadows, inout uint seed);
+
+// 117 HD's water adapted to traced reflections. The surface is its type's own colour under
+// the scene light plus a specular sun highlight and foam along the shore, shown over the bed
+// seen through the surface at an opacity that rises with Fresnel and foam. The reflection of
+// the scene stands in for 117 HD's sky gradient, and flat types hide the bed entirely.
+vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
+  WaterType wt = waterType(hit.waterType);
+  vec3 wn = waterNormal(hit.surface, wt.normalStrength * u.path.w, wt.duration);
+  float viewDot = clamp(dot(-dir, wn), 0.0, 1.0);
+  float finalFresnel = clamp(mix(0.4, 1.0, (1.0 - viewDot) * 1.2), 0.0, 1.0);
+
+  float ndl = max(dot(wn, sunDir), 0.0);
+  float lit = (shadows && ndl > 0.0 && occluded(hit.p, sunDir, seed)) ? 0.0 : 1.0;
+  vec3 reflectDir = reflect(dir, wn);
+  if (dot(reflectDir, hit.gn) < 0.0) {
+    reflectDir = reflect(reflectDir, hit.gn);
+  }
+  float spec = pow(clamp(dot(reflectDir, sunDir), 1e-10, 1.0), wt.specularGloss) * wt.specularStrength;
+  vec3 specular = u.sunColor.rgb * (u.sun.w * lit * spec);
+  vec3 composite = vec3(u.sky.w) + u.sunColor.rgb * (u.sun.w * ndl * lit) + 0.5 * skyRadiance(wn) * max(-wn.y, 0.0) + vec3(2.0 * u.fog.w);
+
+  vec3 reflection;
+  Hit mirror;
+  if (trace(hit.p, reflectDir, RAY_EPS, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
+    reflection = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, sunDir, shadows, seed) + 0.5 * skyRadiance(mirror.n));
+  } else {
+    reflection = skyBackground(reflectDir);
+  }
+  vec3 base = wt.surface * (composite + reflection * max(wt.specularStrength, 0.2));
+  base = mix(base, reflection, wt.fresnelAmount * finalFresnel);
+
+  // The bed through the surface, tinted towards the depth colour and then to black as it deepens.
+  vec3 under = vec3(0.0);
+  float bedDepth = 0.0;
+  bool sawBed = false;
+  if (!wt.isFlat) {
+    vec3 refracted = refract(dir, wn, 1.0 / 1.33);
+    Hit bed;
+    if (dot(refracted, refracted) > 0.0 && trace(hit.surface - hit.gn * RAY_EPS, refracted, RAY_EPS, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, bed)) {
+      sawBed = true;
+      bedDepth = max(bed.surface.y - hit.surface.y, 0.0);
+      under = bed.albedo * (vec3(u.sky.w) + directSun(bed, sunDir, shadows, seed));
+      if (bedDepth < 150.0) {
+        under *= mix(vec3(1.0), wt.depth, bedDepth / 150.0);
+      } else if (bedDepth < 500.0) {
+        under *= mix(wt.depth, vec3(0.0), (bedDepth - 150.0) / 350.0);
+      } else {
+        under = vec3(0.0);
+      }
+    }
+  }
+
+  // Foam where the bed is shallow, broken up by a slow ripple.
+  float foamAmount = 0.0;
+  if (wt.foam && sawBed) {
+    float t = float(u.misc.x) / (50.0 * wt.duration);
+    float ripple = 0.55 + 0.25 * sin(hit.surface.x * 0.11 + t) + 0.2 * sin(hit.surface.z * 0.13 - t * 0.7);
+    float shore = min(1.0 - clamp(bedDepth / 70.0, 0.0, 1.0), 0.8);
+    foamAmount = clamp(pow(1.0 - (1.0 - shore) / 0.7, 3.0), 0.0, 1.0) * ripple;
+  }
+  base = mix(base, wt.foamColor * composite, foamAmount) + specular / 3.0;
+
+  float alpha = max(wt.opacity, max(foamAmount, max(finalFresnel, length(specular) / 3.0)));
+  if (wt.isFlat || !sawBed) {
+    return mix(wt.depth * composite, base, alpha);
+  }
+  return mix(under, base, alpha);
 }
 
 // Irradiance from the sun at a hit, before the albedo.
@@ -397,15 +507,17 @@ void main() {
   // Water: a Fresnel blend of the lit body colour and a mirror reflection off animated waves,
   // plus the sun's glint. Stored like a translucent pixel and with a short history.
   bool waterPixel = false;
-  if (hit.water || wetPixel) {
-    vec3 wn = hit.water ? waterNormal(hit.surface, u.path.w) : hit.n;
-    float cosI = clamp(dot(-dir, wn), 0.0, 1.0);
-    // Wet ground reflects like a thin film: the same Fresnel curve at a fraction of the strength.
-    float sheen = hit.water ? 1.0 : 0.5 * u.weather2.x * upFacing;
-    float fresnel = (0.02 + 0.98 * pow(1.0 - cosI, 5.0)) * sheen;
-    vec3 reflectDir = reflect(dir, wn);
-    if (dot(reflectDir, hit.n) < 0.0) {
-      reflectDir = reflect(reflectDir, hit.n);
+  if (hit.water) {
+    light = shadeWater(hit, dir, sunDir, shadows, seed);
+    hit.albedo = vec3(1.0);
+    waterPixel = true;
+  } else if (wetPixel) {
+    // Wet ground reflects like a thin film: a Fresnel blend at a fraction of the strength.
+    float cosI = clamp(dot(-dir, hit.n), 0.0, 1.0);
+    float fresnel = (0.02 + 0.98 * pow(1.0 - cosI, 5.0)) * 0.5 * u.weather2.x * upFacing;
+    vec3 reflectDir = reflect(dir, hit.n);
+    if (dot(reflectDir, hit.gn) < 0.0) {
+      reflectDir = reflect(reflectDir, hit.gn);
     }
     vec3 reflection;
     Hit mirror;
@@ -415,22 +527,8 @@ void main() {
       reflection = skyBackground(reflectDir);
     }
     float glint = pow(max(dot(reflectDir, u.sun.xyz), 0.0), 600.0);
-    vec3 body = hit.albedo * light;
-    if (hit.water) {
-      // Through the surface: the refracted ray finds the bed. The water absorbs by its colour
-      // along the way down and back, and what it absorbs it scatters as its own lit colour.
-      vec3 refracted = refract(dir, wn, 1.0 / 1.33);
-      Hit bed;
-      if (dot(refracted, refracted) > 0.0 && trace(hit.surface - hit.gn * RAY_EPS, refracted, RAY_EPS, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, bed)) {
-        vec3 sigma = (vec3(1.05) - hit.albedo) * (1.0 / 40.0);
-        vec3 transmitted = exp(-sigma * bed.t * 2.0);
-        vec3 bedLight = bed.albedo * (vec3(u.sky.w) + directSun(bed, sunDir, shadows, seed));
-        body = mix(body, bedLight, transmitted);
-      }
-    }
-    light = mix(body, reflection, fresnel) + u.sunColor.rgb * (u.sun.w * fresnel * glint * 4.0);
+    light = mix(hit.albedo * light, reflection, fresnel) + u.sunColor.rgb * (u.sun.w * fresnel * glint * 4.0);
     hit.albedo = vec3(1.0);
-    waterPixel = hit.water;
   }
 
   // The G-buffer for reprojection and denoising describes a stable surface. A pixel whose

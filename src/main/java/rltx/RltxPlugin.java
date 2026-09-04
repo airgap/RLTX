@@ -34,6 +34,7 @@ import net.runelite.api.Scene;
 import net.runelite.api.Texture;
 import com.google.gson.Gson;
 import net.runelite.api.Actor;
+import net.runelite.api.Constants;
 import net.runelite.api.FloatProjection;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
@@ -513,6 +514,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			return;
 		}
 		renderer.setStaticSet(id, loaded.built, subTransforms.get(id));
+		if (id == WorldView.TOPLEVEL)
+		{
+			renderer.setMistGrid(StaticSceneBuilder.mistGrid(scene));
+			frame.mistGridSize = scene.getExtendedTiles()[0].length + 1;
+			frame.mistGridOffset = (scene.getExtendedTiles()[0].length - Constants.SCENE_SIZE) / 2;
+		}
 		scenes.put(id, loaded);
 		dirtyZones.removeIf(key -> (int) (key >> 32) == id);
 		if (id == WorldView.TOPLEVEL)
@@ -847,6 +854,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.wetness = wetness;
 		frame.snowCover = snowCover;
 		frame.flash = flash;
+		frame.mist = config.mist() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
 		// Wind blows away from its meteorological direction; full strength carries particles
 		// about two tiles a second.
@@ -885,7 +893,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.water = config.water();
 		// Wrapped where every integer scroll speed lands on a whole texture repeat.
 		frame.gameCycle = client.getGameCycle() & 0x3FFF;
-		frame.waveStrength = config.waveStrength() / 100f * 0.12f;
+		// Scales each water type's own wave strength; 1 keeps 117 HD's values.
+		frame.waveStrength = config.waveStrength() / 100f * 1.5f;
 		frame.aperture = config.aperture();
 		frame.focusDistance = focusDistance();
 		frame.shutter = config.motionBlur() / 100f;

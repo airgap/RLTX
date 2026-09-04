@@ -74,6 +74,7 @@ import org.lwjgl.vulkan.VkWriteDescriptorSet;
 import org.lwjgl.vulkan.VkWriteDescriptorSetAccelerationStructureKHR;
 import rltx.scene.GeometryBuffer;
 import rltx.scene.StaticScene;
+import rltx.scene.WaterType;
 
 /**
  * Owns every Vulkan object of the ray tracer: static and per-frame
@@ -133,7 +134,10 @@ public final class RtRenderer
 	private static final int BINDING_DYNAMIC_UV = 22;
 	private static final int BINDING_TEXTURES = 23;
 	private static final int BINDING_TEX_ANIM = 24;
-	private static final int BINDING_COUNT = 25;
+	private static final int BINDING_WATER_TYPES = 25;
+	private static final int BINDING_MIST = 26;
+	private static final int BINDING_COUNT = 27;
+	private static final int MIST_GRID_MAX = 185 * 185 * 2;
 	private static final int MAX_TEXTURES = 256;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
 	private static final int PUSH_CONSTANT_SIZE = 16;
@@ -259,6 +263,8 @@ public final class RtRenderer
 	private Img gameTextures;
 	private long textureSampler;
 	private VkBuf textureAnimation;
+	private VkBuf waterTypes;
+	private VkBuf mistGrid;
 	private final Img[] historyColor = new Img[2];
 	private final Img[] historyPos = new Img[2];
 	private int outputWidth;
@@ -303,9 +309,17 @@ public final class RtRenderer
 		createTextureSampler();
 		textureAnimation = ctx.createBuffer((long) MAX_TEXTURES * 2 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		float[] waterTable = WaterType.table();
+		waterTypes = ctx.createBuffer((long) waterTable.length * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		waterTypes.mapped.asFloatBuffer().put(waterTable);
+		mistGrid = ctx.createBuffer((long) MIST_GRID_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		for (long set : descriptorSets)
 		{
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
+			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
+			writeBufferDescriptor(set, BINDING_MIST, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, mistGrid);
 		}
 		ByteBuffer whiteTexel = MemoryUtil.memAlloc(4);
 		whiteTexel.put((byte) 0xff).put((byte) 0xff).put((byte) 0xff).put((byte) 0xff).flip();
@@ -510,6 +524,8 @@ public final class RtRenderer
 			types[BINDING_DYNAMIC_UV] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_TEXTURES] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_TEX_ANIM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_MIST] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -524,7 +540,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(24);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(18);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(22);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -1109,6 +1125,13 @@ public final class RtRenderer
 				freeFaces(res.faceBase, res.capacity);
 			}
 		}
+	}
+
+	/** Ground heights and mist coverage of the top-level scene, as built by StaticSceneBuilder.mistGrid. */
+	public void setMistGrid(float[] grid)
+	{
+		idle();
+		mistGrid.mapped.asFloatBuffer().put(grid, 0, Math.min(grid.length, MIST_GRID_MAX));
 	}
 
 	/** Per-frame placement and visibility of a loaded scene. */
@@ -1851,7 +1874,7 @@ public final class RtRenderer
 		b.putFloat(p.cloud).putFloat(p.fogAmount).putFloat(p.rain).putFloat(p.snow);
 		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windX).putFloat(p.windZ);
 		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
-		b.putFloat(p.timeSeconds).putFloat(0f).putFloat(0f).putFloat(0f);
+		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -1890,6 +1913,8 @@ public final class RtRenderer
 		vkDestroySampler(device, textureSampler, null);
 		ctx.destroyBuffer(frameUbo);
 		ctx.destroyBuffer(textureAnimation);
+		ctx.destroyBuffer(waterTypes);
+		ctx.destroyBuffer(mistGrid);
 		if (skybox != null)
 		{
 			destroyImage(skybox);

@@ -630,12 +630,26 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@Range(max = 200)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "mist",
+		name = "Swamp mist",
+		description = "Low mist drifting over swamp water and the ground around it. 0 disables.",
+		section = weatherSection,
+		position = 4
+	)
+	default int mist()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "lightning",
 		name = "Lightning",
 		description = "Flashes of light during thunderstorms.",
 		section = weatherSection,
-		position = 4
+		position = 5
 	)
 	default boolean lightning()
 	{

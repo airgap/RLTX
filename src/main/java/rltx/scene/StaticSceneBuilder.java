@@ -85,9 +85,71 @@ public final class StaticSceneBuilder
 		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterDepth).zone(zx, zz);
 	}
 
-	private static final int BED_MIN_DEPTH = 8;
-	private static final int BED_STEP = 40;
-	private static final int BED_STEPS = 3;
+	// 117 HD's underwater slope: depth by tiles from the shore, scaled as its renderer does.
+	private static final int[] BED_SLOPE = {150, 300, 470, 610, 700, 750, 820, 920, 1080, 1300, 1350, 1380};
+	private static final float BED_SCALE = 0.55f;
+	private static final int BED_MIN_DEPTH = 6;
+
+	private static final int MIST_REACH_TILES = 6;
+	/** Floats per grid vertex in {@link #mistGrid}: ground height and mist coverage. */
+	public static final int MIST_FLOATS = 2;
+
+	/**
+	 * Where low mist may lie: the ground height of the lowest plane at each grid vertex, and a
+	 * coverage that is 1 over swamp water and fades out over a few tiles around it.
+	 */
+	public static float[] mistGrid(Scene scene)
+	{
+		Tile[][][] tiles = scene.getExtendedTiles();
+		int size = tiles[0].length;
+		int[][] heights = scene.getTileHeights()[0];
+		int[][] distance = new int[size + 1][size + 1];
+		for (int[] row : distance)
+		{
+			java.util.Arrays.fill(row, MIST_REACH_TILES + 1);
+		}
+		for (int x = 0; x < size; ++x)
+		{
+			for (int y = 0; y < size; ++y)
+			{
+				Tile t = tiles[0][x][y];
+				if (t == null || t.getSceneTilePaint() == null || WaterType.forTexture(t.getSceneTilePaint().getTexture()) != WaterType.SWAMP_WATER_FLAT)
+				{
+					continue;
+				}
+				distance[x][y] = 0;
+				distance[x + 1][y] = 0;
+				distance[x][y + 1] = 0;
+				distance[x + 1][y + 1] = 0;
+			}
+		}
+		for (int pass = 0; pass < MIST_REACH_TILES; ++pass)
+		{
+			for (int vx = 0; vx <= size; ++vx)
+			{
+				for (int vy = 0; vy <= size; ++vy)
+				{
+					int nearest = distance[vx][vy];
+					if (vx > 0) nearest = Math.min(nearest, distance[vx - 1][vy] + 1);
+					if (vy > 0) nearest = Math.min(nearest, distance[vx][vy - 1] + 1);
+					if (vx < size) nearest = Math.min(nearest, distance[vx + 1][vy] + 1);
+					if (vy < size) nearest = Math.min(nearest, distance[vx][vy + 1] + 1);
+					distance[vx][vy] = nearest;
+				}
+			}
+		}
+		float[] grid = new float[(size + 1) * (size + 1) * MIST_FLOATS];
+		for (int vx = 0; vx <= size; ++vx)
+		{
+			for (int vy = 0; vy <= size; ++vy)
+			{
+				int o = (vx * (size + 1) + vy) * MIST_FLOATS;
+				grid[o] = heights[vx][vy];
+				grid[o + 1] = Math.max(0f, 1f - distance[vx][vy] / (float) (MIST_REACH_TILES + 1));
+			}
+		}
+		return grid;
+	}
 
 	/**
 	 * Depth below each water tile's surface of the bed synthesised under it, per plane and
@@ -129,11 +191,11 @@ public final class StaticSceneBuilder
 							}
 						}
 					}
-					d[vx][vy] = surrounded ? BED_STEPS : 0;
+					d[vx][vy] = surrounded ? BED_SLOPE.length : 0;
 				}
 			}
 			// Distance in tiles to the shore, capped where the bed stops deepening.
-			for (int pass = 0; pass < BED_STEPS; ++pass)
+			for (int pass = 0; pass < BED_SLOPE.length; ++pass)
 			{
 				for (int vx = 0; vx <= size; ++vx)
 				{
@@ -156,7 +218,7 @@ public final class StaticSceneBuilder
 			{
 				for (int vy = 0; vy <= size; ++vy)
 				{
-					d[vx][vy] = BED_MIN_DEPTH + d[vx][vy] * BED_STEP;
+					d[vx][vy] = d[vx][vy] == 0 ? BED_MIN_DEPTH : (int) (BED_SLOPE[d[vx][vy] - 1] * BED_SCALE);
 				}
 			}
 		}
@@ -400,12 +462,13 @@ public final class StaticSceneBuilder
 			{
 				bucket.water.face(hx, neH, hz, lx, nwH, hz, hx, seH, lz, rgba, texture, 1f, 1f, 0f, 1f, 1f, 0f);
 				bucket.water.face(lx, swH, lz, hx, seH, lz, lx, nwH, hz, rgba, texture, 0f, 0f, 1f, 0f, 0f, 1f);
-				// The bed: the tile's own colours darkened, sunk by the shore distance (y grows downwards).
+				// The bed keeps the tile's own colours, sunk by the shore distance (y grows downwards);
+				// the shader darkens it by depth.
 				int[][] depth = waterDepth[renderLevel];
-				int sw = bed(cornerColor(tile.getSwColor(), renderLevel, tx, ty));
-				int se = bed(cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty));
-				int ne = bed(cornerColor(neColor, renderLevel, tx + 1, ty + 1));
-				int nw = bed(cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1));
+				int sw = cornerColor(tile.getSwColor(), renderLevel, tx, ty);
+				int se = cornerColor(tile.getSeColor(), renderLevel, tx + 1, ty);
+				int ne = cornerColor(neColor, renderLevel, tx + 1, ty + 1);
+				int nw = cornerColor(tile.getNwColor(), renderLevel, tx, ty + 1);
 				out.face(hx, neH + depth[tx + 1][ty + 1], hz, lx, nwH + depth[tx][ty + 1], hz, hx, seH + depth[tx + 1][ty], lz, average(ne, nw, se));
 				out.face(lx, swH + depth[tx][ty], lz, hx, seH + depth[tx + 1][ty], lz, lx, nwH + depth[tx][ty + 1], hz, average(sw, se, nw));
 				return;
@@ -455,7 +518,7 @@ public final class StaticSceneBuilder
 						(vx[a] - tileX) * scale, (vz[a] - tileZ) * scale,
 						(vx[b] - tileX) * scale, (vz[b] - tileZ) * scale,
 						(vx[c] - tileX) * scale, (vz[c] - tileZ) * scale);
-					int bedColor = bed(average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel)));
+					int bedColor = average(vertexColor(ca[i], vx[a], vz[a], renderLevel), vertexColor(cb[i], vx[b], vz[b], renderLevel), vertexColor(cc[i], vx[c], vz[c], renderLevel));
 					out.face(vx[a], vy[a] + bedDepth(vx[a], vz[a], renderLevel), vz[a],
 						vx[b], vy[b] + bedDepth(vx[b], vz[b], renderLevel), vz[b],
 						vx[c], vy[c] + bedDepth(vx[c], vz[c], renderLevel), vz[c], bedColor);
@@ -480,15 +543,6 @@ public final class StaticSceneBuilder
 		int gx = Math.max(0, Math.min(depth.length - 1, Math.round(sceneX / (float) Perspective.LOCAL_TILE_SIZE) + offset));
 		int gy = Math.max(0, Math.min(depth.length - 1, Math.round(sceneZ / (float) Perspective.LOCAL_TILE_SIZE) + offset));
 		return depth[gx][gy];
-	}
-
-	// Beds are darker than the colour the client paints on the water plane.
-	private static int bed(int rgba)
-	{
-		int r = (rgba & 0xff) * 55 / 100;
-		int g = (rgba >> 8 & 0xff) * 55 / 100;
-		int b = (rgba >> 16 & 0xff) * 55 / 100;
-		return (rgba & 0xff000000) | b << 16 | g << 8 | r;
 	}
 
 	private static int average(int a, int b, int c)

@@ -44,6 +44,8 @@ public final class FrameParams
 	public float wetness, snowCover, windX, windZ;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
+	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */
+	public float mist, mistGridSize, mistGridOffset;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

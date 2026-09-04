@@ -41,7 +41,7 @@ layout(set = 0, binding = 17, rgba16f) uniform readonly image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform readonly image2D filterB;
 
 const float MAX_COC = 20.0;
-const int TAPS = 32;
+const int TAPS = 48;
 const float GOLDEN_ANGLE = 2.39996323;
 
 // The last denoiser pass wrote the display colour to the filter image it would have read next.
@@ -64,19 +64,24 @@ void main() {
   }
   float depth = imageLoad(currPos, p).w;
   float own = coc(depth);
-  vec3 sum = readColor(p);
+  vec3 centre = readColor(p);
+  if (own < 0.5) {
+    imageStore(outImage, p, vec4(centre, 1.0));
+    return;
+  }
+  // Taps fill this pixel's own blur disc, turned per pixel so the sparse spiral reads as
+  // fine grain rather than as repeated copies.
+  float rotation = 6.2831853 * fract(52.9829189 * fract(0.06711056 * float(p.x) + 0.00583715 * float(p.y)));
+  vec3 sum = centre;
   float weight = 1.0;
   for (int i = 0; i < TAPS; ++i) {
-    float radius = sqrt((float(i) + 0.5) / float(TAPS)) * MAX_COC;
-    float angle = float(i) * GOLDEN_ANGLE;
+    float radius = sqrt((float(i) + 0.5) / float(TAPS)) * own;
+    float angle = float(i) * GOLDEN_ANGLE + rotation;
     vec2 offset = vec2(cos(angle), sin(angle)) * radius;
     ivec2 q = clamp(p + ivec2(round(offset)), ivec2(0), size - 1);
-    float qDepth = imageLoad(currPos, q).w;
-    // A neighbour spreads onto this pixel when its own blur disc reaches it, except that
-    // scenery behind a sharp pixel stays behind it.
-    float covers = clamp(coc(qDepth) + 0.5 - radius, 0.0, 1.0);
-    bool behind = (qDepth < 0.0 && depth > 0.0) || qDepth > depth + 32.0;
-    float w = behind && own < radius ? 0.0 : covers;
+    // A neighbour contributes where its own blur disc reaches this pixel, so a sharp object
+    // inside the disc stays crisp against the blurred surroundings.
+    float w = clamp(coc(imageLoad(currPos, q).w) + 0.5 - radius, 0.0, 1.0);
     sum += readColor(q) * w;
     weight += w;
   }
