@@ -5,6 +5,8 @@ import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
 import net.runelite.client.config.ConfigSection;
+import net.runelite.client.config.Keybind;
+import java.awt.event.KeyEvent;
 import net.runelite.client.config.Range;
 import net.runelite.client.config.Units;
 import rltx.sky.Skybox;
@@ -716,6 +718,18 @@ public interface RltxConfig extends Config
 	default int photoTilt()
 	{
 		return 0;
+	}
+
+	@ConfigItem(
+		keyName = "photoModeKey",
+		name = "Photo mode key",
+		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",
+		section = cameraSection,
+		position = 21
+	)
+	default Keybind photoModeKey()
+	{
+		return new Keybind(KeyEvent.VK_F11, 0);
 	}
 
 	@ConfigItem(
