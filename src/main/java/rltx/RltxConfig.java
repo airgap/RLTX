@@ -1020,6 +1020,34 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@Range(min = 30, max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "rainSpeed",
+		name = "Rain speed",
+		description = "How fast drops fall; 100 is about seven tiles a second for the heaviest drops.",
+		section = weatherSection,
+		position = 5
+	)
+	default int rainSpeed()
+	{
+		return 100;
+	}
+
+	@Range(min = 30, max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "rainLength",
+		name = "Rain streak length",
+		description = "Length of each drop's streak; 100 is just under a tile.",
+		section = weatherSection,
+		position = 5
+	)
+	default int rainLength()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "rainRipples",
 		name = "Rain ripples",

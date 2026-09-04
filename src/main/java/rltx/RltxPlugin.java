@@ -1210,6 +1210,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.terrainSmoothing = config.terrainSmoothing();
 		frame.terrainBump = config.terrainBump() / 100f;
 		frame.rainRipples = config.rainRipples();
+		frame.rainSpeed = config.rainSpeed() / 100f;
+		frame.rainLength = config.rainLength() / 100f;
 		frame.puddles = config.puddles();
 		frame.contrast = config.contrast() / 100f;
 		frame.saturation = config.saturation() / 100f;

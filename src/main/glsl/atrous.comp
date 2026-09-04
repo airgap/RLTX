@@ -38,8 +38,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 lights;    // local light count, local light strength scale
   vec4 material;
   vec4 post3;
-  vec4 wind;      // wind velocity x and z in world units per second, light disc radius
-  vec4 skyAmbient; // linear sky light on things in the open
+  vec4 wind;      // wind velocity x and z in world units per second, light disc radius, rain streak length scale
+  vec4 skyAmbient; // linear sky light on things in the open, rain speed scale
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -217,8 +217,7 @@ vec3 splashes(vec3 c, vec3 p, vec3 n, float depth) {
 // transparent sphere: the background shows through and what you see is the light it redirects,
 // sky and lights reflected and refracted with a strong lobe when the source is behind it.
 const float RAIN_CELL = 48.0;
-const float RAIN_CELL_HEIGHT = 96.0;
-const float RAIN_LENGTH = 45.0;
+const float RAIN_BASE_LENGTH = 110.0;
 const float RAIN_RANGE = 3000.0;
 const float SNOW_CELL = 44.0;
 const float SNOW_SPEED = 90.0;
@@ -285,7 +284,10 @@ vec3 dropScatter(vec3 world, vec3 dir) {
 
 // Walks one grid along the ray and composites the drops or flakes it meets.
 vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, float speed, float presence, int salt, float t) {
-  vec3 cellSize = raining ? vec3(RAIN_CELL, RAIN_CELL_HEIGHT, RAIN_CELL) : vec3(SNOW_CELL);
+  // Cells are taller than the streak so one always fits with room to sit at a random height.
+  float streak = RAIN_BASE_LENGTH * max(u.wind.w, 0.1);
+  float cellHeight = streak + 90.0;
+  vec3 cellSize = raining ? vec3(RAIN_CELL, cellHeight, RAIN_CELL) : vec3(SNOW_CELL);
   float driftScale = raining ? 0.6 : 0.4;
   // Scrolled space: the grid falls with the drops and drifts with the wind, so a drop is a fixed
   // segment of its cell there. Streaks lie along the velocity so they slant with the wind.
@@ -310,7 +312,7 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, floa
       vec3 q;
       float along = 1.0;
       if (raining) {
-        vec3 head = base + vec3((0.15 + 0.7 * rx) * RAIN_CELL, ry * (RAIN_CELL_HEIGHT - RAIN_LENGTH), (0.15 + 0.7 * rz) * RAIN_CELL);
+        vec3 head = base + vec3((0.15 + 0.7 * rx) * RAIN_CELL, ry * (cellHeight - streak), (0.15 + 0.7 * rz) * RAIN_CELL);
         // Closest points between the ray and the streak's line, the streak's clamped to its length.
         vec3 w = o - head;
         float b = dot(dir, fall);
@@ -318,9 +320,9 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, floa
         float dv = dot(fall, w);
         float denom = 1.0 - b * b;
         float uSeg = denom < 1e-4 ? -dv : (dv - b * dd) / denom;
-        uSeg = clamp(uSeg, 0.0, RAIN_LENGTH);
+        uSeg = clamp(uSeg, 0.0, streak);
         q = head + fall * uSeg;
-        along = uSeg / RAIN_LENGTH;
+        along = uSeg / streak;
       } else {
         vec2 wobble = 0.3 * vec2(sin(t * 1.7 + rx * 6.2832), cos(t * 1.1 + rz * 6.2832));
         q = base + (vec3(0.5 + wobble.x, 0.5, 0.5 + wobble.y) + 0.3 * (vec3(rx, ry, rz) - 0.5)) * cellSize;
@@ -329,7 +331,8 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, floa
       if (tQ > 0.0 && tQ < tMax) {
         float dist = length(cross(q - o, dir));
         float pixel = tQ / zoom;
-        float width = raining ? max(1.8 * pixel, 1.5) : max(2.6 * pixel, 2.0);
+        // Streaks a pixel wide with a soft edge; flakes a little rounder.
+        float width = raining ? max(1.1 * pixel, 1.1) : max(2.6 * pixel, 2.0);
         float cover = 1.0 - smoothstep(0.4 * width, 1.2 * width, dist);
         if (cover > 0.01) {
           vec3 world = q + scroll;
@@ -375,9 +378,10 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
   float tMax = min(depth > 0.0 ? depth : RAIN_RANGE, RAIN_RANGE);
   if (rain > 0.0) {
     // Three populations: small slow drops, medium, and large fast ones.
-    c = traceParticles(c, dir, tMax, zoom, true, 320.0, 0.2 * rain, 0, t);
-    c = traceParticles(c, dir, tMax, zoom, true, 400.0, 0.2 * rain, 1, t);
-    c = traceParticles(c, dir, tMax, zoom, true, 520.0, 0.15 * rain, 2, t);
+    float speed = max(u.skyAmbient.w, 0.1);
+    c = traceParticles(c, dir, tMax, zoom, true, 700.0 * speed, 0.2 * rain, 0, t);
+    c = traceParticles(c, dir, tMax, zoom, true, 850.0 * speed, 0.2 * rain, 1, t);
+    c = traceParticles(c, dir, tMax, zoom, true, 1000.0 * speed, 0.15 * rain, 2, t);
   } else {
     c = traceParticles(c, dir, tMax, zoom, false, SNOW_SPEED, 0.7 * snow, 0, t);
   }

@@ -48,6 +48,8 @@ public final class FrameParams
 	public float sunDiscRadius;
 	/** Linear radiance of the sky dome as it lights things in the open, for particles lit in the final pass. */
 	public float skyAmbientR, skyAmbientG, skyAmbientB;
+	/** Scales of rain fall speed and streak length, 1 is the default look. */
+	public float rainSpeed = 1f, rainLength = 1f;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */
