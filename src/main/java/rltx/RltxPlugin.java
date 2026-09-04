@@ -556,7 +556,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private boolean patternSampled;
 
 	private int statDynamicCalls, statTempCalls, statFrames, statInactive, statSubScene, statOffscreen;
-	private long statSubmitNanos, statLastReport;
+	private long statSubmitNanos, statLastReport, statInfoReport;
 
 	@Provides
 	RltxConfig provideConfig(ConfigManager configManager)
@@ -1219,6 +1219,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		sceneFramePending = true;
 
 		++statFrames;
+		if (start - statInfoReport > 30_000_000_000L)
+		{
+			// Frame timing at info level so the launcher's console log shows it without --debug.
+			log.info("GPU {} ms per frame, {} dynamic faces, {} local lights, {} frames in the last {} s",
+				String.format("%.1f", renderer.lastGpuMillis()), dynamic.faces() + dynamicTranslucent.faces(), frame.lightCount,
+				statFrames, (start - statInfoReport) / 1_000_000_000L);
+			statInfoReport = start;
+		}
 		if (start - statLastReport > 5_000_000_000L)
 		{
 			log.debug("frames={} dynamicCalls={} tempCalls={} droppedInactive={} droppedSubScene={} dynamicFaces={} submitAvgMs={} gpuMs={} offscreenActors={}",
