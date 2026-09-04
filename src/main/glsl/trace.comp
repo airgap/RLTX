@@ -26,7 +26,10 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 denoise; // luminance, normal and position sigmas, unused
   vec4 sunColor; // rgb tint of the direct light, unused
   vec4 path;     // diffuse bounce count, lens aperture radius, focus distance, wave strength
-  vec4 motion;   // shutter fraction, game cycle for texture scrolling, unused
+  vec4 motion;   // shutter fraction, game cycle for texture scrolling, texture relief, unused
+  vec4 weather;  // cloud cover, fog amount, rain, snow
+  vec4 weather2; // ground wetness, snow cover, screen wind drift, seconds
+  vec4 fog;      // fog colour in display space, lightning flash
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -256,20 +259,26 @@ vec2 skyUv(vec3 d) {
   return vec2(az / TWO_PI + 0.5, acos(clamp(-d.y, -1.0, 1.0)) / 3.14159265359);
 }
 
-// Sky radiance used to light surfaces: the skybox or flat colour, scaled by the sky intensity.
-vec3 skyRadiance(vec3 d) {
-  if ((u.misc.y & FLAG_SKYBOX) == 0u) {
-    return u.sky.rgb;
-  }
-  return texture(skybox, skyUv(d)).rgb * u.sky.rgb;
+// Cloud cover greys and dims the sky towards a uniform overcast.
+vec3 overcast(vec3 c) {
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  return mix(c, vec3(l), 0.85 * u.weather.x) * (1.0 - 0.45 * u.weather.x);
 }
 
-// What the camera sees where no geometry is: the sky at its painted colours, shown as-is.
+// Sky radiance used to light surfaces: the skybox or flat colour, scaled by the sky intensity.
+vec3 skyRadiance(vec3 d) {
+  vec3 c = (u.misc.y & FLAG_SKYBOX) == 0u ? u.sky.rgb : texture(skybox, skyUv(d)).rgb * u.sky.rgb;
+  return overcast(c) + vec3(2.0 * u.fog.w);
+}
+
+// What the camera sees where no geometry is: the sky at its painted colours, shown as-is,
+// under the cloud cover, with fog thickening towards the horizon and lightning whitening it.
 vec3 skyBackground(vec3 d) {
-  if ((u.misc.y & FLAG_SKYBOX) == 0u) {
-    return u.extra.yzw;
-  }
-  return texture(skybox, skyUv(d)).rgb;
+  vec3 c = (u.misc.y & FLAG_SKYBOX) == 0u ? u.extra.yzw : texture(skybox, skyUv(d)).rgb;
+  c = overcast(c);
+  float horizon = 1.0 - clamp(-d.y * 4.0, 0.0, 1.0);
+  c = mix(c, u.fog.rgb, clamp(u.weather.y, 0.0, 1.0) * horizon);
+  return c + vec3(0.8 * u.fog.w);
 }
 
 // Animated wave normal for a water surface; up is -y. Strength scales the slopes.
@@ -357,6 +366,19 @@ void main() {
   bool shadows = (flags & FLAG_SHADOWS) != 0u;
   vec3 sunDir = u.params.x > 0.0 ? coneDirection(u.sun.xyz, u.params.x, seed) : u.sun.xyz;
 
+  // Weather settles on static, up-facing surfaces: snow whitens them, rain darkens them and
+  // adds a sheen once it has soaked in.
+  float upFacing = smoothstep(0.3, 0.8, -hit.gn.y);
+  bool wetPixel = false;
+  if (!hit.dyn && !hit.water && !hit.translucent && upFacing > 0.0) {
+    if (u.weather2.y > 0.0) {
+      hit.albedo = mix(hit.albedo, vec3(0.85), u.weather2.y * upFacing);
+    }
+    if (u.weather2.x > 0.0 && u.weather2.y < 0.5) {
+      wetPixel = true;
+      hit.albedo *= 1.0 - 0.4 * u.weather2.x * upFacing;
+    }
+  }
   vec3 light = vec3(u.sky.w) + directSun(hit, sunDir, shadows, seed);
 
   // Diffuse path: cosine-weighted bounces, each attenuated by the albedo it passed through,
@@ -382,10 +404,12 @@ void main() {
   // Water: a Fresnel blend of the lit body colour and a mirror reflection off animated waves,
   // plus the sun's glint. Stored like a translucent pixel and with a short history.
   bool waterPixel = false;
-  if (hit.water) {
-    vec3 wn = waterNormal(hit.surface, u.path.w);
+  if (hit.water || wetPixel) {
+    vec3 wn = hit.water ? waterNormal(hit.surface, u.path.w) : hit.n;
     float cosI = clamp(dot(-dir, wn), 0.0, 1.0);
-    float fresnel = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);
+    // Wet ground reflects like a thin film: the same Fresnel curve at a fraction of the strength.
+    float sheen = hit.water ? 1.0 : 0.5 * u.weather2.x * upFacing;
+    float fresnel = (0.02 + 0.98 * pow(1.0 - cosI, 5.0)) * sheen;
     vec3 reflectDir = reflect(dir, wn);
     if (dot(reflectDir, hit.n) < 0.0) {
       reflectDir = reflect(reflectDir, hit.n);
@@ -401,7 +425,7 @@ void main() {
     vec3 body = hit.albedo * light;
     light = mix(body, reflection, fresnel) + u.sunColor.rgb * (u.sun.w * fresnel * glint * 4.0);
     hit.albedo = vec3(1.0);
-    waterPixel = true;
+    waterPixel = hit.water;
   }
 
   // The G-buffer for reprojection and denoising describes a stable surface. A pixel whose

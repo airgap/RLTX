@@ -14,6 +14,7 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.inject.Inject;
@@ -31,6 +32,7 @@ import net.runelite.api.Projection;
 import net.runelite.api.Renderable;
 import net.runelite.api.Scene;
 import net.runelite.api.Texture;
+import com.google.gson.Gson;
 import net.runelite.api.Actor;
 import net.runelite.api.FloatProjection;
 import net.runelite.api.NPC;
@@ -51,6 +53,7 @@ import net.runelite.client.plugins.PluginInstantiationException;
 import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.ClientUI;
 import net.runelite.rlawt.AWTContext;
+import okhttp3.OkHttpClient;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GLCapabilities;
 import org.lwjgl.system.Configuration;
@@ -66,6 +69,8 @@ import rltx.scene.TextureCutouts;
 import rltx.sky.Skybox;
 import rltx.sky.SkyboxLoader;
 import rltx.sky.SolarPosition;
+import rltx.sky.WeatherService;
+import rltx.sky.WeatherState;
 import rltx.vk.FrameParams;
 import rltx.vk.RtRenderer;
 import rltx.vk.VkContext;
@@ -96,6 +101,21 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	@Inject
 	private RltxConfig config;
+
+	@Inject
+	private OkHttpClient okHttpClient;
+
+	@Inject
+	private Gson gson;
+
+	private WeatherService weatherService;
+	private static final WeatherState NO_WEATHER = new WeatherState();
+	private final WeatherState weatherNow = new WeatherState();
+	private WeatherState weatherTarget = NO_WEATHER;
+	private float wetness, snowCover, flash;
+	private long lastWeatherNanos;
+	private final Random lightningRandom = new Random();
+	private volatile float[] skyHorizon;
 
 	private Canvas canvas;
 	private AWTContext awtContext;
@@ -344,6 +364,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 					if (renderer != null && requestedSkybox == choice)
 					{
 						renderer.setSkybox(decoded.width, decoded.height, decoded.pixels);
+						skyHorizon = decoded.horizon;
 						skyboxSunAzimuth = sunAzimuth;
 						skyboxLoaded = true;
 						log.info("Skybox {} loaded ({}x{}), sun in image at {}", choice, decoded.width, decoded.height,
@@ -752,10 +773,89 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	}
 
+	private void updateWeather()
+	{
+		long now = System.nanoTime();
+		float dt = lastWeatherNanos == 0 ? 0f : Math.min((now - lastWeatherNanos) / 1e9f, 0.25f);
+		lastWeatherNanos = now;
+		switch (config.weatherMode())
+		{
+			case REAL_TIME:
+				if (weatherService == null)
+				{
+					weatherService = new WeatherService(okHttpClient, gson);
+				}
+				weatherService.poll(config.latitude(), config.longitude());
+				WeatherState latest = weatherService.latest();
+				if (latest != null)
+				{
+					weatherTarget = latest;
+				}
+				break;
+			case MANUAL:
+				weatherTarget = WeatherState.preset(config.weatherPreset());
+				break;
+			default:
+				weatherTarget = NO_WEATHER;
+				break;
+		}
+		// Conditions fade over a few seconds rather than snapping when a report or preset changes.
+		weatherNow.approach(weatherTarget, Math.min(1f, dt / 4f));
+		// Ground soaks quickly and dries slowly; snow settles and melts likewise.
+		float rainTarget = weatherNow.rain > 0.05f ? 1f : 0f;
+		wetness += (rainTarget - wetness) * Math.min(1f, dt / (rainTarget > wetness ? 15f : 90f));
+		float snowTarget = weatherNow.snow > 0.05f ? 1f : 0f;
+		snowCover += (snowTarget - snowCover) * Math.min(1f, dt / (snowTarget > snowCover ? 30f : 180f));
+		// A flash every several seconds on average, gone within a few frames.
+		if (weatherNow.storm && config.lightning() && lightningRandom.nextFloat() < dt / 5f)
+		{
+			flash = 1f;
+		}
+		else
+		{
+			flash *= Math.max(0f, 1f - dt * 12f);
+			if (flash < 0.01f)
+			{
+				flash = 0f;
+			}
+		}
+	}
+
+	private void fillWeather(float[] horizon)
+	{
+		WeatherState w = weatherNow;
+		float precipitation = config.precipitation() / 100f;
+		frame.cloud = w.cloud;
+		frame.rain = w.rain * precipitation;
+		frame.snow = w.snow * precipitation;
+		frame.fogAmount = Math.max(w.fog, 0.2f * w.rain + 0.3f * w.snow) * config.fogAmount() / 100f;
+		frame.wetness = wetness;
+		frame.snowCover = snowCover;
+		frame.flash = flash;
+		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
+		// Wind blows away from its meteorological direction; particles drift by its component
+		// along the camera's x axis, the first row of the forward rotation.
+		double to = Math.toRadians(w.windFromDegrees + 180.0);
+		float wx = (float) Math.sin(to);
+		float wz = (float) Math.cos(to);
+		frame.windScreen = (wx * frame.forwardRotation[0] + wz * frame.forwardRotation[2]) * w.wind;
+		// Fog fades to the sky's horizon colour, greyed and dimmed by cloud the same way the
+		// shader greys the sky, so fogged scenery meets the sky seamlessly.
+		float lum = 0.2126f * horizon[0] + 0.7152f * horizon[1] + 0.0722f * horizon[2];
+		float grey = 0.85f * w.cloud;
+		float dim = 1f - 0.45f * w.cloud;
+		frame.fogR = (horizon[0] + (lum - horizon[0]) * grey) * dim;
+		frame.fogG = (horizon[1] + (lum - horizon[1]) * grey) * dim;
+		frame.fogB = (horizon[2] + (lum - horizon[2]) * grey) * dim;
+	}
+
 	private void fillLighting()
 	{
+		updateWeather();
 		fillSun();
-		frame.sunAngularRadius = (float) Math.toRadians(config.sunSize() / 2.0);
+		// Cloud cover dims the sun and spreads it into soft shadows.
+		frame.sunIntensity *= 1f - 0.92f * weatherNow.cloud;
+		frame.sunAngularRadius = (float) Math.toRadians(config.sunSize() / 2.0 * (1.0 + 6.0 * weatherNow.cloud));
 		frame.shadows = config.shadows();
 		frame.bounces = config.bounces();
 		frame.ambient = config.ambient() / 100f;
@@ -776,7 +876,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.focusDistance = focusDistance();
 		frame.shutter = config.motionBlur() / 100f;
 		frame.skybox = skyboxLoaded;
-		float skyIntensity = config.skyIntensity() / 100f;
+		// An overcast sky is greyed in the shader; it lights the scene more diffusely.
+		float skyIntensity = config.skyIntensity() / 100f * (1f + 0.5f * weatherNow.cloud);
 		Color sky = config.skyColor();
 		frame.backgroundR = sky.getRed() / 255f;
 		frame.backgroundG = sky.getGreen() / 255f;
@@ -791,6 +892,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.skyG = frame.backgroundG * skyIntensity;
 			frame.skyB = frame.backgroundB * skyIntensity;
 		}
+		float[] horizon = skyboxLoaded && skyHorizon != null ? skyHorizon : new float[]{frame.backgroundR, frame.backgroundG, frame.backgroundB};
+		fillWeather(horizon);
 	}
 
 	// The client decodes its textures lazily; once every one is available they are packed into

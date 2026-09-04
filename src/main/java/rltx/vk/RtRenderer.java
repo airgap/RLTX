@@ -1831,6 +1831,9 @@ public final class RtRenderer
 		b.putFloat(p.sunR).putFloat(p.sunG).putFloat(p.sunB).putFloat(0f);
 		b.putFloat(p.bounces).putFloat(p.aperture).putFloat(p.focusDistance).putFloat(p.waveStrength);
 		b.putFloat(p.shutter).putFloat(p.gameCycle).putFloat(p.bumpStrength).putFloat(0f);
+		b.putFloat(p.cloud).putFloat(p.fogAmount).putFloat(p.rain).putFloat(p.snow);
+		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windScreen).putFloat(p.timeSeconds);
+		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

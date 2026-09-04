@@ -8,6 +8,7 @@ import net.runelite.client.config.ConfigSection;
 import net.runelite.client.config.Range;
 import net.runelite.client.config.Units;
 import rltx.sky.Skybox;
+import rltx.sky.WeatherState;
 
 @ConfigGroup(RltxConfig.GROUP)
 public interface RltxConfig extends Config
@@ -31,28 +32,35 @@ public interface RltxConfig extends Config
 	@ConfigSection(
 		name = "Temporal",
 		description = "Frame-to-frame accumulation of the sampled lighting",
-		position = 2
+		position = 3
 	)
 	String temporalSection = "temporal";
 
 	@ConfigSection(
+		name = "Weather",
+		description = "Clouds, fog, rain, snow and storms, from the real weather at your location or a preset",
+		position = 2
+	)
+	String weatherSection = "weather";
+
+	@ConfigSection(
 		name = "Camera",
 		description = "Antialiasing and depth of field",
-		position = 3
+		position = 4
 	)
 	String cameraSection = "camera";
 
 	@ConfigSection(
 		name = "Surfaces",
 		description = "Textures and water",
-		position = 4
+		position = 5
 	)
 	String surfacesSection = "surfaces";
 
 	@ConfigSection(
 		name = "Debug",
 		description = "Development toggles",
-		position = 5,
+		position = 6,
 		closedByDefault = true
 	)
 	String debugSection = "debug";
@@ -563,5 +571,74 @@ public interface RltxConfig extends Config
 	default boolean loginPattern()
 	{
 		return false;
+	}
+
+	enum WeatherMode
+	{
+		REAL_TIME, MANUAL, OFF
+	}
+
+	@ConfigItem(
+		keyName = "weatherMode",
+		name = "Weather",
+		description = "Real weather at the Sun section's latitude and longitude, fetched from Open-Meteo every 10 minutes; a chosen preset; or none.",
+		section = weatherSection,
+		position = 0
+	)
+	default WeatherMode weatherMode()
+	{
+		return WeatherMode.REAL_TIME;
+	}
+
+	@ConfigItem(
+		keyName = "weatherPreset",
+		name = "Preset",
+		description = "Conditions used when the weather is set manually.",
+		section = weatherSection,
+		position = 1
+	)
+	default WeatherState.Preset weatherPreset()
+	{
+		return WeatherState.Preset.RAIN;
+	}
+
+	@Range(max = 200)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "precipitation",
+		name = "Precipitation density",
+		description = "Scales how much rain and snow falls for the given conditions.",
+		section = weatherSection,
+		position = 2
+	)
+	default int precipitation()
+	{
+		return 100;
+	}
+
+	@Range(max = 200)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "fogAmount",
+		name = "Fog",
+		description = "Scales the distance fog of foggy, rainy and snowy conditions.",
+		section = weatherSection,
+		position = 3
+	)
+	default int fogAmount()
+	{
+		return 100;
+	}
+
+	@ConfigItem(
+		keyName = "lightning",
+		name = "Lightning",
+		description = "Flashes of light during thunderstorms.",
+		section = weatherSection,
+		position = 4
+	)
+	default boolean lightning()
+	{
+		return true;
 	}
 }

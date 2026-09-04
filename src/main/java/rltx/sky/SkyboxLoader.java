@@ -26,6 +26,8 @@ public final class SkyboxLoader
 		public final double sunAzimuthDegrees;
 		/** Contrast of the detected body against its surroundings, 0 to 255; diagnostic. */
 		public final double sunScore;
+		/** Mean colour just above the horizon, RGB 0 to 1, which distance fog fades scenery into. */
+		public final float[] horizon;
 
 		Decoded(int width, int height, ByteBuffer pixels)
 		{
@@ -35,7 +37,28 @@ public final class SkyboxLoader
 			double[] sun = findSun(pixels, width, height);
 			this.sunScore = sun[1];
 			this.sunAzimuthDegrees = sun[0];
+			this.horizon = horizonColor(pixels, width, height);
 		}
+	}
+
+	private static float[] horizonColor(ByteBuffer pixels, int width, int height)
+	{
+		int y0 = (int) (height * 0.46);
+		int y1 = (int) (height * 0.5);
+		double r = 0, g = 0, b = 0;
+		long n = 0;
+		for (int y = y0; y < y1; ++y)
+		{
+			for (int x = 0; x < width; x += 4)
+			{
+				int i = (y * width + x) * 4;
+				r += pixels.get(i) & 0xff;
+				g += pixels.get(i + 1) & 0xff;
+				b += pixels.get(i + 2) & 0xff;
+				++n;
+			}
+		}
+		return new float[]{(float) (r / n / 255.0), (float) (g / n / 255.0), (float) (b / n / 255.0)};
 	}
 
 	// The sun or moon is a compact bright peak standing out against the sky around it, whereas
