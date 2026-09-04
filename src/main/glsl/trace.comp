@@ -813,6 +813,7 @@ void main() {
   // adds a sheen once it has soaked in.
   float upFacing = smoothstep(0.3, 0.8, -hit.gn.y);
   bool wetPixel = false;
+  bool wetRippling = false;
   float puddle = 0.0;
   vec3 puddleNormal = hit.gn;
   if (!hit.dyn && !hit.water && !hit.translucent && upFacing > 0.0) {
@@ -830,12 +831,18 @@ void main() {
       hit.albedo *= 1.0 - mix(0.45, 0.75, puddle) * wet;
       // The film of water turns the surface glossy: the sun, local lights and the reflection ray
       // all see a strong, fairly sharp specular against the darkened ground.
+      // Sharp enough that the ripples, not the roughness, shape what the film reflects.
       hit.material.x = max(hit.material.x, 0.45 * wet);
-      hit.material.y = mix(hit.material.y, 60.0, wet);
+      hit.material.y = mix(hit.material.y, 180.0, wet);
       vec2 ripple = vec2(0.0);
       if ((flags & FLAG_RAIN_RIPPLES) != 0u && u.weather.z > 0.0) {
-        // Landing drops ripple the film, so highlights and reflections shimmer with the rain.
+        // Landing drops ring the film and countless smaller ones shiver it, so highlights and
+        // reflections break up and dance with the rain.
         ripple += rainRippleGradient(hit.surface.xz) * wet;
+        float t = u.weather3.x;
+        vec2 shiver = vec2(valueNoise2(hit.surface.xz / 18.0 + vec2(t * 3.1, -t * 2.3)), valueNoise2(hit.surface.xz / 18.0 + vec2(7.7 - t * 2.6, t * 3.7))) - 0.5;
+        ripple += shiver * (0.5 * u.weather.z * wet);
+        wetRippling = true;
       }
       float speed = length(water.yz);
       if (speed > 0.05) {
@@ -844,7 +851,7 @@ void main() {
         float phase = dot(hit.surface.xz, flowDir) * 0.25 - u.weather3.x * speed * 0.5;
         ripple += flowDir * (cos(phase) * min(speed * 0.02, 0.35)) * standing;
       }
-      hit.n = normalize(hit.n + vec3(-ripple.x, 0.0, -ripple.y) * 0.35);
+      hit.n = normalize(hit.n + vec3(-ripple.x, 0.0, -ripple.y) * 0.75);
       puddleNormal = normalize(hit.gn + vec3(-ripple.x, 0.0, -ripple.y));
     }
   }
@@ -948,7 +955,9 @@ void main() {
   // w of the position is the hit distance; the sign of the sample's alpha marks dynamic geometry
   // and its magnitude is the view angle cosine, both used by the later passes.
   float cosine = max(abs(dot(stable.n, dir)), 0.01);
-  imageStore(sampleImage, ivec2(px), vec4(sample_, (stable.dyn || waterPixel) ? -cosine : cosine));
+  // Rippling wet ground keeps the short history too, so its reflections move with the rain
+  // instead of averaging into a blur.
+  imageStore(sampleImage, ivec2(px), vec4(sample_, (stable.dyn || waterPixel || wetRippling) ? -cosine : cosine));
   imageStore(albedoImage, ivec2(px), vec4(hit.albedo, 1.0));
   imageStore(normalImage, ivec2(px), vec4(stable.gn, 0.0));
   imageStore(currPos, ivec2(px), vec4(stable.surface, stable.t));
