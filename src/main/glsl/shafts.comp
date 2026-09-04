@@ -41,17 +41,19 @@ layout(set = 0, binding = 27, rgba16f) uniform writeonly image2D shaftImage;
 
 // Water surfaces do not block the sun; the same mask the trace pass uses for shadows.
 const uint MASK_SHADOW = 0x3u;
-const int STEPS = 16;
+const int STEPS = 24;
 const float RANGE = 4000.0;
 const float FAR = 1e6;
-// Haze density per world unit at full strength; the whole range, fully lit, scatters about an
-// eighth of the sun's radiance towards the camera before the phase function.
-const float DENSITY = 0.12 / RANGE;
+// Haze density per world unit at full strength; the whole range, fully lit, scatters about a
+// third of the sun's radiance towards the camera before the phase function.
+const float DENSITY = 0.35 / RANGE;
+// Share of the even veil removed so that what remains is the pattern occluders cut into it.
+const float VEIL_REMOVED = 0.55;
 
-// Henyey-Greenstein phase function, forward peaked so beams glow when looking sunward, but
-// gently enough that clear air toward the sun does not swallow the disc.
+// Henyey-Greenstein phase function, only mildly forward peaked so beams read from the usual
+// downward view as well as when looking sunward.
 float phase(float cosTheta) {
-  const float g = 0.4;
+  const float g = 0.25;
   float d = 1.0 + g * g - 2.0 * g * cosTheta;
   return (1.0 - g * g) / (4.0 * 3.14159265 * d * sqrt(d));
 }
@@ -115,6 +117,7 @@ void main() {
   // noise staggers them per pixel and the final pass averages neighbours.
   float jitter = fract(52.9829189 * fract(0.06711056 * float(px.x) + 0.00583715 * float(px.y)));
   float scatter = 0.0;
+  float veil = 0.0;
   float previous = 0.0;
   for (int i = 0; i < STEPS; ++i) {
     float f = (float(i) + jitter) / float(STEPS);
@@ -122,14 +125,17 @@ void main() {
     float segment = t - previous;
     previous = t;
     vec3 p = u.cam.xyz + dir * t;
+    // The air between the camera and this point attenuates what it scatters back.
+    float weight = segment * exp(-DENSITY * t);
+    veil += weight;
     if (sunlit(p)) {
-      // The air between the camera and this point attenuates what it scatters back.
-      scatter += segment * exp(-DENSITY * t) * cloudShadow(p);
+      scatter += weight * cloudShadow(p);
     }
   }
   // Cloud dims the beams along with the sun; heavier haze brightens them.
   float haze = DENSITY * strength * (1.0 + 2.0 * u.weather.y);
-  vec3 light = u.sunColor.rgb * u.sun.w * phase(dot(dir, u.sun.xyz)) * 4.0 * 3.14159265 * haze * scatter;
+  float beams = max(scatter - VEIL_REMOVED * veil, 0.0);
+  vec3 light = u.sunColor.rgb * u.sun.w * phase(dot(dir, u.sun.xyz)) * 4.0 * 3.14159265 * haze * beams;
   // A soft knee keeps beams while stopping the glow from growing without bound with exposure.
   light /= 1.0 + 0.6 * dot(light, vec3(0.2126, 0.7152, 0.0722));
   imageStore(shaftImage, px, vec4(light, 1.0));
