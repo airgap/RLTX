@@ -1114,6 +1114,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.fogR = (horizon[0] + (lum - horizon[0]) * grey) * dim;
 		frame.fogG = (horizon[1] + (lum - horizon[1]) * grey) * dim;
 		frame.fogB = (horizon[2] + (lum - horizon[2]) * grey) * dim;
+		// Sky light in linear radiance for things the final pass lights itself: the sky's own
+		// horizon colour under its intensity and the cloud's dimming, or the flat sky colour.
+		boolean pictured = skyboxLoaded || frame.proceduralSky;
+		frame.skyAmbientR = (pictured ? horizon[0] * frame.skyR : frame.skyR) * dim * 0.6f;
+		frame.skyAmbientG = (pictured ? horizon[1] * frame.skyG : frame.skyG) * dim * 0.6f;
+		frame.skyAmbientB = (pictured ? horizon[2] * frame.skyB : frame.skyB) * dim * 0.6f;
 		// Mist scatters the sun and the sky towards the camera; the final pass composites in
 		// display space, so its colour goes through the same tone map as the scene.
 		frame.mistR = tonemap((frame.sunR * frame.sunIntensity * 0.55f + horizon[0] * frame.skyR * 0.8f + frame.ambient) * 0.9f);

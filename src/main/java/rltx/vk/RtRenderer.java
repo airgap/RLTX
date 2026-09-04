@@ -2070,6 +2070,7 @@ public final class RtRenderer
 		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(p.terrainBump).putFloat(p.diffusionRadius / 2.5f / 4f);
 		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(p.diffusion);
 		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(p.sunDiscRadius).putFloat(0f);
+		b.putFloat(p.skyAmbientR).putFloat(p.skyAmbientG).putFloat(p.skyAmbientB).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

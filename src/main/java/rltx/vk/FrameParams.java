@@ -46,6 +46,8 @@ public final class FrameParams
 	public float windVelocityX, windVelocityZ;
 	/** Angular radius of the procedural sky's light disc, radians. */
 	public float sunDiscRadius;
+	/** Linear radiance of the sky dome as it lights things in the open, for particles lit in the final pass. */
+	public float skyAmbientR, skyAmbientG, skyAmbientB;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */

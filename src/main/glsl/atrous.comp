@@ -39,6 +39,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 material;
   vec4 post3;
   vec4 wind;      // wind velocity x and z in world units per second, light disc radius
+  vec4 skyAmbient; // linear sky light on things in the open
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -332,7 +333,7 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
         if (cover > 0.01) {
           // Light the drop where it hangs: sun with a shadow ray and a forward glow, sky, local lights.
           vec3 world = q + vec3(u.weather2.z * driftScale, speed * t, u.weather2.w * driftScale);
-          vec3 lit = vec3(u.sky.w) + 0.5 * u.sky.rgb + localGlow(world) * 0.7;
+          vec3 lit = vec3(u.sky.w) + u.skyAmbient.rgb + localGlow(world) * 0.7;
           if (sunReaches(world)) {
             lit += u.sunColor.rgb * (u.sun.w * (0.35 + 1.4 * forward));
           }
