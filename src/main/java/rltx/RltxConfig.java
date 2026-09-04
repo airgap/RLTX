@@ -690,6 +690,20 @@ public interface RltxConfig extends Config
 		return 0;
 	}
 
+	@Range(min = -60, max = 60)
+	@Units("°")
+	@ConfigItem(
+		keyName = "photoTilt",
+		name = "Photo tilt",
+		description = "Lowers the rendered camera by this many degrees below the client's pitch, pivoting about what you are looking at, for shots from nearer the ground. Rendering only: the client still picks clicks from its own camera, so use it for photos.",
+		section = cameraSection,
+		position = 20
+	)
+	default int photoTilt()
+	{
+		return 0;
+	}
+
 	@ConfigItem(
 		keyName = "focusMode",
 		name = "Focus",

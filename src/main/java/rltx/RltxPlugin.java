@@ -838,6 +838,22 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.zoom = client.getScale();
 		CameraMath.inverseRotation(cameraPitch, cameraYaw, frame.inverseRotation);
 		CameraMath.forwardRotation(cameraPitch, cameraYaw, frame.forwardRotation);
+		if (config.photoTilt() != 0)
+		{
+			// The rendered camera swings about the focus point to a lower pitch than the client
+			// allows; the client's own camera, and so its picking, is untouched.
+			float distance = focusDistance();
+			float[] inv = frame.inverseRotation;
+			float focusX = cameraX + inv[2] * distance;
+			float focusY = cameraY + inv[5] * distance;
+			float focusZ = cameraZ + inv[8] * distance;
+			float pitch = cameraPitch - (float) Math.toRadians(config.photoTilt());
+			CameraMath.inverseRotation(pitch, cameraYaw, frame.inverseRotation);
+			CameraMath.forwardRotation(pitch, cameraYaw, frame.forwardRotation);
+			frame.cameraX = focusX - inv[2] * distance;
+			frame.cameraY = focusY - inv[5] * distance;
+			frame.cameraZ = focusZ - inv[8] * distance;
+		}
 		renderer.setStaticView(id, null, minLevel, level, maxLevel, hideRoofIds);
 		frameActive = true;
 	}
