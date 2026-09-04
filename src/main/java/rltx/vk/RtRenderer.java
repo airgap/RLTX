@@ -1945,6 +1945,7 @@ public final class RtRenderer
 		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
 		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);
 		b.putFloat(p.vignette).putFloat(p.bloom).putFloat(p.renderDistance).putFloat(p.distanceFade);
+		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(0f).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

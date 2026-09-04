@@ -919,6 +919,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.bloom = config.bloom() / 100f;
 		frame.renderDistance = config.drawDistance() * Perspective.LOCAL_TILE_SIZE;
 		frame.distanceFade = config.distanceFade() / 100f;
+		frame.filmGrain = config.filmGrain() / 100f;
+		frame.chromaticAberration = config.chromaticAberration() / 100f;
 		frame.skybox = skyboxLoaded;
 		// An overcast sky is greyed in the shader; it lights the scene more diffusely.
 		float skyIntensity = config.skyIntensity() / 100f * (1f + 0.5f * weatherNow.cloud);

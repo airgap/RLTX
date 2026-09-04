@@ -31,7 +31,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 fog;
   vec4 weather3;
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
-  vec4 post;      // vignette strength, bloom strength
+  vec4 post;      // vignette strength, bloom strength, render distance, fade share
+  vec4 post2;     // film grain, chromatic aberration
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -77,6 +78,28 @@ vec3 bloom(ivec2 p) {
   return v / (1.0 + v);
 }
 
+// Radial colour fringing: red is read a little outward and blue a little inward, by an
+// amount that grows with the square of the distance from the centre, up to a few pixels.
+vec3 aberrated(ivec2 p, ivec2 size) {
+  vec2 centre = vec2(size) * 0.5;
+  vec2 d = (vec2(p) + 0.5 - centre) / centre;
+  float r2 = dot(d, d) * 0.5;
+  vec2 offset = normalize(d + 1e-6) * r2 * 6.0 * u.post2.y;
+  ivec2 outward = clamp(p + ivec2(round(offset)), ivec2(0), size - 1);
+  ivec2 inward = clamp(p - ivec2(round(offset)), ivec2(0), size - 1);
+  return vec3(readColor(outward).r, readColor(p).g, readColor(inward).b);
+}
+
+// Grain that changes every frame, heaviest in the shadows and fading out in the highlights.
+vec3 grain(ivec2 p, vec3 c) {
+  vec3 seed = vec3(vec2(p), float(u.misc.x & 1023u));
+  seed = fract(seed * 0.1031);
+  seed += dot(seed, seed.zyx + 31.32);
+  float n = fract((seed.x + seed.y) * seed.z) - 0.5;
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  return c + n * u.post2.x * 0.18 * (1.0 - 0.6 * lum);
+}
+
 // Corner darkening, measured so the very corners reach the full strength at any aspect ratio.
 vec3 vignette(ivec2 p, vec3 c) {
   vec2 size = vec2(u.misc.zw);
@@ -116,12 +139,15 @@ void main() {
   if (p.x >= size.x || p.y >= size.y) {
     return;
   }
-  vec3 c = readColor(p);
+  vec3 c = u.post2.y > 0.0 ? aberrated(p, size) : readColor(p);
   if (u.path.y > 0.0) {
     c = depthOfField(p, size, c);
   }
   if (u.post.y > 0.0) {
     c += u.post.y * bloom(p);
+  }
+  if (u.post2.x > 0.0) {
+    c = grain(p, c);
   }
   if (u.post.x > 0.0) {
     c = vignette(p, c);

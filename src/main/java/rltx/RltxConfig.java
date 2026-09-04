@@ -517,6 +517,34 @@ public interface RltxConfig extends Config
 		return 35;
 	}
 
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "filmGrain",
+		name = "Film grain",
+		description = "Fine random grain over the image, changing every frame and strongest in the shadows. 0 disables.",
+		section = cameraSection,
+		position = 13
+	)
+	default int filmGrain()
+	{
+		return 15;
+	}
+
+	@Range(max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "chromaticAberration",
+		name = "Chromatic aberration",
+		description = "Colour fringing that grows toward the edges of the view, as a lens would give. 0 disables.",
+		section = cameraSection,
+		position = 14
+	)
+	default int chromaticAberration()
+	{
+		return 20;
+	}
+
 	@ConfigItem(
 		keyName = "focusMode",
 		name = "Focus",

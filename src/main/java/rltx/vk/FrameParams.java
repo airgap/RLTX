@@ -58,6 +58,8 @@ public final class FrameParams
 	public float renderDistance;
 	/** Share of the render distance over which scenery fades out, 0 to 1. */
 	public float distanceFade;
+	/** Film grain and chromatic aberration strengths, 0 to 1. */
+	public float filmGrain, chromaticAberration;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */
