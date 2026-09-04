@@ -855,6 +855,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.snowCover = snowCover;
 		frame.flash = flash;
 		frame.mist = config.mist() / 100f;
+		frame.lightShafts = config.lightShafts() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
 		// Wind blows away from its meteorological direction; full strength carries particles
 		// about two tiles a second.
@@ -869,6 +870,18 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.fogR = (horizon[0] + (lum - horizon[0]) * grey) * dim;
 		frame.fogG = (horizon[1] + (lum - horizon[1]) * grey) * dim;
 		frame.fogB = (horizon[2] + (lum - horizon[2]) * grey) * dim;
+		// Mist scatters the sun and the sky towards the camera; the final pass composites in
+		// display space, so its colour goes through the same tone map as the scene.
+		frame.mistR = tonemap((frame.sunR * frame.sunIntensity * 0.55f + horizon[0] * frame.skyR * 0.8f + frame.ambient) * 0.9f);
+		frame.mistG = tonemap((frame.sunG * frame.sunIntensity * 0.55f + horizon[1] * frame.skyG * 0.8f + frame.ambient) * 0.9f);
+		frame.mistB = tonemap((frame.sunB * frame.sunIntensity * 0.55f + horizon[2] * frame.skyB * 0.8f + frame.ambient) * 0.9f);
+	}
+
+	// Same filmic curve as atrous.comp, so CPU-derived display colours match the scene.
+	private float tonemap(float c)
+	{
+		c *= frame.exposure;
+		return Math.max(0f, Math.min(1f, (c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f)));
 	}
 
 	private void fillLighting()

@@ -220,6 +220,20 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "lightShafts",
+		name = "Light shafts",
+		description = "Sunlight scattered by the air, marched along every view ray with shadow rays toward the sun, so beams form through trees and openings. 0 disables.",
+		section = sunSection,
+		position = 5
+	)
+	default int lightShafts()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "skybox",
 		name = "Skybox",

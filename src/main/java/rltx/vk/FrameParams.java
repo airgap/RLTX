@@ -46,6 +46,10 @@ public final class FrameParams
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */
 	public float mist, mistGridSize, mistGridOffset;
+	/** Display-space colour of mist lit by the sun and sky. */
+	public float mistR, mistG, mistB;
+	/** Strength of sunlight scattered by the air along view rays; 0 disables the pass. */
+	public float lightShafts;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

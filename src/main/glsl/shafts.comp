@@ -1,0 +1,101 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// Crepuscular rays: single scattering of sunlight by the air along each camera ray. The ray
+// is marched from the camera to the scene surface, and at every sample a shadow ray toward the
+// sun decides whether that bit of air is lit; lit air adds forward-peaked in-scatter, so
+// beams appear where light passes gaps in trees and buildings. Runs after the trace pass,
+// which supplies the depth, and before the denoiser, whose final pass adds the result.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(std140, set = 0, binding = 6) uniform Frame {
+  vec4 cam;     // camera position, zoom
+  vec4 r0;
+  vec4 r1;
+  vec4 r2;
+  vec4 prevCam;
+  vec4 p0;
+  vec4 p1;
+  vec4 p2;
+  vec4 sun;     // direction towards the sun, intensity
+  vec4 sky;
+  vec4 params;
+  uvec4 misc;   // frame, flags, width, height
+  vec4 extra;
+  vec4 denoise;
+  vec4 sunColor;
+  vec4 path;
+  vec4 motion;
+  vec4 weather; // cloud cover, fog amount, rain, snow
+  vec4 weather2;
+  vec4 fog;
+  vec4 weather3;
+  vec4 mistColor; // display-space colour of lit mist, light shaft strength
+} u;
+layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
+layout(set = 0, binding = 27, rgba16f) uniform writeonly image2D shaftImage;
+
+// Water surfaces do not block the sun; the same mask the trace pass uses for shadows.
+const uint MASK_SHADOW = 0x3u;
+const int STEPS = 16;
+const float RANGE = 4000.0;
+const float FAR = 1e6;
+// Haze density per world unit at full strength; the whole range, fully lit, scatters about a
+// fifth of the sun's radiance towards the camera before the phase function.
+const float DENSITY = 0.2 / RANGE;
+
+// Henyey-Greenstein phase function, forward peaked so beams glow when looking sunward.
+float phase(float cosTheta) {
+  const float g = 0.6;
+  float d = 1.0 + g * g - 2.0 * g * cosTheta;
+  return (1.0 - g * g) / (4.0 * 3.14159265 * d * sqrt(d));
+}
+
+bool sunlit(vec3 p) {
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, MASK_SHADOW, p, 1.0, u.sun.xyz, FAR);
+  rayQueryProceedEXT(rq);
+  return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  uint w = u.misc.z;
+  uint h = u.misc.w;
+  if (px.x >= int(w) || px.y >= int(h)) {
+    return;
+  }
+  float strength = u.mistColor.w;
+  if (strength <= 0.0 || u.sun.w <= 0.0) {
+    imageStore(shaftImage, px, vec4(0.0));
+    return;
+  }
+  float zoom = u.cam.w;
+  vec3 v = vec3((float(px.x) + 0.5 - float(w) * 0.5) / zoom, (float(px.y) + 0.5 - float(h) * 0.5) / zoom, 1.0);
+  vec3 dir = normalize(vec3(dot(u.r0.xyz, v), dot(u.r1.xyz, v), dot(u.r2.xyz, v)));
+  float depth = imageLoad(currPos, px).w;
+  float tMax = min(depth > 0.0 ? depth : RANGE, RANGE);
+
+  // Samples crowd towards the camera, where beams are largest on screen; interleaved gradient
+  // noise staggers them per pixel and the final pass averages neighbours.
+  float jitter = fract(52.9829189 * fract(0.06711056 * float(px.x) + 0.00583715 * float(px.y)));
+  float scatter = 0.0;
+  float previous = 0.0;
+  for (int i = 0; i < STEPS; ++i) {
+    float f = (float(i) + jitter) / float(STEPS);
+    float t = tMax * f * f;
+    float segment = t - previous;
+    previous = t;
+    vec3 p = u.cam.xyz + dir * t;
+    if (sunlit(p)) {
+      // The air between the camera and this point attenuates what it scatters back.
+      scatter += segment * exp(-DENSITY * t);
+    }
+  }
+  // Cloud dims the beams along with the sun; heavier haze brightens them.
+  float haze = DENSITY * strength * (1.0 + 2.0 * u.weather.y);
+  vec3 light = u.sunColor.rgb * u.sun.w * phase(dot(dir, u.sun.xyz)) * 4.0 * 3.14159265 * haze * scatter;
+  imageStore(shaftImage, px, vec4(light, 1.0));
+}

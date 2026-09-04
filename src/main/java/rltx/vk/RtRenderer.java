@@ -136,7 +136,8 @@ public final class RtRenderer
 	private static final int BINDING_TEX_ANIM = 24;
 	private static final int BINDING_WATER_TYPES = 25;
 	private static final int BINDING_MIST = 26;
-	private static final int BINDING_COUNT = 27;
+	private static final int BINDING_SHAFTS = 27;
+	private static final int BINDING_COUNT = 28;
 	private static final int MIST_GRID_MAX = 185 * 185 * 2;
 	private static final int MAX_TEXTURES = 256;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -182,6 +183,7 @@ public final class RtRenderer
 	private long resolvePipeline;
 	private long atrousPipeline;
 	private long dofPipeline;
+	private long shaftsPipeline;
 
 	private final VkCommandBuffer cmd;
 	private long fence;
@@ -255,6 +257,7 @@ public final class RtRenderer
 	private Img output;
 	private Img sample;
 	private Img albedo;
+	private Img shafts;
 	private Img normal;
 	private final Img[] moments = new Img[2];
 	private final Img[] filter = new Img[2];
@@ -526,6 +529,7 @@ public final class RtRenderer
 			types[BINDING_TEX_ANIM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MIST] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_SHAFTS] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -539,7 +543,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(24);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(26);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(22);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
@@ -570,6 +574,7 @@ public final class RtRenderer
 		resolvePipeline = createComputePipeline("/rltx/resolve.comp.spv");
 		atrousPipeline = createComputePipeline("/rltx/atrous.comp.spv");
 		dofPipeline = createComputePipeline("/rltx/dof.comp.spv");
+		shaftsPipeline = createComputePipeline("/rltx/shafts.comp.spv");
 	}
 
 	private long createComputePipeline(String resource)
@@ -1362,6 +1367,7 @@ public final class RtRenderer
 		sample = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		albedo = createImage(width, height, OUTPUT_FORMAT, scratchUsage, false);
 		normal = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		shafts = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		for (int i = 0; i < 2; ++i)
 		{
 			historyColor[i] = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
@@ -1384,6 +1390,7 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_SAMPLE, sample.view);
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
+			writeImageDescriptor(handle, BINDING_SHAFTS, shafts.view);
 			writeImageDescriptor(handle, BINDING_PREV_MOMENTS, moments[set].view);
 			writeImageDescriptor(handle, BINDING_CURR_MOMENTS, moments[1 - set].view);
 			writeImageDescriptor(handle, BINDING_FILTER_A, filter[0].view);
@@ -1492,7 +1499,7 @@ public final class RtRenderer
 			VkClearColorValue clear = VkClearColorValue.calloc(stack);
 			VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
 			fillColorRange(range.get(0));
-			for (Img img : new Img[]{sample, albedo, normal, historyColor[0], historyPos[0], moments[0], filter[0],
+			for (Img img : new Img[]{sample, albedo, normal, shafts, historyColor[0], historyPos[0], moments[0], filter[0],
 				historyColor[1], historyPos[1], moments[1], filter[1]})
 			{
 				imageBarrier(init, img.image, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1517,10 +1524,12 @@ public final class RtRenderer
 		destroyImage(sample);
 		destroyImage(albedo);
 		destroyImage(normal);
+		destroyImage(shafts);
 		output = null;
 		sample = null;
 		albedo = null;
 		normal = null;
+		shafts = null;
 		for (int i = 0; i < 2; ++i)
 		{
 			destroyImage(historyColor[i]);
@@ -1649,6 +1658,12 @@ public final class RtRenderer
 			vkCmdDispatch(cmd, groupsX, groupsY, 1);
 			if (!params.pattern)
 			{
+				if (params.lightShafts > 0f)
+				{
+					computeBarrier(cmd);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shaftsPipeline);
+					vkCmdDispatch(cmd, groupsX, groupsY, 1);
+				}
 				int passes = Math.min(Math.max(params.denoisePasses, 0), MAX_DENOISE_PASSES);
 				// Depth of field is a gather over the finished image, so the last denoiser pass
 				// leaves its result in the filter image for it instead of writing the output.
@@ -1875,6 +1890,7 @@ public final class RtRenderer
 		b.putFloat(p.wetness).putFloat(p.snowCover).putFloat(p.windX).putFloat(p.windZ);
 		b.putFloat(p.fogR).putFloat(p.fogG).putFloat(p.fogB).putFloat(p.flash);
 		b.putFloat(p.timeSeconds).putFloat(p.mist).putFloat(p.mistGridSize).putFloat(p.mistGridOffset);
+		b.putFloat(p.mistR).putFloat(p.mistG).putFloat(p.mistB).putFloat(p.lightShafts);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -1924,6 +1940,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, resolvePipeline, null);
 		vkDestroyPipeline(device, atrousPipeline, null);
 		vkDestroyPipeline(device, dofPipeline, null);
+		vkDestroyPipeline(device, shaftsPipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);
 		vkDestroyDescriptorSetLayout(device, descriptorLayout, null);
