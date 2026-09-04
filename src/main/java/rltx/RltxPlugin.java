@@ -131,6 +131,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private RltxConfig config;
 
 	@Inject
+	private ConfigManager configManager;
+
+	@Inject
 	private KeyManager keyManager;
 
 	@Inject
@@ -877,6 +880,21 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			: Skybox.Phase.NIGHT;
 		sunAzimuthNow = azimuth;
 		sunElevationNow = elevation;
+		// The real-time modes keep the manual sliders in step with the computed sun, so the panel
+		// shows where it is and switching to Manual freezes it there.
+		if (config.sunMode() != RltxConfig.SunMode.MANUAL)
+		{
+			int shownAzimuth = (((int) Math.round(azimuth)) % 360 + 360) % 360;
+			int shownElevation = (int) Math.round(Math.max(-90.0, Math.min(90.0, elevation)));
+			if (shownAzimuth != config.sunAzimuth())
+			{
+				configManager.setConfiguration(RltxConfig.GROUP, "sunAzimuth", shownAzimuth);
+			}
+			if (shownElevation != config.sunElevation())
+			{
+				configManager.setConfiguration(RltxConfig.GROUP, "sunElevation", shownElevation);
+			}
+		}
 		phaseNow = phase;
 		Skybox desired = config.proceduralSky() ? Skybox.NONE : config.skybox().resolve(phase);
 		if (desired != requestedSkybox)

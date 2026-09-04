@@ -181,7 +181,7 @@ public interface RltxConfig extends Config
 		return 225;
 	}
 
-	@Range(min = 5, max = 89)
+	@Range(min = -90, max = 90)
 	@Units("°")
 	@ConfigItem(
 		keyName = "sunElevation",
