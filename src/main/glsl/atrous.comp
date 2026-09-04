@@ -1,4 +1,5 @@
 #version 460
+#extension GL_EXT_ray_query : require
 
 // One à-trous wavelet iteration of the SVGF filter over accumulated irradiance. Weights stop
 // at normal and position discontinuities and scale with the estimated variance, so noisy
@@ -7,6 +8,7 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outImage;
 layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 cam;
@@ -33,6 +35,10 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
   vec4 post;      // vignette strength, bloom strength, render distance in world units, fade share
   vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
+  vec4 lights;    // local light count, local light strength scale
+  vec4 material;
+  vec4 post3;
+  vec4 wind;      // wind velocity x and z in world units per second
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -50,6 +56,7 @@ layout(set = 0, binding = 17, rgba16f) uniform image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
 layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } mistGrid;
 layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
+layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
@@ -202,10 +209,11 @@ vec3 splashes(vec3 c, vec3 p, vec3 n, float depth) {
 
 // Falling rain and snow traced through a world-anchored three-dimensional grid. Each view ray
 // walks the grid cell by cell up to the surface it hits; every cell holds at most one drop, a
-// vertical streak, or one flake, and the ray's closest approach to it gives its coverage. Drops
-// therefore fall through the scene at their own depth, hidden by whatever stands in front, and
-// never alias into points. The grid scrolls down with the fall so streaks stay whole, and the
-// wind carries it sideways.
+// streak along the fall direction, or one flake, and the ray's closest approach to it gives its
+// coverage. Drops therefore fall through the scene at their own depth, hidden by whatever stands
+// in front, and never alias into points. The grid scrolls with the fall and the wind so streaks
+// stay whole, and each visible drop is lit where it is: a shadow ray to the sun, the sky, and
+// the local lights around it.
 const float RAIN_CELL = 48.0;
 const float RAIN_CELL_HEIGHT = 96.0;
 const float RAIN_SPEED = 400.0;
@@ -214,6 +222,52 @@ const float RAIN_RANGE = 3000.0;
 const float SNOW_CELL = 44.0;
 const float SNOW_SPEED = 90.0;
 const int PRECIPITATION_STEPS = 96;
+const uint MASK_SHADOW = 0x3u;
+
+// Integer hash: a fractional hash of whole numbers repeats every few cells and lines drops up.
+uint hashCell(ivec3 c) {
+  uvec3 v = uvec3(c + 0x40000000) * 1664525u + 1013904223u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  v ^= v >> 16u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  return v.x;
+}
+
+float unitFrom(uint h) {
+  return float(h & 0xFFFFFFu) / 16777216.0;
+}
+
+bool sunReaches(vec3 p) {
+  if (u.sun.w <= 0.0) {
+    return false;
+  }
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, MASK_SHADOW, p, 1.0, u.sun.xyz, 1e6);
+  rayQueryProceedEXT(rq);
+  return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// Irradiance of the nearest local lights at a point, without shadow rays; a drop is too small
+// to shadow accurately and this is only a glow.
+vec3 localGlow(vec3 p) {
+  int count = min(int(u.lights.x), 64);
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < count; ++i) {
+    vec4 pr = localLights.v[i * 2];
+    vec3 toLight = pr.xyz - p;
+    float d2 = dot(toLight, toLight);
+    if (d2 >= pr.w * pr.w) {
+      continue;
+    }
+    float falloff = 1.0 - sqrt(d2) / pr.w;
+    sum += localLights.v[i * 2 + 1].rgb * (falloff * falloff);
+  }
+  return sum * u.lights.y;
+}
 
 vec3 precipitation(vec3 c, ivec2 px, float depth) {
   float rain = u.weather.z;
@@ -227,16 +281,14 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
   float zoom = u.cam.w;
   vec3 dir = cameraRay(px);
   float tMax = min(depth > 0.0 ? depth : RAIN_RANGE, RAIN_RANGE);
-  // Scrolled space: the grid falls with the drops and drifts with the wind, so a drop is a fixed
-  // segment of its cell there.
   vec3 cellSize = raining ? vec3(RAIN_CELL, RAIN_CELL_HEIGHT, RAIN_CELL) : vec3(SNOW_CELL);
   float speed = raining ? RAIN_SPEED : SNOW_SPEED;
-  float driftScale = raining ? 1.0 : 0.5;
+  float driftScale = raining ? 0.6 : 0.4;
+  // Scrolled space: the grid falls with the drops and drifts with the wind, so a drop is a fixed
+  // segment of its cell there. Streaks lie along the velocity so they slant with the wind.
   vec3 o = u.cam.xyz - vec3(u.weather2.z * driftScale, speed * t, u.weather2.w * driftScale);
-  // Lit like the mist, with a glow towards the sun.
-  vec3 tint = raining ? u.mistColor.rgb * 1.1 : vec3(0.92);
+  vec3 fall = normalize(vec3(u.wind.x * driftScale, speed, u.wind.y * driftScale));
   float forward = pow(max(dot(dir, u.sun.xyz), 0.0), 3.0);
-  tint = clamp(tint + vec3(0.35 * forward * u.sun.w), 0.0, 1.0);
   float presence = raining ? 0.5 * amount : 0.7 * amount;
 
   vec3 pos = o / cellSize;
@@ -247,24 +299,29 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
   vec3 tNext = ((floor(pos) + max(stepSign, 0.0)) * cellSize - o) / safeDir;
   float tCur = 0.0;
   for (int i = 0; i < PRECIPITATION_STEPS && tCur < tMax; ++i) {
-    float h = hash13(vec3(cell));
-    if (h < presence) {
+    uint h = hashCell(cell);
+    if (unitFrom(h) < presence) {
       vec3 base = vec3(cell) * cellSize;
+      float rx = unitFrom(hashCell(cell + ivec3(7, 0, 0)));
+      float rz = unitFrom(hashCell(cell + ivec3(0, 0, 11)));
+      float ry = unitFrom(hashCell(cell + ivec3(0, 5, 0)));
       vec3 q;
       float along = 1.0;
       if (raining) {
-        float top = base.y + fract(h * 3.7) * (RAIN_CELL_HEIGHT - RAIN_LENGTH);
-        vec3 line = vec3(base.x + (0.15 + 0.7 * fract(h * 7.31)) * RAIN_CELL, top, base.z + (0.15 + 0.7 * fract(h * 13.7)) * RAIN_CELL);
-        // Closest approach of the ray to the streak's vertical line, clamped to the streak.
-        vec2 toLine = line.xz - o.xz;
-        float horizontal = dot(dir.xz, dir.xz);
-        float tLine = horizontal > 1e-6 ? dot(toLine, dir.xz) / horizontal : tCur;
-        float y = clamp(o.y + dir.y * tLine, top, top + RAIN_LENGTH);
-        q = vec3(line.x, y, line.z);
-        along = (y - top) / RAIN_LENGTH;
+        vec3 head = base + vec3((0.15 + 0.7 * rx) * RAIN_CELL, ry * (RAIN_CELL_HEIGHT - RAIN_LENGTH), (0.15 + 0.7 * rz) * RAIN_CELL);
+        // Closest points between the ray and the streak's line, the streak's clamped to its length.
+        vec3 w = o - head;
+        float b = dot(dir, fall);
+        float dd = dot(dir, w);
+        float dv = dot(fall, w);
+        float denom = 1.0 - b * b;
+        float uSeg = denom < 1e-4 ? -dv : (dv - b * dd) / denom;
+        uSeg = clamp(uSeg, 0.0, RAIN_LENGTH);
+        q = head + fall * uSeg;
+        along = uSeg / RAIN_LENGTH;
       } else {
-        vec2 wobble = 0.3 * vec2(sin(t * 1.7 + h * 6.2832), cos(t * 1.1 + h * 12.566));
-        q = base + (vec3(0.5 + wobble.x, 0.5, 0.5 + wobble.y) + 0.3 * (vec3(fract(h * 7.31), fract(h * 3.7), fract(h * 13.7)) - 0.5)) * cellSize;
+        vec2 wobble = 0.3 * vec2(sin(t * 1.7 + rx * 6.2832), cos(t * 1.1 + rz * 6.2832));
+        q = base + (vec3(0.5 + wobble.x, 0.5, 0.5 + wobble.y) + 0.3 * (vec3(rx, ry, rz) - 0.5)) * cellSize;
       }
       float tQ = dot(q - o, dir);
       if (tQ > 0.0 && tQ < tMax) {
@@ -272,9 +329,18 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
         float pixel = tQ / zoom;
         float width = raining ? max(1.8 * pixel, 1.5) : max(2.6 * pixel, 2.0);
         float cover = 1.0 - smoothstep(0.4 * width, 1.2 * width, dist);
-        float fade = exp(-tQ / 2200.0);
-        float alpha = cover * fade * (raining ? 0.55 * (0.3 + 0.7 * along) : 0.85);
-        c = mix(c, tint, alpha);
+        if (cover > 0.01) {
+          // Light the drop where it hangs: sun with a shadow ray and a forward glow, sky, local lights.
+          vec3 world = q + vec3(u.weather2.z * driftScale, speed * t, u.weather2.w * driftScale);
+          vec3 lit = vec3(u.sky.w) + 0.5 * u.sky.rgb + localGlow(world) * 0.7;
+          if (sunReaches(world)) {
+            lit += u.sunColor.rgb * (u.sun.w * (0.35 + 1.4 * forward));
+          }
+          vec3 tint = tonemap(lit) * (raining ? vec3(0.75, 0.8, 0.9) : vec3(1.0));
+          float fade = exp(-tQ / 2200.0);
+          float alpha = cover * fade * (raining ? 0.6 * (0.3 + 0.7 * along) : 0.85);
+          c = mix(c, tint, alpha);
+        }
       }
     }
     if (tNext.x < tNext.y && tNext.x < tNext.z) {

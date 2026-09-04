@@ -1102,6 +1102,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		// velocity, so a change of wind moves the air from where it is instead of jumping it.
 		double to = Math.toRadians(w.windFromDegrees + 180.0);
 		float speed = w.wind * 300f;
+		frame.windVelocityX = (float) Math.sin(to) * speed;
+		frame.windVelocityZ = (float) Math.cos(to) * speed;
 		frame.windOffsetX = (frame.windOffsetX + (float) Math.sin(to) * speed * weatherDt) % 1048576f;
 		frame.windOffsetZ = (frame.windOffsetZ + (float) Math.cos(to) * speed * weatherDt) % 1048576f;
 		// Fog fades to the sky's horizon colour, greyed and dimmed by cloud the same way the

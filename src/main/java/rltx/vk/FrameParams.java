@@ -42,6 +42,8 @@ public final class FrameParams
 	public float cloud, fogAmount, rain, snow;
 	/** Ground wetness and snow cover 0 to 1, and how far the wind has carried the air so far, in world units. */
 	public float wetness, snowCover, windOffsetX, windOffsetZ;
+	/** Current wind velocity in world units per second, for the slant of falling rain. */
+	public float windVelocityX, windVelocityZ;
 	/** Clock for particle animation, seconds. */
 	public float timeSeconds;
 	/** Swamp mist density scale, and the side length and tile offset of the mist grid. */
