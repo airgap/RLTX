@@ -48,7 +48,7 @@ layout(set = 0, binding = 14, rgba16f) uniform readonly image2D normalImage;
 // Ping-pong buffers: even passes read A and write B, odd passes the reverse.
 layout(set = 0, binding = 17, rgba16f) uniform image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
-layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec2 v[]; } mistGrid;
+layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } mistGrid;
 layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
@@ -120,10 +120,10 @@ vec2 mistAt(vec2 xz) {
   }
   ivec2 i = ivec2(g);
   vec2 f = g - vec2(i);
-  vec2 a = mistGrid.v[i.x * side + i.y];
-  vec2 b = mistGrid.v[(i.x + 1) * side + i.y];
-  vec2 c = mistGrid.v[i.x * side + i.y + 1];
-  vec2 d = mistGrid.v[(i.x + 1) * side + i.y + 1];
+  vec2 a = mistGrid.v[i.x * side + i.y].xy;
+  vec2 b = mistGrid.v[(i.x + 1) * side + i.y].xy;
+  vec2 c = mistGrid.v[i.x * side + i.y + 1].xy;
+  vec2 d = mistGrid.v[(i.x + 1) * side + i.y + 1].xy;
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 

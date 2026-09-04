@@ -16,7 +16,12 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +42,7 @@ import net.runelite.api.Actor;
 import net.runelite.api.Constants;
 import net.runelite.api.FloatProjection;
 import net.runelite.api.NPC;
+import net.runelite.api.ObjectComposition;
 import net.runelite.api.Player;
 import net.runelite.api.TextureProvider;
 import net.runelite.api.coords.LocalPoint;
@@ -124,6 +130,142 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return lightLibrary;
 	}
 
+	private static final String[] FOLIAGE_WORDS = {"tree", "bush", "shrub", "fern", "palm", "willow", "oak", "yew", "maple", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
+	private final Map<Integer, Boolean> foliageIds = new ConcurrentHashMap<>();
+	private static final float SWAY_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
+	private static final int SWAY_FACE_BUDGET = 150_000;
+	private float[] swayScratch = new float[0];
+
+	private boolean isFoliage(int objectId)
+	{
+		return foliageIds.getOrDefault(objectId, Boolean.FALSE);
+	}
+
+	// Object names live in the client's cache, which the scene loader thread must not touch, so
+	// unknown ids are resolved on the client thread first, as the GPU plugin does for its uploads.
+	private void classifyFoliage(Set<Integer> ids)
+	{
+		List<Integer> unknown = new ArrayList<>();
+		for (Integer id : ids)
+		{
+			if (!foliageIds.containsKey(id))
+			{
+				unknown.add(id);
+			}
+		}
+		if (unknown.isEmpty())
+		{
+			return;
+		}
+		CountDownLatch latch = new CountDownLatch(1);
+		clientThread.invoke(() ->
+		{
+			for (Integer id : unknown)
+			{
+				ObjectComposition def = client.getObjectDefinition(id);
+				String name = def == null || def.getName() == null ? "" : def.getName().toLowerCase(Locale.ROOT);
+				boolean foliage = false;
+				if (!name.contains("stump"))
+				{
+					for (String word : FOLIAGE_WORDS)
+					{
+						if (name.contains(word))
+						{
+							foliage = true;
+							break;
+						}
+					}
+				}
+				foliageIds.put(id, foliage);
+			}
+			latch.countDown();
+		});
+		try
+		{
+			latch.await(5, TimeUnit.SECONDS);
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	// Foliage near the camera is drawn as swayed copies through the dynamic path each frame,
+	// its static group skipped; the wind is a slow gust field with the weather's wind on top.
+	private void pushFoliage()
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		if (!config.foliageWind() || top == null)
+		{
+			renderer.setSwayedZones(WorldView.TOPLEVEL, null);
+			return;
+		}
+		StaticScene built = top.built;
+		if (top.swayed == null || top.swayed.length != built.zones.length)
+		{
+			top.swayed = new boolean[built.zones.length];
+		}
+		float t = frame.timeSeconds;
+		float amplitude = (4f + 10f * weatherNow.wind) * config.foliageWindStrength() / 100f;
+		double to = Math.toRadians(weatherNow.windFromDegrees + 180.0);
+		float dirX = (float) Math.sin(to);
+		float dirZ = (float) Math.cos(to);
+		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
+		int budget = SWAY_FACE_BUDGET;
+		for (int i = 0; i < built.zones.length; ++i)
+		{
+			StaticScene.Zone zone = built.zones[i];
+			top.swayed[i] = false;
+			if (zone == null || zone.sway.faces() == 0 || budget < zone.sway.faces())
+			{
+				continue;
+			}
+			float centreX = ((i / built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
+			float centreZ = ((i % built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
+			float dx = centreX - frame.cameraX;
+			float dz = centreZ - frame.cameraZ;
+			if (dx * dx + dz * dz > SWAY_RANGE * SWAY_RANGE)
+			{
+				continue;
+			}
+			top.swayed[i] = true;
+			budget -= zone.sway.faces();
+			int faces = zone.sway.faces();
+			float[] pos = zone.sway.positions();
+			float[] weights = zone.swayWeights;
+			int[] colors = zone.sway.colors();
+			int[] textures = zone.sway.textures();
+			float[] uvs = zone.sway.uvs();
+			if (swayScratch.length < faces * 9)
+			{
+				swayScratch = new float[faces * 9];
+			}
+			int start = dynamic.faces();
+			for (int f = 0; f < faces; ++f)
+			{
+				int o = f * 9;
+				float px = pos[o];
+				float pz = pos[o + 2];
+				float gust = amplitude * ((float) Math.sin(t * 1.1 + px * 0.006 + pz * 0.004) + 0.5f * (float) Math.sin(t * 2.3 + pz * 0.011));
+				float ox = gust * (0.6f * dirX + 0.4f * (float) Math.sin(t * 0.7 + px * 0.01));
+				float oz = gust * (0.6f * dirZ + 0.4f * (float) Math.cos(t * 0.9 + pz * 0.008));
+				for (int v = 0; v < 3; ++v)
+				{
+					float w = weights[f * 3 + v];
+					swayScratch[o + v * 3] = pos[o + v * 3] + ox * w;
+					swayScratch[o + v * 3 + 1] = pos[o + v * 3 + 1];
+					swayScratch[o + v * 3 + 2] = pos[o + v * 3 + 2] + oz * w;
+				}
+				int uo = f * 6;
+				dynamic.face(swayScratch[o], swayScratch[o + 1], swayScratch[o + 2], swayScratch[o + 3], swayScratch[o + 4], swayScratch[o + 5],
+					swayScratch[o + 6], swayScratch[o + 7], swayScratch[o + 8], colors[f], textures[f],
+					uvs[uo], uvs[uo + 1], uvs[uo + 2], uvs[uo + 3], uvs[uo + 4], uvs[uo + 5]);
+			}
+			dynamic.setPreviousPositions(start, swayScratch, faces);
+		}
+		renderer.setSwayedZones(WorldView.TOPLEVEL, top.swayed);
+	}
+
 	// Uploads this frame's local lights: the scene's fixed and object lights plus those
 	// following NPCs, nearest first.
 	private void fillLights()
@@ -174,6 +316,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		final StaticSceneBuilder.WaterBed waterBed;
 		/** Lights placed in the scene; null for nested world views. */
 		final SceneLights lights;
+		/** Zones whose foliage was drawn swayed last frame. */
+		boolean[] swayed;
 		int[][][] terrainLight;
 
 		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed, SceneLights lights)
@@ -538,7 +682,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		long start = System.nanoTime();
 		Palette p = palette();
-		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p);
+		classifyFoliage(StaticSceneBuilder.gameObjectIds(scene));
+		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, this::isFoliage);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
 		SceneLights lights = null;
 		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
@@ -601,7 +746,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				LoadedScene loaded = e.getValue();
 				loaded.terrainLight = StaticSceneBuilder.terrainLight(loaded.scene, p);
-				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p), subTransforms.get(e.getKey()));
+				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, this::isFoliage), subTransforms.get(e.getKey()));
 			}
 			return;
 		}
@@ -615,10 +760,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				continue;
 			}
-			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed);
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, this::isFoliage);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
-				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette()), subTransforms.get(id));
+				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), this::isFoliage), subTransforms.get(id));
+			}
+			else
+			{
+				loaded.built.zones[zx * loaded.built.zonesZ + zz] = zone;
 			}
 		}
 		dirtyZones.clear();
@@ -801,6 +950,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.pattern = false;
 		long start = System.nanoTime();
 		addOffscreenActors();
+		pushFoliage();
 		fillLights();
 		renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending);
 		motion.endFrame();
@@ -1003,6 +1153,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		// Low roughness is a tight, glassy highlight; high spreads it wide.
 		frame.surfaceGlossExponent = 300f - 288f * config.surfaceRoughness() / 100f;
 		frame.emissiveStrength = config.emissiveStrength() / 100f;
+		frame.caustics = config.caustics();
+		frame.rainRipples = config.rainRipples();
+		frame.puddles = config.puddles();
+		frame.contrast = config.contrast() / 100f;
+		frame.saturation = config.saturation() / 100f;
+		frame.temperature = config.temperature() / 100f;
 		frame.antialias = config.antialias();
 		frame.water = config.water();
 		// Wrapped where every integer scroll speed lands on a whole texture repeat.

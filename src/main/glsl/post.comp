@@ -33,6 +33,9 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 mistColor; // display-space colour of lit mist, light shaft strength
   vec4 post;      // vignette strength, bloom strength, render distance, fade share
   vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
+  vec4 lights;
+  vec4 material;
+  vec4 post3;     // contrast, saturation, colour temperature
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -113,6 +116,16 @@ vec3 grain(ivec2 p, vec3 c) {
   return c + n * u.post2.x * 0.18 * (1.0 - 0.6 * lum);
 }
 
+// Colour grading after tone mapping: saturation about the luminance, contrast about mid grey,
+// and a warm or cool tilt of the channels.
+vec3 graded(vec3 c) {
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(lum), c, u.post3.y);
+  c = (c - 0.5) * u.post3.x + 0.5;
+  c *= vec3(1.0 + 0.12 * u.post3.z, 1.0 + 0.02 * u.post3.z, 1.0 - 0.12 * u.post3.z);
+  return clamp(c, 0.0, 1.0);
+}
+
 // Corner darkening, measured so the very corners reach the full strength at any aspect ratio.
 vec3 vignette(ivec2 p, vec3 c) {
   vec2 size = vec2(u.misc.zw);
@@ -159,6 +172,7 @@ void main() {
   if (u.post.y > 0.0) {
     c += u.post.y * bloom(p);
   }
+  c = graded(c);
   if (u.post2.x > 0.0) {
     c = grain(p, c);
   }

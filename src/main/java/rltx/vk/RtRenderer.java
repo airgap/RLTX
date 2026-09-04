@@ -111,6 +111,9 @@ public final class RtRenderer
 	private static final int FLAG_PROCEDURAL_SKY = 256;
 	private static final int FLAG_CLOUDS = 512;
 	private static final int FLAG_CLOUD_SHADOWS = 1024;
+	private static final int FLAG_CAUSTICS = 2048;
+	private static final int FLAG_RAIN_RIPPLES = 4096;
+	private static final int FLAG_PUDDLES = 8192;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -150,7 +153,7 @@ public final class RtRenderer
 	private static final int BINDING_COUNT = 34;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
-	private static final int MIST_GRID_MAX = 185 * 185 * 2;
+	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 256;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
 	private static final int PUSH_CONSTANT_SIZE = 16;
@@ -247,6 +250,7 @@ public final class RtRenderer
 		int[] faceOffset = new int[0];
 		boolean[] translucent = new boolean[0];
 		boolean[] water = new boolean[0];
+		boolean[] sway = new boolean[0];
 	}
 
 	private static final class StaticSet
@@ -255,6 +259,8 @@ public final class RtRenderer
 		int zonesX;
 		int zonesZ;
 		ZoneRes[] zones;
+		/** Zones whose foliage is drawn swayed through the dynamic path this frame instead. */
+		boolean[] swayed;
 		float[] transform;
 		int minLevel;
 		int level;
@@ -1194,6 +1200,16 @@ public final class RtRenderer
 		materials.mapped.asFloatBuffer().put(table, 0, Math.min(table.length, Materials.TEXTURES * Materials.FLOATS));
 	}
 
+	/** Which zones of a scene have their foliage groups replaced by swayed dynamic copies this frame. */
+	public void setSwayedZones(int id, boolean[] swayed)
+	{
+		StaticSet set = staticSets.get(id);
+		if (set != null)
+		{
+			set.swayed = swayed;
+		}
+	}
+
 	/** Per-frame placement and visibility of a loaded scene. */
 	public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds)
 	{
@@ -1287,6 +1303,7 @@ public final class RtRenderer
 		res.faceOffset = zone.groupFaceBase.clone();
 		res.translucent = zone.groupTranslucent.clone();
 		res.water = zone.groupWater.clone();
+		res.sway = zone.groupSway.clone();
 		for (int g = 0; g < groups; ++g)
 		{
 			res.handles[g] = createAccel(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, res.storage.buffer, offset[g], size[g]);
@@ -1332,6 +1349,7 @@ public final class RtRenderer
 		res.faceOffset = new int[0];
 		res.translucent = new boolean[0];
 		res.water = new boolean[0];
+		res.sway = new boolean[0];
 		if (res.storage != null)
 		{
 			ctx.destroyBuffer(res.storage);
@@ -1929,8 +1947,13 @@ public final class RtRenderer
 				{
 					continue;
 				}
+				boolean swayedZone = set.swayed != null && z < set.swayed.length && set.swayed[z];
 				for (int g = 0; g < res.handles.length && count < MAX_INSTANCES; ++g)
 				{
+					if (swayedZone && res.sway[g])
+					{
+						continue;
+					}
 					if (groupVisible(set, res.level[g], res.roof[g]))
 					{
 						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g],
@@ -1993,7 +2016,10 @@ public final class RtRenderer
 			| (p.water ? FLAG_WATER : 0)
 			| (p.proceduralSky ? FLAG_PROCEDURAL_SKY : 0)
 			| (p.clouds ? FLAG_CLOUDS : 0)
-			| (p.cloudShadows ? FLAG_CLOUD_SHADOWS : 0);
+			| (p.cloudShadows ? FLAG_CLOUD_SHADOWS : 0)
+			| (p.caustics ? FLAG_CAUSTICS : 0)
+			| (p.rainRipples ? FLAG_RAIN_RIPPLES : 0)
+			| (p.puddles ? FLAG_PUDDLES : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(0f);
@@ -2009,6 +2035,7 @@ public final class RtRenderer
 		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(p.aerialPerspective).putFloat(p.sunUp);
 		b.putFloat(p.lightCount).putFloat(p.lightStrength).putFloat(p.surfaceGloss).putFloat(p.surfaceGlossExponent);
 		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(0f).putFloat(0f);
+		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(0f);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

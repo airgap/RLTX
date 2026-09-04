@@ -73,6 +73,9 @@ public final class FrameParams
 	/** Glow scale of unlit textures, 0 disables; and whether reflection rays are traced. */
 	public float emissiveStrength;
 	public boolean glossyReflections;
+	public boolean caustics, rainRipples, puddles;
+	/** Colour grading: contrast about mid grey, saturation, and warm or cool shift from -1 to 1. */
+	public float contrast = 1f, saturation = 1f, temperature;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */

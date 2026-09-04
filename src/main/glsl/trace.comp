@@ -55,6 +55,8 @@ layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } w
 layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
 // Per vanilla texture id: specular strength, gloss exponent, emissive, brightness.
 layout(std430, set = 0, binding = 33) readonly buffer Materials { vec4 v[]; } materials;
+// The ground grid: height, mist coverage, puddle coverage per vertex of the lowest plane.
+layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } groundGrid;
 
 const uint FLAG_CULL = 1u;
 const uint FLAG_SHADOWS = 2u;
@@ -66,6 +68,9 @@ const uint FLAG_WATER = 128u;
 const uint FLAG_PROCEDURAL_SKY = 256u;
 const uint FLAG_CLOUDS = 512u;
 const uint FLAG_CLOUD_SHADOWS = 1024u;
+const uint FLAG_CAUSTICS = 2048u;
+const uint FLAG_RAIN_RIPPLES = 4096u;
+const uint FLAG_PUDDLES = 8192u;
 const uint WATER_BIT = 0x80000000u;
 const uint FLAG_SKYBOX = 32u;
 const uint DYN_BIT = 0x800000u;
@@ -410,6 +415,25 @@ float cloudDensity(vec2 xz) {
   return smoothstep(threshold - 0.1, threshold + 0.25, n);
 }
 
+// Puddle coverage of the ground under a world position, from the per-scene grid.
+float puddleAt(vec2 xz) {
+  int side = int(u.weather3.z);
+  if (side < 2) {
+    return 0.0;
+  }
+  vec2 g = xz / 128.0 + u.weather3.w;
+  if (g.x < 0.0 || g.y < 0.0 || g.x >= float(side - 1) || g.y >= float(side - 1)) {
+    return 0.0;
+  }
+  ivec2 i = ivec2(g);
+  vec2 f = g - vec2(i);
+  float a = groundGrid.v[i.x * side + i.y].z;
+  float b = groundGrid.v[(i.x + 1) * side + i.y].z;
+  float c = groundGrid.v[i.x * side + i.y + 1].z;
+  float d = groundGrid.v[(i.x + 1) * side + i.y + 1].z;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 // Sunlight reaching a point under the cloud layer, 1 in the open.
 float cloudShadow(vec3 p) {
   if ((u.misc.y & FLAG_CLOUD_SHADOWS) == 0u || u.weather.x <= 0.0 || u.sun.y >= 0.0) {
@@ -514,6 +538,16 @@ vec3 waterNormal(vec3 p, float strength, float duration) {
     amp *= 0.72;
     k *= 1.37;
   }
+  if ((u.misc.y & FLAG_RAIN_RIPPLES) != 0u && u.weather.z > 0.0) {
+    // Rings spreading from a drop per cell of forty units, each restarting at its own phase.
+    vec2 cell = floor(p.xz / 40.0);
+    vec2 centre = (cell + 0.5 + 0.3 * (vec2(hash12(cell), hash12(cell + 19.0)) - 0.5)) * 40.0;
+    float phase = fract(u.weather3.x * 1.3 + hash12(cell + 7.0));
+    vec2 d = p.xz - centre;
+    float dist = length(d) + 1e-3;
+    float ring = sin((dist - phase * 26.0) * 0.5) * exp(-dist * 0.08) * (1.0 - phase);
+    grad += (d / dist) * (ring * 1.5 * u.weather.z / max(strength, 0.02));
+  }
   return normalize(vec3(-grad.x * strength, -1.0, -grad.y * strength));
 }
 
@@ -562,7 +596,18 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
     if (dot(refracted, refracted) > 0.0 && trace(hit.surface - hit.gn * RAY_EPS, refracted, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, bed)) {
       sawBed = true;
       bedDepth = max(bed.surface.y - hit.surface.y, 0.0);
-      under = bed.albedo * (vec3(u.sky.w) + directSun(bed, sunDir, shadows, seed) + directLocal(bed));
+      vec3 bedSun = directSun(bed, sunDir, shadows, seed);
+      if ((u.misc.y & FLAG_CAUSTICS) != 0u) {
+        // Light focused by the waves: a web where two drifting noise fields both run high,
+        // fading with depth.
+        float t = u.weather3.x;
+        float n1 = valueNoise2(bed.surface.xz / 56.0 + vec2(t * 0.21, -t * 0.13));
+        float n2 = valueNoise2(bed.surface.xz / 44.0 + vec2(-t * 0.17, t * 0.11) + 7.3);
+        float web = pow(n1 * n2, 3.0) * 7.0;
+        float fade = 1.0 - clamp(bedDepth / 400.0, 0.0, 1.0);
+        bedSun *= 1.0 + (web - 0.25) * fade;
+      }
+      under = bed.albedo * (vec3(u.sky.w) + bedSun + directLocal(bed));
       if (bedDepth < 150.0) {
         under *= mix(vec3(1.0), wt.depth, bedDepth / 150.0);
       } else if (bedDepth < 500.0) {
@@ -663,13 +708,15 @@ void main() {
   // adds a sheen once it has soaked in.
   float upFacing = smoothstep(0.3, 0.8, -hit.gn.y);
   bool wetPixel = false;
+  float puddle = 0.0;
   if (!hit.dyn && !hit.water && !hit.translucent && upFacing > 0.0) {
     if (u.weather2.y > 0.0) {
       hit.albedo = mix(hit.albedo, vec3(0.85), u.weather2.y * upFacing);
     }
     if (u.weather2.x > 0.0 && u.weather2.y < 0.5) {
       wetPixel = true;
-      hit.albedo *= 1.0 - 0.4 * u.weather2.x * upFacing;
+      puddle = (flags & FLAG_PUDDLES) != 0u ? puddleAt(hit.surface.xz) * u.weather2.x : 0.0;
+      hit.albedo *= 1.0 - mix(0.4, 0.75, puddle) * u.weather2.x * upFacing;
     }
   }
   // Radiance that does not scale with the albedo: highlights, reflections and glow.
@@ -733,10 +780,11 @@ void main() {
     hit.albedo = vec3(1.0);
     waterPixel = true;
   } else if (wetPixel) {
-    // Wet ground reflects like a thin film: a Fresnel blend at a fraction of the strength.
-    float cosI = clamp(dot(-dir, hit.n), 0.0, 1.0);
-    float fresnel = (0.02 + 0.98 * pow(1.0 - cosI, 5.0)) * 0.5 * u.weather2.x * upFacing;
-    vec3 reflectDir = reflect(dir, hit.n);
+    // Wet ground reflects like a thin film at half strength; a puddle is a flat mirror.
+    vec3 wn = puddle > 0.5 ? hit.gn : hit.n;
+    float cosI = clamp(dot(-dir, wn), 0.0, 1.0);
+    float fresnel = (0.02 + 0.98 * pow(1.0 - cosI, 5.0)) * mix(0.5, 1.0, puddle) * u.weather2.x * upFacing;
+    vec3 reflectDir = reflect(dir, wn);
     if (dot(reflectDir, hit.gn) < 0.0) {
       reflectDir = reflect(reflectDir, hit.gn);
     }

@@ -621,6 +621,47 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
+	@Range(min = 50, max = 150)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "contrast",
+		name = "Contrast",
+		description = "Colour grading: contrast around mid grey after tone mapping.",
+		section = cameraSection,
+		position = 15
+	)
+	default int contrast()
+	{
+		return 100;
+	}
+
+	@Range(max = 200)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "saturation",
+		name = "Saturation",
+		description = "Colour grading: 0 is monochrome, 100 leaves colours as rendered.",
+		section = cameraSection,
+		position = 16
+	)
+	default int saturation()
+	{
+		return 100;
+	}
+
+	@Range(min = -100, max = 100)
+	@ConfigItem(
+		keyName = "temperature",
+		name = "Colour temperature",
+		description = "Colour grading: negative cools the image toward blue, positive warms it toward orange.",
+		section = cameraSection,
+		position = 17
+	)
+	default int temperature()
+	{
+		return 0;
+	}
+
 	@ConfigItem(
 		keyName = "focusMode",
 		name = "Focus",
@@ -736,6 +777,18 @@ public interface RltxConfig extends Config
 	default int emissiveStrength()
 	{
 		return 100;
+	}
+
+	@ConfigItem(
+		keyName = "caustics",
+		name = "Water caustics",
+		description = "Sunlight focused by the waves plays across the bed under clear water.",
+		section = surfacesSection,
+		position = 6
+	)
+	default boolean caustics()
+	{
+		return true;
 	}
 
 	@ConfigItem(
@@ -855,6 +908,56 @@ public interface RltxConfig extends Config
 		position = 4
 	)
 	default int mist()
+	{
+		return 100;
+	}
+
+	@ConfigItem(
+		keyName = "rainRipples",
+		name = "Rain ripples",
+		description = "Rings spreading on water surfaces where raindrops land.",
+		section = weatherSection,
+		position = 6
+	)
+	default boolean rainRipples()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "puddles",
+		name = "Puddles",
+		description = "Dips in the ground fill with mirror-like water while it rains and dry out afterwards.",
+		section = weatherSection,
+		position = 7
+	)
+	default boolean puddles()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "foliageWind",
+		name = "Foliage wind",
+		description = "Trees, bushes and plants near the camera sway in the wind, their bases fixed and canopies moving.",
+		section = weatherSection,
+		position = 8
+	)
+	default boolean foliageWind()
+	{
+		return true;
+	}
+
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "foliageWindStrength",
+		name = "Foliage wind strength",
+		description = "How far foliage bends; the weather's wind adds to it.",
+		section = weatherSection,
+		position = 9
+	)
+	default int foliageWindStrength()
 	{
 		return 100;
 	}

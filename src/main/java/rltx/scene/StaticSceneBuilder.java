@@ -1,7 +1,10 @@
 package rltx.scene;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.IntPredicate;
 import net.runelite.api.Constants;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.DynamicObject;
@@ -36,6 +39,7 @@ public final class StaticSceneBuilder
 	private final int offset;
 	private final int[][][] terrainLight;
 	private final WaterBed waterBed;
+	private final IntPredicate foliage;
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
@@ -43,9 +47,11 @@ public final class StaticSceneBuilder
 		final GeometryBuffer opaque = new GeometryBuffer(256);
 		final GeometryBuffer translucent = new GeometryBuffer(32);
 		final GeometryBuffer water = new GeometryBuffer(16);
+		final GeometryBuffer sway = new GeometryBuffer(64);
+		float[] swayWeights = new float[64 * 3];
 	}
 
-	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed)
+	private StaticSceneBuilder(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntPredicate foliage)
 	{
 		this.scene = scene;
 		this.renderCallbacks = renderCallbacks;
@@ -53,6 +59,7 @@ public final class StaticSceneBuilder
 		this.offset = scene.getWorldViewId() == WorldView.TOPLEVEL ? TOPLEVEL_OFFSET : 0;
 		this.terrainLight = terrainLight;
 		this.waterBed = waterBed;
+		this.foliage = foliage;
 	}
 
 	/** Number of zones along each axis of the scene's extended tile grid. */
@@ -61,14 +68,18 @@ public final class StaticSceneBuilder
 		return scene.getExtendedTiles()[0].length >> 3;
 	}
 
-	/** Builds every zone of the scene. */
-	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette)
+	/**
+	 * Builds every zone of the scene.
+	 *
+	 * @param foliage which object ids are foliage that should sway in the wind
+	 */
+	public static StaticScene build(Scene scene, RenderCallbackManager renderCallbacks, Palette palette, IntPredicate foliage)
 	{
 		int[][][] light = terrainLight(scene, palette);
 		WaterBed bed = waterBed(scene);
 		int zones = zoneCount(scene);
 		StaticScene.Zone[] out = new StaticScene.Zone[zones * zones];
-		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed);
+		StaticSceneBuilder builder = new StaticSceneBuilder(scene, renderCallbacks, palette, light, bed, foliage);
 		for (int zx = 0; zx < zones; ++zx)
 		{
 			for (int zz = 0; zz < zones; ++zz)
@@ -80,9 +91,36 @@ public final class StaticSceneBuilder
 	}
 
 	/** Rebuilds a single zone, for example after a door changed. */
-	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed)
+	public static StaticScene.Zone buildZone(Scene scene, int zx, int zz, RenderCallbackManager renderCallbacks, Palette palette, int[][][] terrainLight, WaterBed waterBed, IntPredicate foliage)
 	{
-		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed).zone(zx, zz);
+		return new StaticSceneBuilder(scene, renderCallbacks, palette, terrainLight, waterBed, foliage).zone(zx, zz);
+	}
+
+	/** Distinct ids of the game objects in the scene, for classifying foliage before a build. */
+	public static Set<Integer> gameObjectIds(Scene scene)
+	{
+		Set<Integer> ids = new HashSet<>();
+		for (Tile[][] plane : scene.getExtendedTiles())
+		{
+			for (Tile[] column : plane)
+			{
+				for (Tile tile : column)
+				{
+					if (tile == null)
+					{
+						continue;
+					}
+					for (GameObject go : tile.getGameObjects())
+					{
+						if (go != null)
+						{
+							ids.add(go.getId());
+						}
+					}
+				}
+			}
+		}
+		return ids;
 	}
 
 	// 117 HD's underwater slope: depth by tiles from the shore, scaled as its renderer does.
@@ -91,12 +129,13 @@ public final class StaticSceneBuilder
 	private static final int BED_MIN_DEPTH = 6;
 
 	private static final int MIST_REACH_TILES = 6;
-	/** Floats per grid vertex in {@link #mistGrid}: ground height and mist coverage. */
-	public static final int MIST_FLOATS = 2;
+	/** Floats per grid vertex in {@link #mistGrid}: ground height, mist coverage, puddle coverage, unused. */
+	public static final int MIST_FLOATS = 4;
 
 	/**
-	 * Where low mist may lie: the ground height of the lowest plane at each grid vertex, and a
-	 * coverage that is 1 over swamp water and fades out over a few tiles around it.
+	 * The ground grid of the lowest plane: height at each vertex, a mist coverage that is 1
+	 * over swamp water and fades out over a few tiles around it, and a puddle coverage where the
+	 * ground dips below its surroundings.
 	 */
 	public static float[] mistGrid(Scene scene)
 	{
@@ -138,6 +177,27 @@ public final class StaticSceneBuilder
 				}
 			}
 		}
+		// A vertex lower than the mean of its neighbours by more than a step is a dip (y grows
+		// downwards); its neighbours get half coverage so puddles have soft edges.
+		float[] puddle = new float[(size + 1) * (size + 1)];
+		for (int vx = 1; vx < size; ++vx)
+		{
+			for (int vy = 1; vy < size; ++vy)
+			{
+				float mean = (heights[vx - 1][vy] + heights[vx + 1][vy] + heights[vx][vy - 1] + heights[vx][vy + 1]) * 0.25f;
+				float dip = heights[vx][vy] - mean;
+				float cover = Math.max(0f, Math.min(1f, (dip - 1.5f) / 6f));
+				if (cover > 0f)
+				{
+					int i = vx * (size + 1) + vy;
+					puddle[i] = Math.max(puddle[i], cover);
+					puddle[i - 1] = Math.max(puddle[i - 1], cover * 0.5f);
+					puddle[i + 1] = Math.max(puddle[i + 1], cover * 0.5f);
+					puddle[i - (size + 1)] = Math.max(puddle[i - (size + 1)], cover * 0.5f);
+					puddle[i + (size + 1)] = Math.max(puddle[i + (size + 1)], cover * 0.5f);
+				}
+			}
+		}
 		float[] grid = new float[(size + 1) * (size + 1) * MIST_FLOATS];
 		for (int vx = 0; vx <= size; ++vx)
 		{
@@ -146,6 +206,7 @@ public final class StaticSceneBuilder
 				int o = (vx * (size + 1) + vy) * MIST_FLOATS;
 				grid[o] = heights[vx][vy];
 				grid[o + 1] = Math.max(0f, 1f - distance[vx][vy] / (float) (MIST_REACH_TILES + 1));
+				grid[o + 2] = puddle[vx * (size + 1) + vy];
 			}
 		}
 		return grid;
@@ -378,10 +439,12 @@ public final class StaticSceneBuilder
 
 		int total = 0;
 		int count = 0;
+		int swayFaces = 0;
 		for (Bucket b : groups.values())
 		{
-			total += b.opaque.faces() + b.translucent.faces() + b.water.faces();
-			count += (b.opaque.faces() > 0 ? 1 : 0) + (b.translucent.faces() > 0 ? 1 : 0) + (b.water.faces() > 0 ? 1 : 0);
+			total += b.opaque.faces() + b.translucent.faces() + b.water.faces() + b.sway.faces();
+			count += (b.opaque.faces() > 0 ? 1 : 0) + (b.translucent.faces() > 0 ? 1 : 0) + (b.water.faces() > 0 ? 1 : 0) + (b.sway.faces() > 0 ? 1 : 0);
+			swayFaces += b.sway.faces();
 		}
 		if (count == 0)
 		{
@@ -395,13 +458,16 @@ public final class StaticSceneBuilder
 		int[] faces = new int[count];
 		boolean[] translucent = new boolean[count];
 		boolean[] water = new boolean[count];
+		boolean[] swayGroup = new boolean[count];
+		GeometryBuffer sway = new GeometryBuffer(Math.max(swayFaces, 1));
+		float[] swayWeights = new float[Math.max(swayFaces, 1) * 3];
 		int i = 0;
 		for (Map.Entry<Long, Bucket> e : groups.entrySet())
 		{
 			Bucket b = e.getValue();
-			for (int pass = 0; pass < 3; ++pass)
+			for (int pass = 0; pass < 4; ++pass)
 			{
-				GeometryBuffer g = pass == 0 ? b.opaque : pass == 1 ? b.translucent : b.water;
+				GeometryBuffer g = pass == 0 ? b.opaque : pass == 1 ? b.translucent : pass == 2 ? b.water : b.sway;
 				if (g.faces() == 0)
 				{
 					continue;
@@ -412,11 +478,17 @@ public final class StaticSceneBuilder
 				faces[i] = g.faces();
 				translucent[i] = pass == 1;
 				water[i] = pass == 2;
+				swayGroup[i] = pass == 3;
+				if (pass == 3)
+				{
+					System.arraycopy(b.swayWeights, 0, swayWeights, sway.faces() * 3, g.faces() * 3);
+					sway.append(g);
+				}
 				all.append(g);
 				++i;
 			}
 		}
-		return new StaticScene.Zone(zx, zz, all, level, roof, base, faces, translucent, water);
+		return new StaticScene.Zone(zx, zz, all, level, roof, base, faces, translucent, water, swayGroup, sway, swayWeights);
 	}
 
 	private void uploadTile(Tile t, Bucket bucket)
@@ -467,7 +539,14 @@ public final class StaticSceneBuilder
 			{
 				continue;
 			}
-			pushRenderable(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), bucket);
+			if (foliage.test(go.getId()))
+			{
+				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), bucket);
+			}
+			else
+			{
+				pushRenderable(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), bucket);
+			}
 		}
 
 		Tile bridge = t.getBridge();
@@ -496,6 +575,42 @@ public final class StaticSceneBuilder
 		{
 			pusher.push(m, orientation, x, y, z, null, palette, bucket.opaque, bucket.translucent);
 		}
+	}
+
+	// Foliage goes to its own group with a weight per vertex: the base stays put and the
+	// canopy moves fully, so the wind bends the tree rather than sliding it.
+	private void pushFoliage(Renderable r, int orientation, int x, int y, int z, Bucket bucket)
+	{
+		Model m = r instanceof Model ? (Model) r : r instanceof DynamicObject ? ((DynamicObject) r).getModelZbuf() : null;
+		if (m == null)
+		{
+			return;
+		}
+		int first = bucket.sway.faces();
+		int translucentBefore = bucket.translucent.faces();
+		pusher.push(m, orientation, x, y, z, null, palette, bucket.sway, bucket.translucent);
+		int added = bucket.sway.faces() - first;
+		if (added == 0)
+		{
+			return;
+		}
+		// Translucent parts of foliage stay static; only the opaque faces sway.
+		if (bucket.swayWeights.length < bucket.sway.faces() * 3)
+		{
+			bucket.swayWeights = java.util.Arrays.copyOf(bucket.swayWeights, Math.max(bucket.sway.faces() * 3, bucket.swayWeights.length * 2));
+		}
+		float height = Math.max(m.getModelHeight(), 1);
+		float[] pos = bucket.sway.positions();
+		for (int f = first; f < first + added; ++f)
+		{
+			for (int v = 0; v < 3; ++v)
+			{
+				float above = (y - pos[(f * 3 + v) * 3 + 1]) / height;
+				float w = Math.max(0f, Math.min(1f, above));
+				bucket.swayWeights[f * 3 + v] = w * w;
+			}
+		}
+		assert bucket.translucent.faces() >= translucentBefore;
 	}
 
 	private int cornerColor(int hsl, int plane, int gridX, int gridY)

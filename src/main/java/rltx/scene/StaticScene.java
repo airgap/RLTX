@@ -20,8 +20,14 @@ public final class StaticScene
 		public final boolean[] groupTranslucent;
 		/** Water surfaces, kept apart so shadow rays can pass through them. */
 		public final boolean[] groupWater;
+		/** Foliage that sways in the wind; near the camera these groups are replaced by swayed copies each frame. */
+		public final boolean[] groupSway;
+		/** The foliage faces of this zone in their resting pose, and per vertex how freely each moves. */
+		public final GeometryBuffer sway;
+		public final float[] swayWeights;
 
-		Zone(int zx, int zz, GeometryBuffer geometry, int[] groupLevel, int[] groupRoofId, int[] groupFaceBase, int[] groupFaceCount, boolean[] groupTranslucent, boolean[] groupWater)
+		Zone(int zx, int zz, GeometryBuffer geometry, int[] groupLevel, int[] groupRoofId, int[] groupFaceBase, int[] groupFaceCount, boolean[] groupTranslucent, boolean[] groupWater,
+			boolean[] groupSway, GeometryBuffer sway, float[] swayWeights)
 		{
 			this.zx = zx;
 			this.zz = zz;
@@ -32,6 +38,9 @@ public final class StaticScene
 			this.groupFaceCount = groupFaceCount;
 			this.groupTranslucent = groupTranslucent;
 			this.groupWater = groupWater;
+			this.groupSway = groupSway;
+			this.sway = sway;
+			this.swayWeights = swayWeights;
 		}
 
 		public int groupCount()
