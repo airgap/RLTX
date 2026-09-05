@@ -1272,6 +1272,30 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "fireflies",
+		name = "Fireflies",
+		description = "Fireflies drifting over swamps and graveyards on dry nights",
+		section = weatherSection,
+		position = 40
+	)
+	default boolean fireflies()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "dustMotes",
+		name = "Dust motes",
+		description = "Specks of dust hanging in the air, seen where sunlight catches them",
+		section = weatherSection,
+		position = 41
+	)
+	default boolean dustMotes()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "lightning",
 		name = "Lightning",
 		description = "Flashes of light during thunderstorms.",

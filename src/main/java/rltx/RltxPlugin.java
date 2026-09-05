@@ -1761,6 +1761,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.flash = flash;
 		frame.mist = config.mist() / 100f;
 		frame.mistEverywhere = config.mistEverywhere();
+		frame.fireflies = config.fireflies();
+		frame.dustMotes = config.dustMotes();
 		frame.lightShafts = config.lightShafts() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
 		// Wind blows away from its meteorological direction; full strength carries particles

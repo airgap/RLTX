@@ -86,6 +86,8 @@ public final class FrameParams
 	public boolean caustics, rainRipples, puddles, runoff;
 	public boolean terrainTextures, terrainSmoothing;
 	public boolean mistEverywhere;
+	/** Fireflies over misty ground at night, and sunlit dust motes by day. */
+	public boolean fireflies, dustMotes;
 	/** Strength of terrain normal maps, 0 to 2. */
 	public float terrainBump;
 	/** Colour grading: contrast about mid grey, saturation, and warm or cool shift from -1 to 1. */
