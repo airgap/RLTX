@@ -939,6 +939,18 @@ public interface RltxConfig extends Config
 	)
 	default Keybind controlPanelKey()
 	{
+		return new Keybind(KeyEvent.VK_F8, 0);
+	}
+
+	@ConfigItem(
+		keyName = "quadPhotoKey",
+		name = "Quad-resolution photo key",
+		description = "Takes a photo at twice the width and height of the view, accumulated like any photo, whether or not the interface is hidden. The game pauses while it renders, about four times as long as a normal photo.",
+		section = cameraSection,
+		position = 39
+	)
+	default Keybind quadPhotoKey()
+	{
 		return new Keybind(KeyEvent.VK_F9, 0);
 	}
 

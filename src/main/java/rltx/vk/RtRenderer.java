@@ -1576,6 +1576,26 @@ public final class RtRenderer
 		}
 	}
 
+	/** The last finished frame as shown, ARGB row by row. Waits for the GPU. */
+	public int[] readbackOutput()
+	{
+		ByteBuffer rgba = readbackImage(output, 0, 0, outputWidth, outputHeight, 4);
+		try
+		{
+			int[] argb = new int[outputWidth * outputHeight];
+			for (int i = 0; i < argb.length; ++i)
+			{
+				int o = i * 4;
+				argb[i] = 0xff000000 | (rgba.get(o) & 0xff) << 16 | (rgba.get(o + 1) & 0xff) << 8 | (rgba.get(o + 2) & 0xff);
+			}
+			return argb;
+		}
+		finally
+		{
+			MemoryUtil.memFree(rgba);
+		}
+	}
+
 	/** The last finished frame's accumulated colour, linear RGB floats row by row. Waits for the GPU. */
 	public float[] readbackColor()
 	{

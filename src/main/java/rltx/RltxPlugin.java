@@ -356,6 +356,47 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	}
 
 	private volatile boolean burstPending;
+	private volatile boolean quadPending;
+
+	private final HotkeyListener quadPhotoKey = new HotkeyListener(() -> config.quadPhotoKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			quadPending = true;
+		}
+	};
+
+	// A photo at twice the width and height of the view: the renderer's images are resized for the
+	// burst, the field of view held by doubling the zoom, the result read straight back, and the
+	// view-sized images restored and handed back to OpenGL for the frame that follows.
+	private void quadPhoto(int width, int height)
+	{
+		float zoom = frame.zoom;
+		float diffusionRadius = frame.diffusionRadius;
+		frame.zoom = zoom * 2f;
+		frame.diffusionRadius = diffusionRadius * 2f;
+		renderer.ensureOutput(width * 2, height * 2);
+		burst(config.photoBurst(), false);
+		glSignalPending = false;
+		int[] argb = renderer.readbackOutput();
+		float[] linear = config.linearExport() ? renderer.readbackColor() : null;
+		float exposure = frame.exposure;
+		frame.zoom = zoom;
+		frame.diffusionRadius = diffusionRadius;
+		renderer.ensureOutput(width, height);
+		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
+		int w = width * 2;
+		int h = height * 2;
+		Thread saver = new Thread(() ->
+		{
+			BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+			image.setRGB(0, 0, w, h, argb, 0, w);
+			savePhoto(image, linear, w, h, exposure);
+		}, "rltx-photo");
+		saver.setDaemon(true);
+		saver.start();
+	}
 
 	private void takePhoto()
 	{
@@ -583,6 +624,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// so the photo taken of it has neither noise nor denoiser blur. The client waits meanwhile.
 	private void burst(int frames)
 	{
+		burst(frames, true);
+	}
+
+	// A burst that is not presented leaves OpenGL's semaphore alone, since nothing will wait on it.
+	private void burst(int frames, boolean present)
+	{
 		frame.historyFrames = frames + 1;
 		frame.dynamicHistoryFrames = frames + 1;
 		frame.denoisePasses = 1;
@@ -598,7 +645,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				renderer.beginFrame();
 			}
-			renderer.submit(frame, dynamic, dynamicTranslucent, i == 0 && glSignalPending, i == frames);
+			renderer.submit(frame, dynamic, dynamicTranslucent, i == 0 && glSignalPending, present && i == frames);
 		}
 		frame.still = false;
 		frame.thinLens = false;
@@ -1623,6 +1670,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		groundMarkers = new GroundMarkers(pluginManager, overlayManager);
 		controlPanel = new ControlPanel(configManager, config);
 		keyManager.registerKeyListener(controlPanelKey);
+		keyManager.registerKeyListener(quadPhotoKey);
 		keyManager.registerKeyListener(photoModeKey);
 		keyManager.registerKeyListener(freeCameraKey);
 		keyManager.registerKeyListener(cinemaKeyframeKey);
@@ -1706,6 +1754,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		keyManager.unregisterKeyListener(photoModeKey);
 		keyManager.unregisterKeyListener(freeCameraKey);
 		keyManager.unregisterKeyListener(controlPanelKey);
+		keyManager.unregisterKeyListener(quadPhotoKey);
 		controlPanel.dispose();
 		keyManager.unregisterKeyListener(cinemaKeyframeKey);
 		keyManager.unregisterKeyListener(cinemaClearKey);
@@ -2529,6 +2578,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		trackFootprints();
 		fillUnderwater();
 		fillRunoff();
+		if (quadPending)
+		{
+			quadPending = false;
+			quadPhoto(width, height);
+			renderer.beginFrame();
+		}
 		if (cinemaFrame >= 0)
 		{
 			burst(config.cinemaBurst());
