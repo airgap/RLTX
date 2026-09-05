@@ -53,9 +53,62 @@ layout(set = 0, binding = 17, rgba16f) uniform readonly image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform readonly image2D filterB;
 layout(set = 0, binding = 30, rgba16f) uniform readonly image2D bloomBlur;
 layout(set = 0, binding = 35, rgba16f) uniform readonly image2D diffuseBlur;
+layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plumes;
 
 const float MAX_COC = 20.0;
 const uint FLAG_THIN_LENS = 2097152u;
+const uint FLAG_SHIMMER = 67108864u;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float valueNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// Hot air over fires bending what stands behind it: the column above each smoke source,
+// projected to the screen, shifts the pixels it covers by a rolling noise that fades upward.
+vec2 shimmer(ivec2 p, ivec2 size) {
+  int count = int(u.denoise.w);
+  vec2 shift = vec2(0.0);
+  if (count <= 0) {
+    return shift;
+  }
+  vec2 centre = vec2(size) * 0.5;
+  float depth = imageLoad(currPos, p).w;
+  float t = u.weather3.x;
+  for (int i = 0; i < count; ++i) {
+    vec4 s = plumes.v[i];
+    vec3 rel = s.xyz - u.cam.xyz;
+    vec3 v = vec3(dot(vec3(u.r0.x, u.r1.x, u.r2.x), rel), dot(vec3(u.r0.y, u.r1.y, u.r2.y), rel), dot(vec3(u.r0.z, u.r1.z, u.r2.z), rel));
+    if (v.z < 50.0) {
+      continue;
+    }
+    float dist = length(rel);
+    if (depth > 0.0 && depth < dist - 20.0) {
+      continue;
+    }
+    float scale = u.cam.w / v.z;
+    vec2 base = centre + v.xy / v.z * u.cam.w;
+    vec2 d = vec2(p) + 0.5 - base;
+    float up = -d.y;
+    float height = 260.0 * scale;
+    float radius = 45.0 * scale;
+    if (up < 0.0 || up > height || abs(d.x) > radius) {
+      continue;
+    }
+    float strength = (1.0 - up / height) * (1.0 - smoothstep(0.5, 1.0, abs(d.x) / radius)) * s.w;
+    vec2 n = vec2(valueNoise2(vec2(d.x * 0.08, up * 0.05 - t * 6.0)), valueNoise2(vec2(d.x * 0.07 + 9.0, up * 0.06 - t * 5.0))) - 0.5;
+    shift += n * vec2(1.0, 0.5) * (7.0 * scale * strength);
+  }
+  return shift;
+}
 const int TAPS = 48;
 const float GOLDEN_ANGLE = 2.39996323;
 
@@ -237,6 +290,12 @@ void main() {
     return;
   }
   vec3 c = u.post2.y > 0.0 ? aberrated(p, size) : readColor(p);
+  if ((u.misc.y & FLAG_SHIMMER) != 0u) {
+    vec2 s = shimmer(p, size);
+    if (dot(s, s) > 0.0) {
+      c = readColorAt(vec2(p) + 0.5 + s, size);
+    }
+  }
   // A held frame traced through a real lens has its blur already.
   if (u.path.y > 0.0 && (u.misc.y & FLAG_THIN_LENS) == 0u) {
     c = depthOfField(p, size, c);

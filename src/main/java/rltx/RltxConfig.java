@@ -1199,6 +1199,26 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	enum AuroraMode
+	{
+		OFF("Off"),
+		REAL("Where it belongs"),
+		ALWAYS("Everywhere");
+
+		private final String label;
+
+		AuroraMode(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
 	enum SeasonMode
 	{
 		REAL_DATE("Real date and place"),
@@ -1444,6 +1464,30 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "rainbows",
+		name = "Rainbows",
+		description = "A rainbow, and its fainter second bow, when the sun is low behind you and rain is falling or the ground is still wet",
+		section = weatherSection,
+		position = 45
+	)
+	default boolean rainbows()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "heatShimmer",
+		name = "Heat shimmer",
+		description = "Hot air above fires and braziers bending what stands behind it",
+		section = weatherSection,
+		position = 46
+	)
+	default boolean heatShimmer()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "seasonMode",
 		name = "Season",
 		description = "Leaves turn and fall through autumn, trees stand bare in winter and blossom in spring, by the real date for your hemisphere or a season of your choosing.",
@@ -1491,6 +1535,18 @@ public interface RltxConfig extends Config
 	default boolean physicalSky()
 	{
 		return true;
+	}
+
+	@ConfigItem(
+		keyName = "aurora",
+		name = "Aurora",
+		description = "Curtains of aurora on clear nights: where they belong, above about fifty degrees of latitude by your real place, or everywhere",
+		section = skySection,
+		position = 46
+	)
+	default AuroraMode aurora()
+	{
+		return AuroraMode.REAL;
 	}
 
 	@ConfigItem(
@@ -1591,6 +1647,18 @@ public interface RltxConfig extends Config
 		position = 40
 	)
 	default boolean footprints()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "underwater",
+		name = "Underwater camera",
+		description = "When the free camera dips below the water: the view greens and dims with distance, sunlight dances on the bed, and the surface mirrors or lets the sky through as the angle allows",
+		section = surfacesSection,
+		position = 41
+	)
+	default boolean underwater()
 	{
 		return true;
 	}

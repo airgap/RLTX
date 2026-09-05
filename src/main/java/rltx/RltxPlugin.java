@@ -1183,6 +1183,34 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.guideB = (float) Math.pow(colour.getBlue() / 255.0, 2.2) * strength;
 	}
 
+	// Whether the camera has gone below a water surface, and where that surface is.
+	private void fillUnderwater()
+	{
+		frame.underwater = false;
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		WorldView wv = client.getTopLevelWorldView();
+		if (!config.underwater() || top == null || wv == null)
+		{
+			return;
+		}
+		LocalPoint lp = new LocalPoint((int) frame.cameraX, (int) frame.cameraZ, wv);
+		if (!lp.isInScene())
+		{
+			return;
+		}
+		int plane = client.getPlane();
+		if (!top.waterBed.isWater(plane, lp.getSceneX(), lp.getSceneY()))
+		{
+			return;
+		}
+		float surface = Perspective.getTileHeight(client, lp, plane);
+		if (frame.cameraY > surface + 4f)
+		{
+			frame.underwater = true;
+			frame.waterSurfaceY = surface;
+		}
+	}
+
 	// Footprints: the last steps of everyone in view, alternating feet, kept in a ring.
 	private final float[] printPacked = new float[RtRenderer.MAX_PRINTS * 8];
 	private int printCount, printNext;
@@ -2392,6 +2420,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillMarkers();
 		fillPlumes();
 		trackFootprints();
+		fillUnderwater();
 		fillRunoff();
 		if (cinemaFrame >= 0)
 		{
@@ -2524,6 +2553,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.fireflies = config.fireflies();
 		frame.dustMotes = config.dustMotes();
 		frame.wildlife = config.wildlife();
+		frame.rainbows = config.rainbows();
+		frame.heatShimmer = config.heatShimmer();
+		frame.latitude = (float) latitude();
+		RltxConfig.AuroraMode auroraMode = config.aurora();
+		frame.auroraWeight = auroraMode == RltxConfig.AuroraMode.ALWAYS ? 1f
+			: auroraMode == RltxConfig.AuroraMode.REAL ? smoothstep(50f, 65f, (float) Math.abs(latitude())) : 0f;
 		frame.season = seasonKind();
 		frame.seasonProgress = seasonProgress();
 		// Leaves fall from early autumn, most thickly late; petals drift around the middle of spring.

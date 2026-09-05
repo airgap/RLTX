@@ -120,6 +120,9 @@ public final class RtRenderer
 	private static final int FLAG_THIN_LENS = 2097152;
 	private static final int FLAG_PHYSICAL_SKY = 8388608;
 	private static final int FLAG_WILDLIFE = 16777216;
+	private static final int FLAG_UNDERWATER = 33554432;
+	private static final int FLAG_SHIMMER = 67108864;
+	private static final int FLAG_RAINBOWS = 134217728;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -2155,7 +2158,10 @@ public final class RtRenderer
 			| (p.still ? FLAG_STILL : 0)
 			| (p.thinLens ? FLAG_THIN_LENS : 0)
 			| (p.physicalSky ? FLAG_PHYSICAL_SKY : 0)
-			| (p.wildlife ? FLAG_WILDLIFE : 0);
+			| (p.wildlife ? FLAG_WILDLIFE : 0)
+			| (p.underwater ? FLAG_UNDERWATER : 0)
+			| (p.heatShimmer ? FLAG_SHIMMER : 0)
+			| (p.rainbows ? FLAG_RAINBOWS : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);
@@ -2185,7 +2191,7 @@ public final class RtRenderer
 		b.putFloat(p.season).putFloat(p.seasonProgress).putFloat(p.leafFall).putFloat(p.petals);
 		float[] s = p.starRotation;
 		b.putFloat(s[0]).putFloat(s[1]).putFloat(s[2]).putFloat(p.starBrightness);
-		b.putFloat(s[3]).putFloat(s[4]).putFloat(s[5]).putFloat(0f);
+		b.putFloat(s[3]).putFloat(s[4]).putFloat(s[5]).putFloat(p.auroraWeight);
 		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(0f);
 		b.putFloat(p.moonSunX).putFloat(p.moonSunY).putFloat(p.moonSunZ).putFloat(p.moonFraction);
 		b.putFloat(p.printCount).putFloat(p.footprintStrength).putFloat(p.waterSurfaceY).putFloat(p.latitude);

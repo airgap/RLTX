@@ -92,6 +92,10 @@ public final class FrameParams
 	public boolean fireflies, dustMotes;
 	/** Birds, bats and butterflies. */
 	public boolean wildlife;
+	/** Rainbows after rain, hot air over fires, and the camera being under water. */
+	public boolean rainbows, heatShimmer, underwater;
+	/** How strongly the aurora shows, 0 to 1. */
+	public float auroraWeight;
 	/** How many smoke plumes were uploaded this frame. */
 	public int plumeCount;
 	/** Ground marker tiles uploaded this frame and their glow scale; 0 draws none. */

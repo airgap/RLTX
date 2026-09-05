@@ -897,6 +897,11 @@ void main() {
       vec3 sky = imageLoad(sampleImage, p).rgb + lightShafts(p) * u.params.y;
       writeBright(p, sky, luminance(sky) / u.params.y);
       vec3 dir = cameraRay(p);
+      if ((u.misc.y & 33554432u) != 0u) {
+        // Under water the open ends in the murk rather than the sky.
+        writeOutput(p, mix(sky, tonemap(u.skyAmbient.rgb * vec3(0.12, 0.42, 0.5)), 0.9));
+        return;
+      }
       writeOutput(p, precipitation(swampMist(smokePlumes(ambientLife(sky, p, dir, -1.0), p, dir, -1.0), p, dir, -1.0), p, -1.0));
     }
     return;
@@ -967,6 +972,13 @@ void main() {
     vec3 albedo = imageLoad(albedoImage, p).rgb;
     float depth = imageLoad(currPos, p).w;
     vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p) + (pathGlow(position.xyz, normal) + markerGlow(position.xyz, normal)) / u.params.y, cameraRay(p), depth);
+    bool underwater = (u.misc.y & 33554432u) != 0u;
+    if (underwater) {
+      // Under water: red goes first, then green, until only the deep colour is left.
+      float reach = depth > 0.0 ? depth : 3000.0;
+      vec3 deep = u.skyAmbient.rgb * vec3(0.12, 0.42, 0.5) + vec3(0.002, 0.01, 0.012);
+      hdr = mix(deep, hdr, exp(-reach * vec3(0.0022, 0.0012, 0.0009)));
+    }
     writeBright(p, hdr * u.params.y, luminance(hdr));
     vec3 c = tonemap(hdr);
     // Sky pixels carry a negative depth; they are fogged in the trace pass instead.
@@ -978,6 +990,10 @@ void main() {
     if (depth > 0.0 && u.post.z > 0.0) {
       float fade = smoothstep(u.post.z * (1.0 - u.post.w), u.post.z, depth);
       c = mix(c, u.fog.rgb, fade * fade * (3.0 - 2.0 * fade));
+    }
+    if (underwater) {
+      writeOutput(p, c);
+      return;
     }
     c = splashes(c, imageLoad(currPos, p).xyz, imageLoad(normalImage, p).xyz, depth);
     c = footRipples(c, imageLoad(currPos, p).xyz, imageLoad(normalImage, p).xyz, depth);

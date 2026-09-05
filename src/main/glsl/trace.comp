@@ -97,6 +97,8 @@ const uint FLAG_RUNOFF = 65536u;
 const uint FLAG_STILL = 1048576u;
 const uint FLAG_THIN_LENS = 2097152u;
 const uint FLAG_PHYSICAL_SKY = 8388608u;
+const uint FLAG_UNDERWATER = 33554432u;
+const uint FLAG_RAINBOWS = 134217728u;
 const uint WATER_BIT = 0x80000000u;
 const uint TERRAIN_BIT = 0x40000000u;
 const uint FLAME_BIT = 0x20000000u;
@@ -779,15 +781,76 @@ vec3 skyRadiance(vec3 d) {
   return overcast(c) + vec3(2.0 * u.fog.w);
 }
 
+vec3 spectrum(float t) {
+  vec3 a = mix(vec3(0.55, 0.0, 1.0), vec3(0.0, 0.4, 1.0), smoothstep(0.0, 0.25, t));
+  a = mix(a, vec3(0.0, 1.0, 0.3), smoothstep(0.25, 0.5, t));
+  a = mix(a, vec3(1.0, 1.0, 0.0), smoothstep(0.5, 0.75, t));
+  return mix(a, vec3(1.0, 0.05, 0.0), smoothstep(0.75, 1.0, t));
+}
+
+// A rainbow when the sun is low behind the viewer and rain is falling or has just fallen: the
+// primary bow forty-two degrees from the point opposite the sun with red outside, and the
+// fainter secondary at fifty-two with its colours reversed.
+vec3 rainbow(vec3 d) {
+  if ((u.misc.y & FLAG_RAINBOWS) == 0u || u.sun.w <= 0.0 || u.sun.y >= 0.0 || u.post2.w > 0.66 || d.y > 0.0) {
+    return vec3(0.0);
+  }
+  float wet = max(u.weather.z, smoothstep(0.35, 0.8, u.weather2.x)) * (1.0 - 0.8 * u.weather.x);
+  if (wet <= 0.0) {
+    return vec3(0.0);
+  }
+  float angle = degrees(acos(clamp(dot(d, -u.sun.xyz), -1.0, 1.0)));
+  vec3 bow = vec3(0.0);
+  float t1 = (angle - 40.6) / 1.8;
+  if (t1 > 0.0 && t1 < 1.0) {
+    bow += spectrum(t1) * sin(3.14159265 * t1);
+  }
+  float t2 = (53.6 - angle) / 3.2;
+  if (t2 > 0.0 && t2 < 1.0) {
+    bow += spectrum(t2) * (0.35 * sin(3.14159265 * t2));
+  }
+  return bow * (0.28 * wet * min(u.sun.w, 1.0) * smoothstep(0.0, -0.05, d.y));
+}
+
+// Curtains of aurora on clear nights: a thin layer far above the clouds, to the north, marched
+// along the view ray; green low and violet high, folding and rippling slowly with time.
+vec3 aurora(vec3 d) {
+  float weight = u.star1.w * (1.0 - smoothstep(-0.2, -0.05, u.post2.w)) * (1.0 - u.weather.x);
+  if (weight <= 0.001 || d.y > -0.03) {
+    return vec3(0.0);
+  }
+  const float BOTTOM = -9000.0;
+  const float TOP = -16000.0;
+  const int STEPS = 14;
+  float t0 = (BOTTOM - u.cam.y) / d.y;
+  float t1 = (TOP - u.cam.y) / d.y;
+  float dt = (t1 - t0) / float(STEPS);
+  float t = u.weather3.x;
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < STEPS; ++i) {
+    vec3 q = d * (t0 + dt * (float(i) + 0.5));
+    float h = (BOTTOM - (u.cam.y + q.y)) / (BOTTOM - TOP);
+    float fold = valueNoise2(vec2(q.x / 2600.0 + t * 0.02, t * 0.05)) * 2600.0;
+    float across = (q.z - (6000.0 + fold)) / 1500.0;
+    float second = (q.z - (9500.0 - fold * 0.6)) / 1100.0;
+    float curtain = exp(-across * across) + 0.6 * exp(-second * second);
+    float ripple = 0.55 + 0.45 * valueNoise2(vec2(q.x / 380.0 - t * 0.15, h * 3.0 + t * 0.1));
+    float vertical = smoothstep(0.0, 0.15, h) * exp(-h * 2.2);
+    sum += mix(vec3(0.15, 1.0, 0.35), vec3(0.65, 0.2, 1.0), smoothstep(0.2, 0.9, h)) * (curtain * ripple * vertical);
+  }
+  return sum * (0.0045 * weight);
+}
+
 // What the camera sees where no geometry is: the sky at its painted colours, shown as-is,
 // under the cloud cover, with fog thickening towards the horizon and lightning whitening it.
 vec3 skyBackground(vec3 d) {
   vec3 c;
   if ((u.misc.y & FLAG_PROCEDURAL_SKY) != 0u) {
-    c = withClouds(proceduralSky(d, true), d);
+    c = withClouds(proceduralSky(d, true) + aurora(d), d);
   } else {
-    c = withClouds(overcast((u.misc.y & FLAG_SKYBOX) == 0u ? u.extra.yzw : texture(skybox, skyUv(d)).rgb), d);
+    c = withClouds(overcast((u.misc.y & FLAG_SKYBOX) == 0u ? u.extra.yzw : texture(skybox, skyUv(d)).rgb) + aurora(d), d);
   }
+  c += rainbow(d);
   float horizon = 1.0 - clamp(-d.y * 4.0, 0.0, 1.0);
   c = mix(c, u.fog.rgb, clamp(u.weather.y, 0.0, 1.0) * horizon);
   return c + vec3(0.8 * u.fog.w);
@@ -835,6 +898,26 @@ vec3 directSun(Hit hit, vec3 sunDir, bool shadows, inout uint seed);
 // the scene light plus a specular sun highlight and foam along the shore, shown over the bed
 // seen through the surface at an opacity that rises with Fresnel and foam. The reflection of
 // the scene stands in for 117 HD's sky gradient, and flat types hide the bed entirely.
+// The surface seen from beneath: beyond the critical angle it mirrors the underwater scene, and
+// within it the sky shows through, bent by refraction and dimmed by Fresnel.
+vec3 shadeWaterFromBelow(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
+  WaterType wt = waterType(hit.waterType);
+  vec3 wn = -waterNormal(hit.surface, wt.normalStrength * u.path.w, wt.duration);
+  float cosI = clamp(dot(-dir, wn), 0.0, 1.0);
+  vec3 reflectDir = reflect(dir, wn);
+  vec3 reflection = vec3(0.02, 0.10, 0.12);
+  Hit mirror;
+  if (trace(hit.surface + wn * RAY_EPS, reflectDir, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, mirror)) {
+    reflection = mirror.albedo * (vec3(u.sky.w) + 0.3 * directSun(mirror, sunDir, shadows, seed) + directLocal(mirror));
+  }
+  vec3 refracted = refract(dir, wn, 1.33);
+  if (dot(refracted, refracted) == 0.0) {
+    return reflection;
+  }
+  float fresnel = 0.02 + 0.98 * pow(1.0 - cosI, 5.0);
+  return mix(skyBackground(refracted) * 0.9, reflection, fresnel);
+}
+
 vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
   WaterType wt = waterType(hit.waterType);
   vec3 wn = waterNormal(hit.surface, wt.normalStrength * u.path.w, wt.duration);
@@ -964,6 +1047,11 @@ void main() {
   vec3 viewDir = vec3((float(px.x) + jitter.x - float(w) * 0.5) / zoom, (float(px.y) + jitter.y - float(h) * 0.5) / zoom, 1.0);
   vec3 dir = normalize(vec3(dot(row0, viewDir), dot(row1, viewDir), dot(row2, viewDir)));
   vec3 origin = camPos;
+  if ((flags & FLAG_UNDERWATER) != 0u) {
+    // Under water the view sways a little with the waves overhead.
+    float t = u.weather3.x;
+    dir = normalize(dir + 0.012 * vec3(sin(t * 1.7 + viewDir.y * 6.0), sin(t * 1.3 + viewDir.x * 5.0), cos(t * 1.1 + viewDir.x * 4.0 + viewDir.y * 3.0)));
+  }
   if ((flags & FLAG_THIN_LENS) != 0u && u.path.y > 0.0) {
     // Thin lens: the ray leaves a random point on the aperture and passes through the point
     // where the pinhole ray meets the plane of focus, so depths out of focus blur for real.
@@ -1052,6 +1140,13 @@ void main() {
   float sunNdl = max(dot(hit.n, sunDir), 0.0);
   float sunVisible = sunNdl > 0.0 && u.sun.w > 0.0 && !(shadows && occluded(hit.p, sunDir, seed)) ? cloudShadow(hit.p) : 0.0;
   vec3 sunLight = u.sunColor.rgb * (u.sun.w * sunVisible);
+  if ((flags & FLAG_UNDERWATER) != 0u && !hit.water) {
+    // Sunlight under water: dimmed by its passage and focused by the waves into a dancing web.
+    float t = u.weather3.x;
+    float n1 = valueNoise2(hit.surface.xz / 56.0 + vec2(t * 0.21, -t * 0.13));
+    float n2 = valueNoise2(hit.surface.xz / 44.0 + vec2(-t * 0.17, t * 0.11) + 7.3);
+    sunLight *= 0.45 + pow(n1 * n2, 3.0) * 6.0;
+  }
   specular += specularOf(hit.material, hit.n, toEye, sunDir, sunLight);
   vec3 light = vec3(u.sky.w) + sunLight * sunNdl + directLocalSpecular(hit, toEye, specular);
   if (hit.flame && u.material.x > 0.0) {
@@ -1108,7 +1203,7 @@ void main() {
   // plus the sun's glint. Stored like a translucent pixel and with a short history.
   bool waterPixel = false;
   if (hit.water) {
-    light = shadeWater(hit, dir, sunDir, shadows, seed);
+    light = (flags & FLAG_UNDERWATER) != 0u && dir.y < 0.0 ? shadeWaterFromBelow(hit, dir, sunDir, shadows, seed) : shadeWater(hit, dir, sunDir, shadows, seed);
     hit.albedo = vec3(1.0);
     waterPixel = true;
   } else if (wetPixel && puddle > 0.3) {

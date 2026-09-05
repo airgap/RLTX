@@ -276,6 +276,24 @@ public final class StaticSceneBuilder
 			this.depth = depth;
 			this.color = color;
 		}
+
+		/** Whether a scene tile lies within water, by the bed having depth at any of its corners. */
+		public boolean isWater(int plane, int sceneX, int sceneY)
+		{
+			if (plane < 0 || plane >= depth.length)
+			{
+				return false;
+			}
+			int offset = (depth[plane].length - 1 - Constants.SCENE_SIZE) / 2;
+			int x = sceneX + offset;
+			int y = sceneY + offset;
+			int[][] d = depth[plane];
+			if (x < 0 || y < 0 || x + 1 >= d.length || y + 1 >= d[0].length)
+			{
+				return false;
+			}
+			return d[x][y] > 0 || d[x + 1][y] > 0 || d[x][y + 1] > 0 || d[x + 1][y + 1] > 0;
+		}
 	}
 
 	/**
