@@ -353,6 +353,32 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		freeX += (inv[2] * forward + inv[0] * right) * speed;
 		freeY += (inv[5] * forward + inv[3] * right) * speed - up * speed;
 		freeZ += (inv[8] * forward + inv[6] * right) * speed;
+		tetherFreeCamera();
+	}
+
+	// The free camera stays within a sphere about the character, so it frames shots around them
+	// rather than roaming the loaded area.
+	private void tetherFreeCamera()
+	{
+		Player local = client.getLocalPlayer();
+		LocalPoint lp = local == null ? null : local.getLocalLocation();
+		if (lp == null)
+		{
+			return;
+		}
+		float centreX = lp.getX();
+		float centreY = Perspective.getTileHeight(client, lp, local.getWorldLocation().getPlane()) - 120f;
+		float centreZ = lp.getY();
+		float range = config.freeCameraRange() * Perspective.LOCAL_TILE_SIZE;
+		float dx = freeX - centreX, dy = freeY - centreY, dz = freeZ - centreZ;
+		float d2 = dx * dx + dy * dy + dz * dz;
+		if (d2 > range * range)
+		{
+			float k = range / (float) Math.sqrt(d2);
+			freeX = centreX + dx * k;
+			freeY = centreY + dy * k;
+			freeZ = centreZ + dz * k;
+		}
 	}
 
 	private volatile boolean burstPending;

@@ -804,6 +804,19 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@Range(min = 2, max = 40)
+	@ConfigItem(
+		keyName = "freeCameraRange",
+		name = "Free camera range",
+		description = "How far the free camera may stray from your character, in tiles. Kept short, it frames shots around you without becoming a way to look anywhere in the loaded area.",
+		section = cameraSection,
+		position = 25
+	)
+	default int freeCameraRange()
+	{
+		return 8;
+	}
+
 	@ConfigItem(
 		keyName = "lineOfSight",
 		name = "Line of sight",
