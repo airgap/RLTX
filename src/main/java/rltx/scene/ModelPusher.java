@@ -26,6 +26,8 @@ public final class ModelPusher
 	/** Horizontal centre and highest point, in world space, of the flame faces the last push marked. */
 	public float flameX, flameTop, flameZ;
 	public int flameFaces;
+	/** Highlight palette index, 1 to 15, stamped on every face pushed; 0 for none. */
+	public int highlight;
 
 	// Vanilla flames are saturated orange to yellow faces; hue sits in the top six bits of the
 	// packed HSL as sixty-fourths of a turn, saturation in three bits, lightness in seven.
@@ -158,7 +160,7 @@ public final class ModelPusher
 			{
 				faceUvs(vx, vy, vz, a, b, c, textureFaces, t1, t2, t3, f);
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
-					palette.texture(textures[f]) & 0xffffff | opacity, WaterTextures.encode(textures[f]), u[0], v[0], u[1], v[1], u[2], v[2]);
+					palette.texture(textures[f]) & 0xffffff | opacity, WaterTextures.encode(textures[f]) | highlight << 24, u[0], v[0], u[1], v[1], u[2], v[2]);
 				continue;
 			}
 			int hsl = unlit != null ? unlit[f] & 0xffff : c1[f] & 0xffff;
@@ -171,11 +173,17 @@ public final class ModelPusher
 			if (flame)
 			{
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
-					rgb | opacity, FLAME_BIT, 0f, 0f, 0f, 0f, 0f, 0f);
+					rgb | opacity, FLAME_BIT | highlight << 24, 0f, 0f, 0f, 0f, 0f, 0f);
 				flameX += tx[a] + tx[b] + tx[c];
 				flameZ += tz[a] + tz[b] + tz[c];
 				flameTop = Math.min(flameTop, Math.min(ty[a], Math.min(ty[b], ty[c])));
 				++flameFaces;
+				continue;
+			}
+			if (highlight != 0)
+			{
+				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
+					rgb | opacity, highlight << 24, 0f, 0f, 0f, 0f, 0f, 0f);
 				continue;
 			}
 			out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz, rgb | opacity);

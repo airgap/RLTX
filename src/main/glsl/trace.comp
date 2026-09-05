@@ -40,6 +40,9 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 wind;     // wind velocity x and z, angular radius of the sky's light disc
   vec4 skyAmbient;
   vec4 eye;      // the character's eye position, and how dark what they cannot see is drawn
+  vec4 guide;
+  vec4 marks;    // ground marker count, marker glow scale, NPC rim glow scale
+  vec4 highlight[16]; // linear colours the faces of highlighted NPCs index
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
@@ -111,6 +114,7 @@ struct Hit {
   vec4 material;    // specular strength, gloss exponent, emissive, brightness or ground normal layer plus one
   bool terrain;     // untextured terrain face carrying a ground detail id
   bool flame;       // a flame face of a light-bearing object
+  uint highlight;   // index into the highlight palette, 0 for none
 };
 
 // A texture's material, or the global sheen for faces whose texture defines no specular.
@@ -381,6 +385,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   hit.material = materialOf(tex);
   hit.terrain = (texField & TERRAIN_BIT) != 0u;
   hit.flame = (texField & FLAME_BIT) != 0u;
+  hit.highlight = (texField >> 24) & 0xFu;
   if (hit.terrain) {
     if ((u.misc.y & FLAG_SMOOTH_TERRAIN) != 0u) {
       // The three vertex colours ride in the UV slots as raw bits.
@@ -958,6 +963,13 @@ void main() {
     float keep = seen ? 1.0 : 1.0 - u.eye.w;
     light *= keep;
     specular *= keep;
+  }
+
+  // Highlighted NPCs wear a rim of their highlight colour, brightest where the surface turns away.
+  if (hit.highlight != 0u && u.marks.z > 0.0) {
+    float rim = pow(1.0 - max(dot(hit.n, -dir), 0.0), 2.5);
+    hit.albedo = mix(hit.albedo, u.highlight[hit.highlight].rgb, rim);
+    light += vec3(rim * 3.0 * u.marks.z / u.params.y);
   }
 
   Hit stable = hit;

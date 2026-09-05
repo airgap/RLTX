@@ -42,6 +42,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 skyAmbient; // linear sky light on things in the open, rain speed scale
   vec4 eye;
   vec4 guide;      // display-space colour of the route glow, and the number of guide entries
+  vec4 marks;      // ground marker count, marker glow scale, NPC rim glow scale
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -62,6 +63,7 @@ layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
 layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
 layout(std430, set = 0, binding = 38) readonly buffer Guide { vec4 v[]; } guidePath;
 layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plumes;
+layout(std430, set = 0, binding = 40) readonly buffer Markers { vec4 v[]; } markers;
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
@@ -676,6 +678,35 @@ vec3 pathGlow(vec3 pos, vec3 n) {
   return u.guide.rgb * up * (0.3 * ribbon + 0.7 * core) * (0.55 + 0.9 * pulse);
 }
 
+// Ground Markers' tiles as pools of their own colour lying on the ground, breathing slowly.
+// Entry 0 is the bounding box in x and z; the rest are tile centres with the colour's bits in w.
+vec3 markerGlow(vec3 pos, vec3 n) {
+  int count = int(u.marks.x);
+  float up = max(-n.y, 0.0);
+  if (count < 1 || up <= 0.0) {
+    return vec3(0.0);
+  }
+  vec4 box = markers.v[0];
+  if (pos.x < box.x - 80.0 || pos.z < box.y - 80.0 || pos.x > box.z + 80.0 || pos.z > box.w + 80.0) {
+    return vec3(0.0);
+  }
+  vec3 glow = vec3(0.0);
+  for (int i = 1; i <= count; ++i) {
+    vec4 m = markers.v[i];
+    vec2 d = abs(pos.xz - m.xz);
+    float edge = max(d.x, d.y);
+    if (edge > 76.0 || abs(pos.y - m.y) > 90.0) {
+      continue;
+    }
+    uint bits = floatBitsToUint(m.w);
+    vec3 colour = vec3(float((bits >> 16u) & 0xFFu), float((bits >> 8u) & 0xFFu), float(bits & 0xFFu)) / 255.0;
+    colour *= colour;
+    float pool = (1.0 - smoothstep(40.0, 72.0, edge)) * (0.85 + 0.15 * sin(u.weather3.x * 1.7 + float(i)));
+    glow += colour * pool;
+  }
+  return glow * (up * u.marks.y);
+}
+
 void main() {
   uvec2 px = gl_GlobalInvocationID.xy;
   int w = int(u.misc.z);
@@ -761,7 +792,7 @@ void main() {
   if (pc.last != 0) {
     vec3 albedo = imageLoad(albedoImage, p).rgb;
     float depth = imageLoad(currPos, p).w;
-    vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p) + pathGlow(position.xyz, normal) / u.params.y, cameraRay(p), depth);
+    vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p) + (pathGlow(position.xyz, normal) + markerGlow(position.xyz, normal)) / u.params.y, cameraRay(p), depth);
     writeBright(p, hdr * u.params.y, luminance(hdr));
     vec3 c = tonemap(hdr);
     // Sky pixels carry a negative depth; they are fogged in the trace pass instead.

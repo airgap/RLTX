@@ -65,6 +65,11 @@ import net.runelite.client.input.MouseAdapter;
 import net.runelite.client.input.MouseManager;
 import net.runelite.client.ui.DrawManager;
 import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.game.npcoverlay.HighlightedNpc;
+import net.runelite.client.game.npcoverlay.NpcOverlayService;
+import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
 import net.runelite.client.util.HotkeyListener;
 import net.runelite.api.Actor;
 import net.runelite.api.Constants;
@@ -158,6 +163,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	@Inject
 	private OverlayManager overlayManager;
+
+	@Inject
+	private NpcOverlayService npcOverlayService;
 
 	// Photo mode: the interface layer is left out of the composite, and two corners of the view
 	// act as invisible buttons, top-left to restore it and bottom-right to save a photo.
@@ -687,6 +695,133 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			route = null;
 		}
+		WorldView wv = client.getTopLevelWorldView();
+		if (config.markerGlow() && wv != null && groundMarkers.bind())
+		{
+			groundMarkers.hideOverlay();
+			List<WorldPoint> tiles = new ArrayList<>();
+			List<Color> marks = new ArrayList<>();
+			groundMarkers.markers(wv, tiles, marks);
+			int[] colours = new int[marks.size()];
+			for (int i = 0; i < colours.length; ++i)
+			{
+				colours[i] = marks.get(i).getRGB();
+			}
+			markerColours = colours;
+			markerTiles = tiles.toArray(new WorldPoint[0]);
+		}
+		else
+		{
+			markerTiles = null;
+		}
+	}
+
+	// Ground Markers' tiles, refreshed each game tick, drawn as pools of light in the composite pass.
+	private GroundMarkers groundMarkers;
+	private WorldPoint[] markerTiles;
+	private int[] markerColours;
+	private final float[] markerPacked = new float[(RtRenderer.MAX_MARKERS + 1) * 4];
+
+	// Packs the markers on this plane: a bounding box, then tile centres with the colour's bits in w.
+	private void fillMarkers()
+	{
+		WorldView wv = client.getTopLevelWorldView();
+		WorldPoint[] tiles = markerTiles;
+		int[] colours = markerColours;
+		if (tiles == null || tiles.length == 0 || wv == null)
+		{
+			frame.markerCount = 0;
+			return;
+		}
+		int plane = client.getPlane();
+		float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+		int n = 0;
+		for (int i = 0; i < tiles.length && n < RtRenderer.MAX_MARKERS; ++i)
+		{
+			LocalPoint lp = tiles[i].getPlane() == plane ? LocalPoint.fromWorld(wv, tiles[i]) : null;
+			if (lp == null)
+			{
+				continue;
+			}
+			int o = (n + 1) * 4;
+			markerPacked[o] = lp.getX();
+			markerPacked[o + 1] = Perspective.getTileHeight(client, lp, plane);
+			markerPacked[o + 2] = lp.getY();
+			markerPacked[o + 3] = Float.intBitsToFloat(colours[i] & 0xffffff);
+			++n;
+			minX = Math.min(minX, lp.getX());
+			minZ = Math.min(minZ, lp.getY());
+			maxX = Math.max(maxX, lp.getX());
+			maxZ = Math.max(maxZ, lp.getY());
+		}
+		if (n == 0)
+		{
+			frame.markerCount = 0;
+			return;
+		}
+		markerPacked[0] = minX;
+		markerPacked[1] = minZ;
+		markerPacked[2] = maxX;
+		markerPacked[3] = maxZ;
+		renderer.setMarkers(markerPacked, (n + 1) * 4);
+		frame.markerCount = n;
+		frame.markerStrength = 1.5f * config.markerGlowStrength() / 100f;
+	}
+
+	// Which highlight colour each NPC wears this frame, as an index into the frame's palette; the
+	// colours come from every plugin that highlights NPCs through the client's overlay service.
+	private Field highlightedNpcsField;
+	private final Map<NPC, Integer> npcHighlight = new HashMap<>();
+
+	@SuppressWarnings("unchecked")
+	private void fillHighlights()
+	{
+		npcHighlight.clear();
+		frame.rimStrength = config.npcGlow() / 100f;
+		if (frame.rimStrength <= 0f)
+		{
+			return;
+		}
+		Map<NPC, HighlightedNpc> highlighted;
+		try
+		{
+			if (highlightedNpcsField == null)
+			{
+				highlightedNpcsField = NpcOverlayService.class.getDeclaredField("highlightedNpcs");
+				highlightedNpcsField.setAccessible(true);
+			}
+			highlighted = (Map<NPC, HighlightedNpc>) highlightedNpcsField.get(npcOverlayService);
+		}
+		catch (ReflectiveOperationException e)
+		{
+			throw new IllegalStateException("NPC highlights unreadable", e);
+		}
+		Map<Integer, Integer> slots = new HashMap<>();
+		for (Map.Entry<NPC, HighlightedNpc> entry : highlighted.entrySet())
+		{
+			Color colour = entry.getValue().getHighlightColor();
+			if (colour == null)
+			{
+				continue;
+			}
+			int rgb = colour.getRGB() & 0xffffff;
+			Integer slot = slots.get(rgb);
+			if (slot == null)
+			{
+				if (slots.size() >= 15)
+				{
+					continue;
+				}
+				slot = slots.size() + 1;
+				slots.put(rgb, slot);
+				int o = slot * 4;
+				frame.highlightColours[o] = (float) Math.pow(colour.getRed() / 255.0, 2.2);
+				frame.highlightColours[o + 1] = (float) Math.pow(colour.getGreen() / 255.0, 2.2);
+				frame.highlightColours[o + 2] = (float) Math.pow(colour.getBlue() / 255.0, 2.2);
+				frame.highlightColours[o + 3] = 1f;
+			}
+			npcHighlight.put(entry.getKey(), slot);
+		}
 	}
 
 	// Packs the route for the composite pass: a bounding box, then tile centres with their distance
@@ -846,6 +981,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		torchCarried = config.heldTorch();
 		torchFlameFaces = 0;
+		fillHighlights();
 		if (torchCarried)
 		{
 			applyHeldTorch();
@@ -1010,6 +1146,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	protected void startUp()
 	{
 		shortestPath = new ShortestPath(pluginManager, overlayManager);
+		groundMarkers = new GroundMarkers(pluginManager, overlayManager);
 		keyManager.registerKeyListener(photoModeKey);
 		keyManager.registerKeyListener(freeCameraKey);
 		keyManager.registerKeyListener(flightKeys);
@@ -1095,11 +1232,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		freeCamera = false;
 		torchCarried = false;
 		route = null;
+		markerTiles = null;
 		heldKeys.clear();
 		clientThread.invoke(() ->
 		{
 			restoreWeapon();
 			shortestPath.restoreTileOverlay();
+			groundMarkers.restoreOverlay();
 			client.setGpuFlags(0);
 			client.setDrawCallbacks(null);
 
@@ -1173,6 +1312,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			route = null;
 			clientThread.invoke(shortestPath::restoreTileOverlay);
+		}
+		if ("markerGlow".equals(event.getKey()) && !config.markerGlow())
+		{
+			markerTiles = null;
+			clientThread.invoke(groundMarkers::restoreOverlay);
 		}
 		if (renderer == null)
 		{
@@ -1602,8 +1746,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		framePusher.flames = torch || tileObject != null && hasLight(tileObject.getId())
 			|| renderable instanceof Projectile && lightLibrary().byProjectile.containsKey(((Projectile) renderable).getId())
 			|| renderable instanceof GraphicsObject && lightLibrary().byGraphicsObject.containsKey(((GraphicsObject) renderable).getId());
+		framePusher.highlight = renderable instanceof NPC ? npcHighlight.getOrDefault((NPC) renderable, 0) : 0;
 		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		framePusher.flames = false;
+		framePusher.highlight = 0;
 		if (torch)
 		{
 			torchFlameFaces = framePusher.flameFaces;
@@ -1727,6 +1873,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		pushFoliage();
 		fillLights();
 		fillGuide();
+		fillMarkers();
 		fillPlumes();
 		fillRunoff();
 		if (burstPending)

@@ -90,6 +90,12 @@ public final class FrameParams
 	public boolean fireflies, dustMotes;
 	/** How many smoke plumes were uploaded this frame. */
 	public int plumeCount;
+	/** Ground marker tiles uploaded this frame and their glow scale; 0 draws none. */
+	public int markerCount;
+	public float markerStrength;
+	/** Rim glow scale for highlighted NPCs, 0 disables, and the palette of highlight colours their faces index, linear RGB. */
+	public float rimStrength;
+	public final float[] highlightColours = new float[16 * 4];
 	/** Strength of terrain normal maps, 0 to 2. */
 	public float terrainBump;
 	/** Colour grading: contrast about mid grey, saturation, and warm or cool shift from -1 to 1. */

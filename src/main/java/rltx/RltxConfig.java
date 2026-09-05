@@ -1356,4 +1356,44 @@ public interface RltxConfig extends Config
 	{
 		return 100;
 	}
+
+	@ConfigItem(
+		keyName = "markerGlow",
+		name = "Ground marker glow",
+		description = "Draws Ground Markers' tiles as pools of their colour lying on the ground, in place of the plugin's outlines.",
+		section = pluginsSection,
+		position = 3
+	)
+	default boolean markerGlow()
+	{
+		return true;
+	}
+
+	@Range(min = 10, max = 400)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "markerGlowStrength",
+		name = "Marker glow strength",
+		description = "Brightness of the ground marker pools",
+		section = pluginsSection,
+		position = 4
+	)
+	default int markerGlowStrength()
+	{
+		return 100;
+	}
+
+	@Range(min = 0, max = 400)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "npcGlow",
+		name = "NPC highlight rim",
+		description = "Gives NPCs highlighted by NPC Indicators, Slayer and other plugins a rim of light in their highlight colour. Those plugins' own hull, tile and outline drawing stays under their settings; 0 turns the rim off.",
+		section = pluginsSection,
+		position = 5
+	)
+	default int npcGlow()
+	{
+		return 100;
+	}
 }
