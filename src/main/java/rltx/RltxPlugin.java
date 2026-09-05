@@ -394,6 +394,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private boolean cinemaChromeWasHidden;
 	private ExecutorService cinemaWriter;
 
+	private ControlPanel controlPanel;
+
+	private final HotkeyListener controlPanelKey = new HotkeyListener(() -> config.controlPanelKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			controlPanel.toggle();
+		}
+	};
+
 	private final HotkeyListener cinemaKeyframeKey = new HotkeyListener(() -> config.cinemaKeyframeKey())
 	{
 		@Override
@@ -1330,6 +1341,47 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private int plumeSourceCount;
 	private final float[] plumePacked = new float[RtRenderer.MAX_PLUMES * 4];
 
+	// Uploads the nearest trees while the season has them shedding.
+	private final float[] treePacked = new float[RtRenderer.MAX_TREES * 4];
+
+	private void fillTrees()
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		float[] all = top == null ? null : top.built.trees;
+		if (all == null || all.length == 0 || (frame.leafFall <= 0f && frame.petals <= 0f))
+		{
+			frame.treeCount = 0;
+			return;
+		}
+		int total = all.length / 4;
+		float[] distance = new float[total];
+		int[] order = new int[total];
+		for (int i = 0; i < total; ++i)
+		{
+			float dx = all[i * 4] - frame.cameraX, dz = all[i * 4 + 2] - frame.cameraZ;
+			distance[i] = dx * dx + dz * dz;
+			order[i] = i;
+		}
+		int keep = Math.min(total, RtRenderer.MAX_TREES);
+		for (int i = 0; i < keep; ++i)
+		{
+			int best = i;
+			for (int j = i + 1; j < total; ++j)
+			{
+				if (distance[order[j]] < distance[order[best]])
+				{
+					best = j;
+				}
+			}
+			int swap = order[i];
+			order[i] = order[best];
+			order[best] = swap;
+			System.arraycopy(all, order[i] * 4, treePacked, i * 4, 4);
+		}
+		renderer.setTrees(treePacked, keep * 4);
+		frame.treeCount = keep;
+	}
+
 	// Uploads the nearest smoke sources, since only so many plumes are marched per pixel.
 	private void fillPlumes()
 	{
@@ -1569,6 +1621,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		shortestPath = new ShortestPath(pluginManager, overlayManager);
 		groundMarkers = new GroundMarkers(pluginManager, overlayManager);
+		controlPanel = new ControlPanel(configManager, config);
+		keyManager.registerKeyListener(controlPanelKey);
 		keyManager.registerKeyListener(photoModeKey);
 		keyManager.registerKeyListener(freeCameraKey);
 		keyManager.registerKeyListener(cinemaKeyframeKey);
@@ -1651,6 +1705,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		keyManager.unregisterKeyListener(photoModeKey);
 		keyManager.unregisterKeyListener(freeCameraKey);
+		keyManager.unregisterKeyListener(controlPanelKey);
+		controlPanel.dispose();
 		keyManager.unregisterKeyListener(cinemaKeyframeKey);
 		keyManager.unregisterKeyListener(cinemaClearKey);
 		keyManager.unregisterKeyListener(cinemaRenderKey);
@@ -1742,6 +1798,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (!RltxConfig.GROUP.equals(event.getGroup()))
 		{
 			return;
+		}
+		if (controlPanel != null)
+		{
+			controlPanel.refresh(event.getKey());
 		}
 		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
 		{
@@ -2465,6 +2525,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillGuide();
 		fillMarkers();
 		fillPlumes();
+		fillTrees();
 		trackFootprints();
 		fillUnderwater();
 		fillRunoff();

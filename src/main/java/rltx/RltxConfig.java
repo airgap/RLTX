@@ -931,6 +931,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "controlPanelKey",
+		name = "Control panel key",
+		description = "Opens or hides a floating window holding every RLTX setting, for adjusting them while the sidebar is out of the way.",
+		section = cameraSection,
+		position = 38
+	)
+	default Keybind controlPanelKey()
+	{
+		return new Keybind(KeyEvent.VK_F9, 0);
+	}
+
+	@ConfigItem(
 		keyName = "clickToFocus",
 		name = "Click to focus",
 		description = "In photo mode, clicking the view focuses the lens at that distance and switches Focus to a fixed distance.",

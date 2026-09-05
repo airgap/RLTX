@@ -170,7 +170,8 @@ public final class RtRenderer
 	private static final int BINDING_STARS = 41;
 	private static final int BINDING_SKY_LUT = 42;
 	private static final int BINDING_PRINTS = 43;
-	private static final int BINDING_COUNT = 44;
+	private static final int BINDING_TREES = 44;
+	private static final int BINDING_COUNT = 45;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -182,6 +183,8 @@ public final class RtRenderer
 	public static final int MAX_MARKERS = 256;
 	/** Footprints kept, eight floats each. */
 	public static final int MAX_PRINTS = 256;
+	/** Trees shedding leaves per frame, four floats each. */
+	public static final int MAX_TREES = 64;
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -328,6 +331,7 @@ public final class RtRenderer
 	private VkBuf plumes;
 	private VkBuf markers;
 	private VkBuf prints;
+	private VkBuf trees;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -395,6 +399,8 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		prints = ctx.createBuffer((long) MAX_PRINTS * 8 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		trees = ctx.createBuffer((long) MAX_TREES * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -411,6 +417,7 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_PLUMES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, plumes);
 			writeBufferDescriptor(set, BINDING_MARKERS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, markers);
 			writeBufferDescriptor(set, BINDING_PRINTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, prints);
+			writeBufferDescriptor(set, BINDING_TREES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trees);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
@@ -626,6 +633,7 @@ public final class RtRenderer
 			types[BINDING_PLUMES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MARKERS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_PRINTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_TREES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STARS] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_SKY_LUT] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
@@ -1279,6 +1287,12 @@ public final class RtRenderer
 	public void setPlumes(float[] packed, int floats)
 	{
 		plumes.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PLUMES * 4));
+	}
+
+	/** Trees shedding leaves this frame, nearest first: x, crown height, z and crown radius each. Written between beginFrame and submit. */
+	public void setTrees(float[] packed, int floats)
+	{
+		trees.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_TREES * 4));
 	}
 
 	/** Footprints for the coming frame: position and time, then heading, side and a spare, per print. Written between beginFrame and submit. */
@@ -2288,7 +2302,7 @@ public final class RtRenderer
 		float[] s = p.starRotation;
 		b.putFloat(s[0]).putFloat(s[1]).putFloat(s[2]).putFloat(p.starBrightness);
 		b.putFloat(s[3]).putFloat(s[4]).putFloat(s[5]).putFloat(p.auroraWeight);
-		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(0f);
+		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(p.treeCount);
 		b.putFloat(p.moonSunX).putFloat(p.moonSunY).putFloat(p.moonSunZ).putFloat(p.moonFraction);
 		b.putFloat(p.printCount).putFloat(p.footprintStrength).putFloat(p.waterSurfaceY).putFloat(p.latitude);
 	}
@@ -2337,6 +2351,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(plumes);
 		ctx.destroyBuffer(markers);
 		ctx.destroyBuffer(prints);
+		ctx.destroyBuffer(trees);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
 		ctx.destroyBuffer(runoff);

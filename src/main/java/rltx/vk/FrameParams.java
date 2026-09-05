@@ -106,6 +106,7 @@ public final class FrameParams
 	/** Lens flare strength, 0 disables. */
 	public float lensFlare;
 	/** Season 0 none to 4 winter and progress through it; falling leaf and blossom petal amounts. */
+	public int treeCount;
 	public int season;
 	public float seasonProgress, leafFall, petals;
 	/** Columns of the rotation from equatorial to world directions, for the star map; and its brightness scale. */

@@ -55,13 +55,16 @@ public final class StaticScene
 	public final Zone[] zones;
 	/** Where smoke rises from: x, y, z of each chimney mouth or standing fire's top, then its strength. */
 	public final float[] plumes;
+	/** The trees: x, the height of the crown, z and the crown's radius each, for what falls from them. */
+	public final float[] trees;
 
-	StaticScene(int zonesX, int zonesZ, Zone[] zones, float[] plumes)
+	StaticScene(int zonesX, int zonesZ, Zone[] zones, float[] plumes, float[] trees)
 	{
 		this.zonesX = zonesX;
 		this.zonesZ = zonesZ;
 		this.zones = zones;
 		this.plumes = plumes;
+		this.trees = trees;
 	}
 
 	public int totalFaces()

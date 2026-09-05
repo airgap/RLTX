@@ -59,6 +59,7 @@ public final class StaticSceneBuilder
 	private final float treeScale;
 	private final IntPredicate lit;
 	private final List<float[]> plumeSources = new ArrayList<>();
+	private final List<float[]> treeSources = new ArrayList<>();
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
@@ -110,15 +111,15 @@ public final class StaticSceneBuilder
 				out[zx * zones + zz] = builder.zone(zx, zz);
 			}
 		}
-		return new StaticScene(zones, zones, out, builder.plumes());
+		return new StaticScene(zones, zones, out, pack(builder.plumeSources), pack(builder.treeSources));
 	}
 
-	private float[] plumes()
+	private static float[] pack(List<float[]> sources)
 	{
-		float[] packed = new float[plumeSources.size() * 4];
-		for (int i = 0; i < plumeSources.size(); ++i)
+		float[] packed = new float[sources.size() * 4];
+		for (int i = 0; i < sources.size(); ++i)
 		{
-			System.arraycopy(plumeSources.get(i), 0, packed, i * 4, 4);
+			System.arraycopy(sources.get(i), 0, packed, i * 4, 4);
 		}
 		return packed;
 	}
@@ -606,6 +607,12 @@ public final class StaticSceneBuilder
 			if (kind == 1 || kind == 2)
 			{
 				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), kind == 2 ? treeScale : 1f, bucket);
+				if (kind == 2)
+				{
+					// The crown is taken as the upper part of the model, about as wide as it is tall.
+					float height = go.getRenderable().getModelHeight() * treeScale;
+					treeSources.add(new float[]{go.getX(), go.getZ() - height, go.getY(), Math.max(60f, 0.45f * height)});
+				}
 			}
 			else
 			{
