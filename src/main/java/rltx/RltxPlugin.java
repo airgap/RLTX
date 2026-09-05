@@ -525,6 +525,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.dynamicHistoryFrames = frames + 1;
 		frame.denoisePasses = 1;
 		frame.shutter = 0f;
+		// The lens becomes real for the burst, its samples averaging into true bokeh. Held frames
+		// accumulate in different units from live ones, so the history is dropped on either side.
+		frame.still = true;
+		frame.thinLens = frame.aperture > 0f;
+		renderer.resetHistory();
 		for (int i = 0; i <= frames; ++i)
 		{
 			if (i > 0)
@@ -533,6 +538,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			}
 			renderer.submit(frame, dynamic, dynamicTranslucent, i == 0 && glSignalPending, i == frames);
 		}
+		frame.still = false;
+		frame.thinLens = false;
+		renderer.resetHistory();
 	}
 
 	private void savePhoto(Image image)

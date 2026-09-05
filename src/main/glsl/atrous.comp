@@ -741,7 +741,9 @@ void main() {
   ivec2 p = ivec2(px);
   vec4 position = imageLoad(currPos, p);
   vec4 center = readFilter(p);
-  if (position.w < 0.0) {
+  // Sky pixels are shown as painted, except in a held frame, where they were accumulated as
+  // radiance and take the same path as everything else.
+  if (position.w < 0.0 && (u.misc.y & 1048576u) == 0u) {
     writeFilter(p, center);
     if (pc.last != 0) {
       vec3 sky = imageLoad(sampleImage, p).rgb + lightShafts(p) * u.params.y;

@@ -120,6 +120,8 @@ public final class FrameParams
 	public float aperture, focusDistance;
 	/** Diffuse bounces per path; 0 leaves only direct light and the ambient floor. */
 	public int bounces;
+	/** A held frame being accumulated in place, and whether its rays leave a real lens aperture. */
+	public boolean still, thinLens;
 	/** Display-space colour of the route glow, and how many route entries were uploaded; 0 draws none. */
 	public float guideR, guideG, guideB;
 	public int guideCount;

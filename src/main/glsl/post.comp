@@ -55,6 +55,7 @@ layout(set = 0, binding = 30, rgba16f) uniform readonly image2D bloomBlur;
 layout(set = 0, binding = 35, rgba16f) uniform readonly image2D diffuseBlur;
 
 const float MAX_COC = 20.0;
+const uint FLAG_THIN_LENS = 2097152u;
 const int TAPS = 48;
 const float GOLDEN_ANGLE = 2.39996323;
 
@@ -236,7 +237,8 @@ void main() {
     return;
   }
   vec3 c = u.post2.y > 0.0 ? aberrated(p, size) : readColor(p);
-  if (u.path.y > 0.0) {
+  // A held frame traced through a real lens has its blur already.
+  if (u.path.y > 0.0 && (u.misc.y & FLAG_THIN_LENS) == 0u) {
     c = depthOfField(p, size, c);
   }
   if (u.post3.w > 0.0) {

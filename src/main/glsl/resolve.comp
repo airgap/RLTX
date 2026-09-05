@@ -41,6 +41,7 @@ layout(set = 0, binding = 17, rgba16f) uniform writeonly image2D filterA;
 
 const uint FLAG_PATTERN = 4u;
 const uint FLAG_RESET_HISTORY = 8u;
+const uint FLAG_STILL = 1048576u;
 const float VARIANCE_GAMMA = 1.5;
 // Below this many accumulated frames the temporal variance estimate is unreliable and a
 // spatial estimate over the neighbourhood is used instead.
@@ -71,8 +72,10 @@ void main() {
   ivec2 p = ivec2(px);
   vec4 sample_ = imageLoad(sampleImage, p);
   vec4 position = imageLoad(currPos, p);
-  // Sky pixels carry display colours already and bypass exposure and tone mapping.
-  if (position.w < 0.0) {
+  bool still = (flags & FLAG_STILL) != 0u;
+  // Sky pixels carry display colours already and bypass exposure and tone mapping, except in a
+  // held frame, where they are accumulated with everything else.
+  if (position.w < 0.0 && !still) {
     imageStore(currColor, p, vec4(sample_.rgb, 0.0));
     imageStore(currMoments, p, vec4(0.0));
     imageStore(filterA, p, vec4(0.0));
@@ -121,7 +124,16 @@ void main() {
   float lum = luminance(irradiance);
   float count = 0.0;
   vec2 moments = vec2(lum, lum * lum);
-  if ((flags & FLAG_RESET_HISTORY) == 0u) {
+  if (still) {
+    if ((flags & FLAG_RESET_HISTORY) == 0u) {
+      // A held camera: the same pixel's history is the same view, so it is simply averaged in.
+      vec4 hc = imageLoad(prevColor, p);
+      count = min(hc.a, u.params.z - 1.0);
+      float alpha = 1.0 / (count + 1.0);
+      irradiance = mix(hc.rgb, sample_.rgb, alpha);
+      moments = mix(imageLoad(prevMoments, p).xy, vec2(lum, lum * lum), alpha);
+    }
+  } else if ((flags & FLAG_RESET_HISTORY) == 0u) {
     vec3 rel = position.xyz - u.prevCam.xyz;
     vec3 v = vec3(dot(u.p0.xyz, rel), dot(u.p1.xyz, rel), dot(u.p2.xyz, rel));
     if (v.z > 1.0) {

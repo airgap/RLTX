@@ -116,6 +116,8 @@ public final class RtRenderer
 	private static final int FLAG_MIST_EVERYWHERE = 131072;
 	private static final int FLAG_FIREFLIES = 262144;
 	private static final int FLAG_DUST = 524288;
+	private static final int FLAG_STILL = 1048576;
+	private static final int FLAG_THIN_LENS = 2097152;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -1498,6 +1500,12 @@ public final class RtRenderer
 		}
 	}
 
+	/** Makes the next frame start its history afresh, as when the accumulation changes its units. */
+	public void resetHistory()
+	{
+		hasHistory = false;
+	}
+
 	/** Mean log luminance of the last finished frame before exposure, or NaN before any frame. */
 	public double averageLogLuminance()
 	{
@@ -2118,7 +2126,9 @@ public final class RtRenderer
 			| (p.runoff ? FLAG_RUNOFF : 0)
 			| (p.mistEverywhere ? FLAG_MIST_EVERYWHERE : 0)
 			| (p.fireflies ? FLAG_FIREFLIES : 0)
-			| (p.dustMotes ? FLAG_DUST : 0);
+			| (p.dustMotes ? FLAG_DUST : 0)
+			| (p.still ? FLAG_STILL : 0)
+			| (p.thinLens ? FLAG_THIN_LENS : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);

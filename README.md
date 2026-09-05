@@ -1,13 +1,16 @@
 # RLTX
 
 A RuneLite plugin that replaces the GPU renderer with a Vulkan ray tracer. Pure triangles with
-ray traced lighting: sun and moon that follow real time and place, local lights with shadows,
-including those of spells and projectiles, path traced bounce light, water with refraction and
-reflection, weather, volumetric mist, smoke and light shafts, fireflies and dust in the air, a
-lens flare, and a photo mode whose photos are accumulated over hundreds of frames so they carry
-no noise. Routes from Shortest Path and tiles from Ground Markers are drawn as light on the
-ground, and NPCs highlighted by other plugins wear a rim of their colour. The Vulkan output is
-composited through the client's OpenGL canvas, so RuneLite's own interface is untouched.
+ray traced lighting: a sun that follows real time and place, the real night sky with the moon in
+its true place and phase, local lights with shadows, including those of spells and projectiles,
+path traced bounce light, water with refraction and reflection, weather with volumetric clouds,
+mist, smoke and light shafts, seasons from the date that turn and drop the leaves, fireflies and
+dust in the air, and a lens flare. A photo mode accumulates each photo over hundreds of frames
+through a real thin lens, so it carries no noise and true bokeh, and a cinema mode renders
+keyframed camera paths the same way for video. Routes from Shortest Path and tiles from Ground
+Markers are drawn as light on the ground, and NPCs highlighted by other plugins wear a rim of
+their colour. The Vulkan output is composited through the client's OpenGL canvas, so RuneLite's
+own interface is untouched.
 
 ## Screenshots
 
