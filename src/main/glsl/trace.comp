@@ -884,22 +884,40 @@ vec2 rainRippleGradient(vec2 xz) {
 
 // Animated wave normal for a water surface; up is -y. Strength scales the slopes and
 // duration stretches the animation, as 117 HD's water types define them.
+// Water waves as a spectrum of many directional waves rather than a few sines: wavelengths
+// spread from a hand to a few tiles with a Phillips-like falloff, directions scatter about the
+// wind with short chop scattering widest, each travels at the speed deep-water dispersion gives
+// its length, and crests are sharpened as Gerstner waves are. Two octaves of warped noise ride
+// on top, so no interference pattern stays fixed long enough to read as one.
 vec3 waterNormal(vec3 p, float strength, float duration) {
-  // Real time, so the ripples move the same at any frame rate; a type's duration slows them.
-  float t = u.weather3.x * 2.2 / max(duration, 0.05);
-  // Eight waves at golden-angle directions with unrelated wavelengths: no two share an axis
-  // or a period, so the field shows no lattice. Each octave contributes about the same slope.
+  // Real time, so the waves move the same at any frame rate; a type's duration slows them.
+  float t = u.weather3.x * 0.9 / max(duration, 0.05);
+  vec2 windDir = dot(u.wind.xy, u.wind.xy) > 1.0 ? normalize(u.wind.xy) : vec2(0.62, 0.78);
+  float windAngle = atan(windDir.y, windDir.x);
   vec2 grad = vec2(0.0);
-  float amp = 1.0;
-  float k = 1.0 / 60.0;
-  for (int i = 0; i < 8; ++i) {
-    float a = float(i) * 2.39996323 + 0.7;
+  for (int i = 0; i < 24; ++i) {
+    float fi = float(i);
+    float h1 = fract(sin(fi * 12.9898) * 43758.5453);
+    float h2 = fract(sin(fi * 78.233 + 1.0) * 43758.5453);
+    float h3 = fract(sin(fi * 37.719 + 2.0) * 43758.5453);
+    float wavelength = 15.0 * pow(400.0 / 15.0, (fi + h1) / 24.0);
+    float k = 6.2831853 / wavelength;
+    float spread = mix(0.35, 1.2, 1.0 - fi / 24.0);
+    float a = windAngle + (h2 - 0.5) * 2.0 * spread;
     vec2 d = vec2(cos(a), sin(a));
-    float speed = (0.9 + 0.3 * float(i)) * ((i & 1) == 0 ? 1.0 : -1.0);
-    grad += d * (amp * cos(dot(d, p.xz) * k + t * speed));
-    amp *= 0.72;
-    k *= 1.37;
+    // A tile is taken as a metre, so gravity is 9.8 metres of 128 units per second squared.
+    float omega = sqrt(9.8 * 128.0 * k);
+    float phase = dot(d, p.xz) * k - omega * t + h3 * 6.2831853;
+    float s = sin(phase);
+    // The sharpened crest's slope: the derivative of a raised, narrowed sine.
+    float dh = 0.8 * pow(0.5 + 0.5 * s, 0.6) * cos(phase);
+    float slope = 0.22 * pow(wavelength / 400.0, 0.25);
+    grad += d * (slope * dh);
   }
+  grad *= 2.0;
+  vec2 q = p.xz / 42.0 + vec2(t * 0.15, -t * 0.11);
+  vec2 warp = vec2(valueNoise2(q + 3.1), valueNoise2(q - 2.7)) - 0.5;
+  grad += (vec2(valueNoise2(q * 2.0 + warp * 0.8), valueNoise2(q * 2.0 + warp * 0.8 + 5.3)) - 0.5) * 0.35;
   if ((u.misc.y & FLAG_RAIN_RIPPLES) != 0u && u.weather.z > 0.0) {
     grad += rainRippleGradient(p.xz) / max(strength, 0.02);
   }
