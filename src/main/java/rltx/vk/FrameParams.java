@@ -88,6 +88,8 @@ public final class FrameParams
 	public boolean mistEverywhere;
 	/** Fireflies over misty ground at night, and sunlit dust motes by day. */
 	public boolean fireflies, dustMotes;
+	/** How many smoke plumes were uploaded this frame. */
+	public int plumeCount;
 	/** Strength of terrain normal maps, 0 to 2. */
 	public float terrainBump;
 	/** Colour grading: contrast about mid grey, saturation, and warm or cool shift from -1 to 1. */

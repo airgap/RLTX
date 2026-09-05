@@ -54,6 +54,7 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 import net.runelite.api.ChatMessageType;
 import net.runelite.client.RuneLite;
@@ -490,7 +491,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private static final String[] TREE_WORDS = {"tree", "oak", "willow", "yew", "maple", "palm", "mahogany", "teak", "redwood"};
 	private static final String[] FOLIAGE_WORDS = {"bush", "shrub", "fern", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
 	private static final String[] GRAVE_WORDS = {"grave", "tomb", "coffin", "headstone", "crypt", "sarcophag", "mausoleum"};
-	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales, 3 a grave that gathers mist. */
+	private static final Pattern FIRE_WORDS = Pattern.compile("\\b(fire|campfire|bonfire|brazier|forge|furnace|range|pyre|hearth|fireplace|stove|oven)\\b", Pattern.CASE_INSENSITIVE);
+	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales, 3 a grave that gathers mist, 4 a chimney or fire that smokes. */
 	private final Map<Integer, Integer> foliageIds = new ConcurrentHashMap<>();
 	private static final float SWAY_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
 	private static final int SWAY_FACE_BUDGET = 150_000;
@@ -504,6 +506,24 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private boolean isMisty(int objectId)
 	{
 		return foliageKind(objectId) == 3;
+	}
+
+	// Whether 117 HD describes the object's light as a fire of some kind, so smoke rises from it.
+	private boolean smokes(int objectId)
+	{
+		List<LightDefinition> defs = lightLibrary().byObject.get(objectId);
+		if (defs == null)
+		{
+			return false;
+		}
+		for (LightDefinition def : defs)
+		{
+			if (def.description != null && FIRE_WORDS.matcher(def.description).find())
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// Object names live in the client's cache, which the scene loader thread must not touch, so
@@ -553,6 +573,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 						{
 							kind = 3;
 						}
+					}
+					if (kind == 0 && (name.contains("chimney") || smokes(id)))
+					{
+						kind = 4;
 					}
 				}
 				foliageIds.put(id, kind);
@@ -741,6 +765,58 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.guideR = (float) Math.pow(colour.getRed() / 255.0, 2.2) * strength;
 		frame.guideG = (float) Math.pow(colour.getGreen() / 255.0, 2.2) * strength;
 		frame.guideB = (float) Math.pow(colour.getBlue() / 255.0, 2.2) * strength;
+	}
+
+	// Smoke sources: the fires drawn this frame, joined by the scene's chimneys at upload.
+	private static final int MAX_PLUME_SOURCES = 64;
+	private final float[] plumeSources = new float[MAX_PLUME_SOURCES * 4];
+	private int plumeSourceCount;
+	private final float[] plumePacked = new float[RtRenderer.MAX_PLUMES * 4];
+
+	// Uploads the nearest smoke sources, since only so many plumes are marched per pixel.
+	private void fillPlumes()
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		boolean smoke = config.smoke() && top != null;
+		float[] fixed = smoke ? top.built.plumes : new float[0];
+		int moving = smoke ? plumeSourceCount : 0;
+		plumeSourceCount = 0;
+		int total = fixed.length / 4 + moving;
+		if (total == 0)
+		{
+			frame.plumeCount = 0;
+			return;
+		}
+		float[] distance = new float[total];
+		int[] order = new int[total];
+		for (int i = 0; i < total; ++i)
+		{
+			float[] from = i < moving ? plumeSources : fixed;
+			int o = (i < moving ? i : i - moving) * 4;
+			float dx = from[o] - frame.cameraX, dy = from[o + 1] - frame.cameraY, dz = from[o + 2] - frame.cameraZ;
+			distance[i] = dx * dx + dy * dy + dz * dz;
+			order[i] = i;
+		}
+		int keep = Math.min(total, RtRenderer.MAX_PLUMES);
+		for (int i = 0; i < keep; ++i)
+		{
+			int best = i;
+			for (int j = i + 1; j < total; ++j)
+			{
+				if (distance[order[j]] < distance[order[best]])
+				{
+					best = j;
+				}
+			}
+			int swap = order[i];
+			order[i] = order[best];
+			order[best] = swap;
+			int source = order[i];
+			float[] from = source < moving ? plumeSources : fixed;
+			System.arraycopy(from, (source < moving ? source : source - moving) * 4, plumePacked, i * 4, 4);
+		}
+		renderer.setPlumes(plumePacked, keep * 4);
+		frame.plumeCount = keep;
 	}
 
 	// The torch the character can be shown carrying: the lit torch item in the weapon slot, with
@@ -1535,6 +1611,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			torchTop = framePusher.flameTop;
 			torchZ = framePusher.flameZ;
 		}
+		if (tileObject != null && framePusher.flameFaces > 0 && plumeSourceCount < MAX_PLUME_SOURCES && foliageKind(tileObject.getId()) == 4)
+		{
+			int o = plumeSourceCount++ * 4;
+			plumeSources[o] = framePusher.flameX;
+			plumeSources[o + 1] = framePusher.flameTop;
+			plumeSources[o + 2] = framePusher.flameZ;
+			plumeSources[o + 3] = 1f;
+		}
 		motion.record(renderable, dynamic, opaqueStart, dynamicTranslucent, translucentStart);
 	}
 
@@ -1643,6 +1727,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		pushFoliage();
 		fillLights();
 		fillGuide();
+		fillPlumes();
 		fillRunoff();
 		if (burstPending)
 		{

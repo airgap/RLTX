@@ -24,7 +24,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 params;  // sun angular radius (radians), exposure, history frames, dynamic history frames
   uvec4 misc;   // frame, flags, width, height
   vec4 extra;
-  vec4 denoise; // luminance, normal and position sigmas, unused
+  vec4 denoise; // luminance, normal and position sigmas, smoke plume count
   vec4 sunColor;
   vec4 path;
   vec4 motion;
@@ -61,6 +61,7 @@ layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } mis
 layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
 layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
 layout(std430, set = 0, binding = 38) readonly buffer Guide { vec4 v[]; } guidePath;
+layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plumes;
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
@@ -445,6 +446,103 @@ vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, bool fireflies,
   return c;
 }
 
+// Smoke from chimneys and fires: each plume a column of turbulent density rising from its
+// source, widening and thinning as it climbs and leaning with the wind. A view ray is marched
+// only through the bounding cylinder of each plume it crosses, in a sheared space where the
+// leaning plume stands upright. Lit like the mist, with the fire's own glow at the base.
+const int PLUME_STEPS = 14;
+const float PLUME_HEIGHT = 720.0;
+const float PLUME_RISE = 110.0;
+const float PLUME_RADIUS = 210.0;
+
+vec3 smokePlumes(vec3 c, ivec2 px, vec3 dir, float depth) {
+  int count = int(u.denoise.w);
+  if (count <= 0) {
+    return c;
+  }
+  float tMax = depth > 0.0 ? depth : 1.0e9;
+  float t = u.weather3.x;
+  float jitter = fract(52.9829189 * fract(0.06711056 * float(px.x) + 0.00583715 * float(px.y)));
+  // Horizontal displacement per unit of height, from the wind carrying the smoke as it rises.
+  vec3 lean = vec3(u.wind.x, 0.0, u.wind.y) / PLUME_RISE;
+  float leanLength = length(lean);
+  if (leanLength > 0.8) {
+    lean *= 0.8 / leanLength;
+  }
+  vec3 smoke = u.mistColor.rgb * 0.45;
+  vec3 ember = vec3(1.0, 0.42, 0.1);
+  for (int i = 0; i < count; ++i) {
+    vec4 s = plumes.v[i];
+    float away = length(s.xyz - u.cam.xyz);
+    if (away > 3200.0) {
+      continue;
+    }
+    // Sheared space keeps the ray parameter: p' = p - lean * h, with h = s.y - p.y the height
+    // above the source, so the leaning plume becomes a vertical cylinder about s.
+    vec3 o = u.cam.xyz - lean * (s.y - u.cam.y);
+    vec3 d = dir + lean * dir.y;
+    vec2 oc = o.xz - s.xz;
+    float a = dot(d.xz, d.xz);
+    float b = dot(oc, d.xz);
+    float cc = dot(oc, oc) - PLUME_RADIUS * PLUME_RADIUS;
+    float t0;
+    float t1;
+    if (a < 1.0e-6) {
+      if (cc > 0.0) {
+        continue;
+      }
+      t0 = 0.0;
+      t1 = tMax;
+    } else {
+      float disc = b * b - a * cc;
+      if (disc < 0.0) {
+        continue;
+      }
+      float sq = sqrt(disc);
+      t0 = (-b - sq) / a;
+      t1 = (-b + sq) / a;
+    }
+    // Up is -y: the plume lives between s.y and s.y - PLUME_HEIGHT.
+    if (abs(d.y) > 1.0e-6) {
+      float ty0 = (s.y - PLUME_HEIGHT - o.y) / d.y;
+      float ty1 = (s.y - o.y) / d.y;
+      t0 = max(t0, min(ty0, ty1));
+      t1 = min(t1, max(ty0, ty1));
+    } else if (o.y < s.y - PLUME_HEIGHT || o.y > s.y) {
+      continue;
+    }
+    t0 = max(t0, 0.0);
+    t1 = min(t1, tMax);
+    if (t1 <= t0) {
+      continue;
+    }
+    float dt = (t1 - t0) / float(PLUME_STEPS);
+    float transmittance = 1.0;
+    vec3 gained = vec3(0.0);
+    float strength = s.w * (1.0 - smoothstep(2000.0, 3200.0, away));
+    for (int k = 0; k < PLUME_STEPS && transmittance > 0.02; ++k) {
+      vec3 p = o + d * (t0 + dt * (float(k) + jitter));
+      float h = s.y - p.y;
+      float radius = 26.0 + 0.24 * h;
+      float radial = 1.0 - smoothstep(0.35, 1.0, length(p.xz - s.xz) / radius);
+      float vertical = pow(1.0 - clamp(h / PLUME_HEIGHT, 0.0, 1.0), 1.3) * smoothstep(-10.0, 30.0, h);
+      // The noise scrolls upward at the rise speed so the puffs climb.
+      vec3 q = vec3(p.x - s.x, p.y + t * PLUME_RISE, p.z - s.z) / 55.0;
+      float n = 0.6 * valueNoise(q) + 0.4 * valueNoise(q * 2.3 + 7.0);
+      float density = radial * vertical * smoothstep(0.32, 0.72, n) * strength;
+      if (density <= 0.0) {
+        continue;
+      }
+      float absorb = exp(-density * dt * 0.02);
+      vec3 colour = smoke + ember * (0.9 * exp(-h / 55.0));
+      gained += transmittance * (1.0 - absorb) * colour;
+      transmittance *= absorb;
+    }
+    c = c * transmittance + gained;
+  }
+  return c;
+}
+
 vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
   bool fireflies = (u.misc.y & 262144u) != 0u && u.weather3.z >= 2.0;
   bool dust = (u.misc.y & 524288u) != 0u && u.sun.w > 0.0;
@@ -594,7 +692,7 @@ void main() {
       vec3 sky = imageLoad(sampleImage, p).rgb + lightShafts(p) * u.params.y;
       writeBright(p, sky, luminance(sky) / u.params.y);
       vec3 dir = cameraRay(p);
-      writeOutput(p, precipitation(swampMist(ambientLife(sky, p, dir, -1.0), p, dir, -1.0), p, -1.0));
+      writeOutput(p, precipitation(swampMist(smokePlumes(ambientLife(sky, p, dir, -1.0), p, dir, -1.0), p, dir, -1.0), p, -1.0));
     }
     return;
   }
@@ -678,6 +776,7 @@ void main() {
     }
     c = splashes(c, imageLoad(currPos, p).xyz, imageLoad(normalImage, p).xyz, depth);
     c = ambientLife(c, p, cameraRay(p), depth);
+    c = smokePlumes(c, p, cameraRay(p), depth);
     c = swampMist(c, p, cameraRay(p), depth);
     writeOutput(p, precipitation(c, p, depth));
   }

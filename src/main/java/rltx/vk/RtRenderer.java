@@ -157,12 +157,15 @@ public final class RtRenderer
 	private static final int BINDING_HEIGHTS = 36;
 	private static final int BINDING_RUNOFF = 37;
 	private static final int BINDING_GUIDE = 38;
-	private static final int BINDING_COUNT = 39;
+	private static final int BINDING_PLUMES = 39;
+	private static final int BINDING_COUNT = 40;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
 	/** Route entries uploaded per frame after the bounding box, four floats each. */
 	public static final int MAX_GUIDE_POINTS = 256;
+	/** Smoke plumes marched per frame, four floats each. */
+	public static final int MAX_PLUMES = 32;
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -304,6 +307,7 @@ public final class RtRenderer
 	private VkBuf exposureReadback;
 	private VkBuf lights;
 	private VkBuf guide;
+	private VkBuf plumes;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -365,6 +369,8 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		guide = ctx.createBuffer((long) (MAX_GUIDE_POINTS + 1) * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		plumes = ctx.createBuffer((long) MAX_PLUMES * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -378,6 +384,7 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_MATERIALS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materials);
 			writeBufferDescriptor(set, BINDING_LIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, lights);
 			writeBufferDescriptor(set, BINDING_GUIDE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, guide);
+			writeBufferDescriptor(set, BINDING_PLUMES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, plumes);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
@@ -590,6 +597,7 @@ public final class RtRenderer
 			types[BINDING_HEIGHTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_RUNOFF] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_GUIDE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_PLUMES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -1218,6 +1226,12 @@ public final class RtRenderer
 	public void setGuide(float[] packed, int floats)
 	{
 		guide.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, (MAX_GUIDE_POINTS + 1) * 4));
+	}
+
+	/** Smoke sources for the coming frame, nearest first: x, y, z and strength each. Written between beginFrame and submit. */
+	public void setPlumes(float[] packed, int floats)
+	{
+		plumes.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PLUMES * 4));
 	}
 
 	/** Water depth and flow per ground vertex from the runoff simulation; written between beginFrame and submit. */
@@ -2079,7 +2093,7 @@ public final class RtRenderer
 			| (p.dustMotes ? FLAG_DUST : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
-		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(0f);
+		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);
 		b.putFloat(p.sunR).putFloat(p.sunG).putFloat(p.sunB).putFloat(0f);
 		b.putFloat(p.bounces).putFloat(p.aperture).putFloat(p.focusDistance).putFloat(p.waveStrength);
 		b.putFloat(p.shutter).putFloat(p.gameCycle).putFloat(p.bumpStrength).putFloat(0f);
@@ -2141,6 +2155,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(exposureReadback);
 		ctx.destroyBuffer(lights);
 		ctx.destroyBuffer(guide);
+		ctx.destroyBuffer(plumes);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
 		ctx.destroyBuffer(runoff);

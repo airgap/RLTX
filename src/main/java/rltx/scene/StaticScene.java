@@ -53,12 +53,15 @@ public final class StaticScene
 	public final int zonesZ;
 	/** Indexed by {@code zx * zonesZ + zz}; entries without faces are null. */
 	public final Zone[] zones;
+	/** Where smoke rises from: x, y, z of each chimney mouth or standing fire's top, then its strength. */
+	public final float[] plumes;
 
-	StaticScene(int zonesX, int zonesZ, Zone[] zones)
+	StaticScene(int zonesX, int zonesZ, Zone[] zones, float[] plumes)
 	{
 		this.zonesX = zonesX;
 		this.zonesZ = zonesZ;
 		this.zones = zones;
+		this.plumes = plumes;
 	}
 
 	public int totalFaces()

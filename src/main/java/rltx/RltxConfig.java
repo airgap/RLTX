@@ -1296,6 +1296,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "smoke",
+		name = "Smoke",
+		description = "Smoke rising from chimneys and fires, carried by the wind",
+		section = weatherSection,
+		position = 42
+	)
+	default boolean smoke()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "lightning",
 		name = "Lightning",
 		description = "Flashes of light during thunderstorms.",

@@ -4,6 +4,8 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.IntPredicate;
 import java.util.function.IntUnaryOperator;
 import net.runelite.api.Constants;
@@ -56,6 +58,7 @@ public final class StaticSceneBuilder
 	private final IntUnaryOperator foliageKind;
 	private final float treeScale;
 	private final IntPredicate lit;
+	private final List<float[]> plumeSources = new ArrayList<>();
 	private final ModelPusher pusher = new ModelPusher();
 
 	private static final class Bucket
@@ -107,7 +110,17 @@ public final class StaticSceneBuilder
 				out[zx * zones + zz] = builder.zone(zx, zz);
 			}
 		}
-		return new StaticScene(zones, zones, out);
+		return new StaticScene(zones, zones, out, builder.plumes());
+	}
+
+	private float[] plumes()
+	{
+		float[] packed = new float[plumeSources.size() * 4];
+		for (int i = 0; i < plumeSources.size(); ++i)
+		{
+			System.arraycopy(plumeSources.get(i), 0, packed, i * 4, 4);
+		}
+		return packed;
 	}
 
 	/** Rebuilds a single zone, for example after a door changed. */
@@ -581,6 +594,12 @@ public final class StaticSceneBuilder
 				pushRenderable(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), bucket);
 			}
 			pusher.flames = false;
+			// Smoke rises from the top of a chimney or standing fire; animated fires are found
+			// each frame instead, where their flames are.
+			if (kind == 4 && !(go.getRenderable() instanceof DynamicObject))
+			{
+				plumeSources.add(new float[]{go.getX(), go.getZ() - go.getRenderable().getModelHeight(), go.getY(), 0.7f});
+			}
 		}
 
 		Tile bridge = t.getBridge();
