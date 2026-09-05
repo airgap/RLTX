@@ -8,20 +8,25 @@ canvas, so RuneLite's own interface is untouched.
 
 ## Screenshots
 
-All three were taken in game with the plugin's photo mode.
+All four were taken in game with the plugin's photo mode.
 
-![Night rain outside a stone house, lit by two wall torches and a window](docs/screenshots/rain-at-the-door.jpg)
+![Night rain outside a stone house, lit by two wall torches and a window](docs/screenshots/rain-at-the-door.png)
 
 Night rain in front of a stone house. The only light is the two wall torches and the window;
 the rain and the wet ground pick it up, and the shallow focus comes from the depth of field
 setting.
 
-![A cottage under a full moon, its windows and doorway glowing](docs/screenshots/moonlit-cottage.jpg)
+![Sunset over the swamp, mist between the dead trees, the castle on the skyline](docs/screenshots/swamp-sunset.png)
+
+Sunset over the swamp, with the castle on the skyline. The mist between the dead trees is
+volumetric, lit by the low sun and the sky, and thins as the ground rises.
+
+![A cottage under a full moon, its windows and doorway glowing](docs/screenshots/moonlit-cottage.png)
 
 A cottage under the full moon, with the photo tilt lowering the camera. Moonlight and the
 warm light spilling from the windows and doorway are both ray traced, shadows included.
 
-![The player silhouetted against the rising moon](docs/screenshots/moonrise.jpg)
+![The player silhouetted against the rising moon](docs/screenshots/moonrise.png)
 
 The moon rising behind the player, seen from the free camera. Sun and moon follow the real
 time and place, so this is what the sky looked like when the photo was taken.
