@@ -872,13 +872,13 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "cinemaKeyframeKey",
 		name = "Cinema keyframe key",
-		description = "In the free camera, records where the camera is and where it looks as the next keyframe of a cinema path.",
+		description = "In the free camera, records where the camera is and where it looks as the next keyframe of a cinema path. The cinema keys only act while the free camera is on.",
 		section = cameraSection,
 		position = 28
 	)
 	default Keybind cinemaKeyframeKey()
 	{
-		return new Keybind(KeyEvent.VK_K, 0);
+		return new Keybind(KeyEvent.VK_K, KeyEvent.CTRL_DOWN_MASK);
 	}
 
 	@ConfigItem(
@@ -890,7 +890,7 @@ public interface RltxConfig extends Config
 	)
 	default Keybind cinemaClearKey()
 	{
-		return new Keybind(KeyEvent.VK_K, KeyEvent.SHIFT_DOWN_MASK);
+		return new Keybind(KeyEvent.VK_K, KeyEvent.CTRL_DOWN_MASK | KeyEvent.SHIFT_DOWN_MASK);
 	}
 
 	@ConfigItem(
@@ -902,7 +902,7 @@ public interface RltxConfig extends Config
 	)
 	default Keybind cinemaRenderKey()
 	{
-		return new Keybind(KeyEvent.VK_K, KeyEvent.CTRL_DOWN_MASK);
+		return new Keybind(KeyEvent.VK_K, KeyEvent.CTRL_DOWN_MASK | KeyEvent.ALT_DOWN_MASK);
 	}
 
 	@Range(min = 1, max = 30)

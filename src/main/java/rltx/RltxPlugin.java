@@ -90,6 +90,7 @@ import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.config.Keybind;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.PluginInstantiationException;
@@ -472,7 +473,26 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	};
 
-	private final HotkeyListener cinemaKeyframeKey = new HotkeyListener(() -> config.cinemaKeyframeKey())
+	// The cinema keys mean nothing outside the free camera, and must not swallow letters typed
+	// into the chat when it is not flying.
+	private abstract class FlightHotkey extends HotkeyListener
+	{
+		FlightHotkey(java.util.function.Supplier<Keybind> keybind)
+		{
+			super(keybind);
+		}
+
+		@Override
+		public void keyPressed(KeyEvent e)
+		{
+			if (freeCamera)
+			{
+				super.keyPressed(e);
+			}
+		}
+	}
+
+	private final HotkeyListener cinemaKeyframeKey = new FlightHotkey(() -> config.cinemaKeyframeKey())
 	{
 		@Override
 		public void hotkeyPressed()
@@ -491,7 +511,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	};
 
-	private final HotkeyListener cinemaClearKey = new HotkeyListener(() -> config.cinemaClearKey())
+	private final HotkeyListener cinemaClearKey = new FlightHotkey(() -> config.cinemaClearKey())
 	{
 		@Override
 		public void hotkeyPressed()
@@ -504,7 +524,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	};
 
-	private final HotkeyListener cinemaRenderKey = new HotkeyListener(() -> config.cinemaRenderKey())
+	private final HotkeyListener cinemaRenderKey = new FlightHotkey(() -> config.cinemaRenderKey())
 	{
 		@Override
 		public void hotkeyPressed()
