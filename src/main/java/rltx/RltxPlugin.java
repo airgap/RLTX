@@ -831,7 +831,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				float[] materials = Materials.table(gson);
 				GroundTextures.applyMaterials(materials);
 				renderer.setMaterials(materials);
-				compositor.importSemaphores(renderer.semaphoreVkDoneFd(), renderer.semaphoreGlDoneFd());
+				compositor.importSemaphores(renderer.semaphoreVkDoneHandle(), renderer.semaphoreGlDoneHandle());
 
 				client.setDrawCallbacks(this);
 				// UNLIT_FACE_COLORS is deliberately absent: with it set from client start, actors stop
@@ -1486,7 +1486,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		if (renderer.ensureOutput(width, height))
 		{
-			compositor.importSceneImage(renderer.outputFd(), renderer.outputAllocationSize(), width, height);
+			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		}
 
 		fillLighting();
@@ -1941,7 +1941,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			renderer.beginFrame();
 			if (renderer.ensureOutput(canvasWidth, canvasHeight))
 			{
-				compositor.importSceneImage(renderer.outputFd(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
+				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 			}
 			frame.pattern = true;
 			renderer.submit(frame, empty, empty, glSignalPending);

@@ -2,8 +2,6 @@ package rltx.vk;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.*;
-import static org.lwjgl.vulkan.KHRExternalMemoryFd.vkGetMemoryFdKHR;
-import static org.lwjgl.vulkan.KHRExternalSemaphoreFd.vkGetSemaphoreFdKHR;
 import static org.lwjgl.vulkan.VK13.*;
 import static rltx.vk.VkUtil.alignUp;
 import static rltx.vk.VkUtil.check;
@@ -58,7 +56,6 @@ import org.lwjgl.vulkan.VkMemoryAllocateInfo;
 import org.lwjgl.vulkan.VkMemoryBarrier;
 import org.lwjgl.vulkan.VkMemoryDedicatedAllocateInfo;
 import org.lwjgl.vulkan.VkMemoryDedicatedRequirements;
-import org.lwjgl.vulkan.VkMemoryGetFdInfoKHR;
 import org.lwjgl.vulkan.VkMemoryRequirements2;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
@@ -66,7 +63,6 @@ import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkQueryPoolCreateInfo;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import org.lwjgl.vulkan.VkSemaphoreCreateInfo;
-import org.lwjgl.vulkan.VkSemaphoreGetFdInfoKHR;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkSubmitInfo;
 import org.lwjgl.vulkan.VkTransformMatrixKHR;
@@ -193,7 +189,7 @@ public final class RtRenderer
 		long memory;
 		long view;
 		long allocationSize;
-		int fd;
+		long handle;
 	}
 
 	private final VkContext ctx;
@@ -218,8 +214,8 @@ public final class RtRenderer
 	private double lastGpuMillis;
 	private long semaphoreVkDone;
 	private long semaphoreGlDone;
-	private int fdVkDone;
-	private int fdGlDone;
+	private long handleVkDone;
+	private long handleGlDone;
 
 	private VkBuf frameUbo;
 
@@ -491,19 +487,19 @@ public final class RtRenderer
 		log.info("Game textures: {} layers of {}x{}", layers, size, size);
 	}
 
-	public int semaphoreVkDoneFd()
+	public long semaphoreVkDoneHandle()
 	{
-		return fdVkDone;
+		return handleVkDone;
 	}
 
-	public int semaphoreGlDoneFd()
+	public long semaphoreGlDoneHandle()
 	{
-		return fdGlDone;
+		return handleGlDone;
 	}
 
-	public int outputFd()
+	public long outputHandle()
 	{
-		return output.fd;
+		return output.handle;
 	}
 
 	public long outputAllocationSize()
@@ -528,7 +524,7 @@ public final class RtRenderer
 			timestampPool = pPool.get(0);
 
 			VkExportSemaphoreCreateInfo export = VkExportSemaphoreCreateInfo.calloc(stack).sType$Default()
-				.handleTypes(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT);
+				.handleTypes(ExternalHandles.SEMAPHORE_HANDLE_TYPE);
 			VkSemaphoreCreateInfo semInfo = VkSemaphoreCreateInfo.calloc(stack).sType$Default().pNext(export.address());
 			LongBuffer pSem = stack.mallocLong(1);
 			check(vkCreateSemaphore(device, semInfo, null, pSem), "vkCreateSemaphore");
@@ -536,19 +532,9 @@ public final class RtRenderer
 			check(vkCreateSemaphore(device, semInfo, null, pSem), "vkCreateSemaphore");
 			semaphoreGlDone = pSem.get(0);
 
-			fdVkDone = exportSemaphore(stack, semaphoreVkDone);
-			fdGlDone = exportSemaphore(stack, semaphoreGlDone);
+			handleVkDone = ExternalHandles.exportSemaphore(device, stack, semaphoreVkDone);
+			handleGlDone = ExternalHandles.exportSemaphore(device, stack, semaphoreGlDone);
 		}
-	}
-
-	private int exportSemaphore(MemoryStack stack, long semaphore)
-	{
-		VkSemaphoreGetFdInfoKHR info = VkSemaphoreGetFdInfoKHR.calloc(stack).sType$Default()
-			.semaphore(semaphore)
-			.handleType(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT);
-		IntBuffer pFd = stack.mallocInt(1);
-		check(vkGetSemaphoreFdKHR(device, info, pFd), "vkGetSemaphoreFdKHR");
-		return pFd.get(0);
 	}
 
 	private void createPipeline()
@@ -1554,7 +1540,7 @@ public final class RtRenderer
 			if (exported)
 			{
 				VkExternalMemoryImageCreateInfo external = VkExternalMemoryImageCreateInfo.calloc(stack).sType$Default()
-					.handleTypes(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+					.handleTypes(ExternalHandles.MEMORY_HANDLE_TYPE);
 				imageInfo.pNext(external.address());
 			}
 			LongBuffer pImage = stack.mallocLong(1);
@@ -1574,7 +1560,7 @@ public final class RtRenderer
 			{
 				VkMemoryDedicatedAllocateInfo dedicated = VkMemoryDedicatedAllocateInfo.calloc(stack).sType$Default().image(img.image);
 				VkExportMemoryAllocateInfo export = VkExportMemoryAllocateInfo.calloc(stack).sType$Default()
-					.handleTypes(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
+					.handleTypes(ExternalHandles.MEMORY_HANDLE_TYPE)
 					.pNext(dedicated.address());
 				alloc.pNext(export.address());
 			}
@@ -1585,12 +1571,7 @@ public final class RtRenderer
 
 			if (exported)
 			{
-				VkMemoryGetFdInfoKHR fdInfo = VkMemoryGetFdInfoKHR.calloc(stack).sType$Default()
-					.memory(img.memory)
-					.handleType(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
-				IntBuffer pFd = stack.mallocInt(1);
-				check(vkGetMemoryFdKHR(device, fdInfo, pFd), "vkGetMemoryFdKHR");
-				img.fd = pFd.get(0);
+				img.handle = ExternalHandles.exportMemory(device, stack, img.memory);
 			}
 
 			VkImageViewCreateInfo viewInfo = VkImageViewCreateInfo.calloc(stack).sType$Default()

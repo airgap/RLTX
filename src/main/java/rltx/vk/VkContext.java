@@ -3,8 +3,6 @@ package rltx.vk;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
 import static org.lwjgl.vulkan.KHRDeferredHostOperations.VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
-import static org.lwjgl.vulkan.KHRExternalMemoryFd.VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
-import static org.lwjgl.vulkan.KHRExternalSemaphoreFd.VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
 import static org.lwjgl.vulkan.KHRRayQuery.VK_KHR_RAY_QUERY_EXTENSION_NAME;
 import static org.lwjgl.vulkan.VK13.*;
 import static rltx.vk.VkUtil.check;
@@ -56,13 +54,19 @@ import org.lwjgl.vulkan.VkSubmitInfo;
 @Slf4j
 public final class VkContext
 {
-	private static final String[] REQUIRED_EXTENSIONS = {
-		VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-		VK_KHR_RAY_QUERY_EXTENSION_NAME,
-		VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
-	};
+	private static final String[] REQUIRED_EXTENSIONS = requiredExtensions();
+
+	private static String[] requiredExtensions()
+	{
+		String[] common = {
+			VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+			VK_KHR_RAY_QUERY_EXTENSION_NAME,
+			VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+		};
+		String[] all = Arrays.copyOf(common, common.length + ExternalHandles.DEVICE_EXTENSIONS.length);
+		System.arraycopy(ExternalHandles.DEVICE_EXTENSIONS, 0, all, common.length, ExternalHandles.DEVICE_EXTENSIONS.length);
+		return all;
+	}
 
 	private static final int INIT_THREAD_STACK_BYTES = 4 << 20;
 

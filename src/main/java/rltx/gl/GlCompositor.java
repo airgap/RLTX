@@ -11,9 +11,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.EXTMemoryObject;
 import org.lwjgl.opengl.EXTMemoryObjectFD;
+import org.lwjgl.opengl.EXTMemoryObjectWin32;
 import org.lwjgl.opengl.EXTSemaphore;
 import org.lwjgl.opengl.EXTSemaphoreFD;
+import org.lwjgl.opengl.EXTSemaphoreWin32;
 import org.lwjgl.opengl.GLCapabilities;
+import org.lwjgl.system.Platform;
 
 /**
  * The OpenGL half of the frame: imports the Vulkan output image and the two
@@ -23,6 +26,9 @@ import org.lwjgl.opengl.GLCapabilities;
 @Slf4j
 public final class GlCompositor
 {
+	// Vulkan exports opaque file descriptors on Linux and opaque NT handles on Windows.
+	private static final boolean WIN32 = Platform.get() == Platform.WINDOWS;
+
 	private final int quadVao;
 	private final int quadVbo;
 	private final int uiProgram;
@@ -48,9 +54,11 @@ public final class GlCompositor
 		{
 			throw new IllegalStateException("OpenGL 4.3 is required");
 		}
-		if (!caps.GL_EXT_memory_object || !caps.GL_EXT_memory_object_fd || !caps.GL_EXT_semaphore || !caps.GL_EXT_semaphore_fd)
+		boolean handles = WIN32 ? caps.GL_EXT_memory_object_win32 && caps.GL_EXT_semaphore_win32 : caps.GL_EXT_memory_object_fd && caps.GL_EXT_semaphore_fd;
+		if (!caps.GL_EXT_memory_object || !caps.GL_EXT_semaphore || !handles)
 		{
-			throw new IllegalStateException("OpenGL driver lacks EXT_memory_object_fd / EXT_semaphore_fd, needed to share the Vulkan image");
+			String kind = WIN32 ? "win32" : "fd";
+			throw new IllegalStateException("OpenGL driver lacks EXT_memory_object_" + kind + " / EXT_semaphore_" + kind + ", needed to share the Vulkan image");
 		}
 
 		uiProgram = linkProgram("/rltx/quad.vert", "/rltx/ui.frag");
@@ -102,18 +110,30 @@ public final class GlCompositor
 		return out;
 	}
 
-	public void importSemaphores(int vkDoneFd, int glDoneFd)
+	public void importSemaphores(long vkDone, long glDone)
 	{
 		IntBuffer ids = BufferUtils.createIntBuffer(2);
 		EXTSemaphore.glGenSemaphoresEXT(ids);
 		semaphoreVkDone = ids.get(0);
 		semaphoreGlDone = ids.get(1);
-		EXTSemaphoreFD.glImportSemaphoreFdEXT(semaphoreVkDone, EXTMemoryObjectFD.GL_HANDLE_TYPE_OPAQUE_FD_EXT, vkDoneFd);
-		EXTSemaphoreFD.glImportSemaphoreFdEXT(semaphoreGlDone, EXTMemoryObjectFD.GL_HANDLE_TYPE_OPAQUE_FD_EXT, glDoneFd);
+		importSemaphore(semaphoreVkDone, vkDone);
+		importSemaphore(semaphoreGlDone, glDone);
 		checkErrors("import semaphores");
 	}
 
-	public void importSceneImage(int fd, long allocationSize, int width, int height)
+	private static void importSemaphore(int semaphore, long handle)
+	{
+		if (WIN32)
+		{
+			EXTSemaphoreWin32.glImportSemaphoreWin32HandleEXT(semaphore, EXTSemaphoreWin32.GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
+		}
+		else
+		{
+			EXTSemaphoreFD.glImportSemaphoreFdEXT(semaphore, EXTMemoryObjectFD.GL_HANDLE_TYPE_OPAQUE_FD_EXT, (int) handle);
+		}
+	}
+
+	public void importSceneImage(long handle, long allocationSize, int width, int height)
 	{
 		releaseSceneImage();
 
@@ -121,7 +141,14 @@ public final class GlCompositor
 		EXTMemoryObject.glCreateMemoryObjectsEXT(mem);
 		sceneMemory = mem.get(0);
 		EXTMemoryObject.glMemoryObjectParameteriEXT(sceneMemory, EXTMemoryObject.GL_DEDICATED_MEMORY_OBJECT_EXT, GL_TRUE);
-		EXTMemoryObjectFD.glImportMemoryFdEXT(sceneMemory, allocationSize, EXTMemoryObjectFD.GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+		if (WIN32)
+		{
+			EXTMemoryObjectWin32.glImportMemoryWin32HandleEXT(sceneMemory, allocationSize, EXTMemoryObjectWin32.GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, handle);
+		}
+		else
+		{
+			EXTMemoryObjectFD.glImportMemoryFdEXT(sceneMemory, allocationSize, EXTMemoryObjectFD.GL_HANDLE_TYPE_OPAQUE_FD_EXT, (int) handle);
+		}
 
 		sceneTexture = glGenTextures();
 		glBindTexture(GL_TEXTURE_2D, sceneTexture);

@@ -33,13 +33,16 @@ time and place, so this is what the sky looked like when the photo was taken.
 
 ## Requirements
 
-- Linux. The install route below goes through the Jagex Launcher's Linux AppImage; there is no
-  Windows or macOS path yet.
+- Linux or Windows. Linux is where RLTX is developed and played. The Windows path runs the same
+  renderer, with NT handles in place of file descriptors for the Vulkan to OpenGL handoff; it
+  compiles but has not yet been run on a Windows machine. There is no macOS path, as Apple's
+  drivers have no Vulkan ray queries.
 - A GPU and driver with Vulkan 1.2 ray queries (`VK_KHR_ray_query`) and external memory and
   semaphore file descriptors. Developed on an NVIDIA RTX 4070 Ti.
-- A JDK, 17 or newer. The client runs on whichever Java runs the build.
+- A JDK, 17 or newer, to build. The launch scripts run the client on the Java that ran the
+  build; the Windows launcher route runs it on RuneLite's bundled Java.
 - `glslangValidator` on the path to compile the shaders: package `glslang-tools` on Debian and
-  Ubuntu, `glslang` on Arch and Fedora.
+  Ubuntu, `glslang` on Arch and Fedora, and part of the Vulkan SDK from LunarG on Windows.
 - RuneLite installed through the Jagex Launcher, to play with a Jagex account.
 
 ## Building
@@ -53,38 +56,66 @@ RuneLite's repository and Maven Central on the first run.
 
 RuneLite switches developer mode off whenever a launcher starts it, and with it goes plugin
 sideloading. RLTX is not on the Plugin Hub, so the way to play with a Jagex account is to have
-the Jagex Launcher start a client of our own with the plugin built in. The launcher runs
-`~/.local/share/Jagex Launcher/games/runelite/RuneLite.AppImage` with the login session in its
-environment, and the installer keeps that file and puts a small wrapper in its place that runs
-our client instead.
+the Jagex Launcher start a client of our own with the plugin built in. On either system the
+first step is the same:
+
+    ./gradlew launchScript
+
+This compiles everything and writes a launch script into `build` with this machine's classpath,
+`rltx-client.sh` on Linux and `rltx-client.cmd` on Windows, along with `rltx-classpath.txt` for
+the installers below. Everything points at the build output, so after any code change rerunning
+this one command and restarting the client is all that is needed.
+
+Once the client is up, turn off the GPU plugin and 117 HD, or any other renderer plugin, since
+only one can own the canvas, and turn on RLTX. Console output of the launcher-started client
+goes to `~/.runelite/logs/rltx-console.log`: the launcher never reads the pipe it hands the
+client, and a full pipe would freeze the game. If Vulkan setup fails, RLTX disables itself and
+the reason is in that log.
+
+### Linux
+
+The launcher runs `~/.local/share/Jagex Launcher/games/runelite/RuneLite.AppImage` with the
+login session in its environment. The installer keeps that file and puts a small wrapper in its
+place that runs our client instead.
 
 1. Install RuneLite from the Jagex Launcher if you have not already, and start it once.
-2. Write the launch script:
-
-       ./gradlew launchScript
-
-   This compiles everything and writes `build/rltx-client.sh` with this machine's classpath.
-   The script points at the build output, so after any code change rerunning this one command
-   and restarting the client is all that is needed.
-3. Install the wrapper:
+2. Install the wrapper:
 
        tools/install-jagex-wrapper.sh
 
    The original AppImage is kept beside it as `RuneLite.AppImage.stock`.
-4. Press Play in the Jagex Launcher. The client that opens is RuneLite in developer mode with
+3. Press Play in the Jagex Launcher. The client that opens is RuneLite in developer mode with
    RLTX in its plugin list.
-5. In the client, turn off the GPU plugin and 117 HD, or any other renderer plugin; only one
-   can own the canvas. Then turn on RLTX.
-
-Console output of the launcher-started client goes to `~/.runelite/logs/rltx-console.log`. The
-launcher never reads the pipe it hands the client, and a full pipe would freeze the game, so
-the script writes to a file instead. If Vulkan setup fails, RLTX disables itself and the reason
-is in that log.
 
 To play the stock client without uninstalling, create the file `~/.runelite/rltx-use-stock`
 and delete it to come back; the wrapper also falls back to the stock client whenever the launch
 script is missing. To uninstall, delete `RuneLite.AppImage` in the folder above and rename
 `RuneLite.AppImage.stock` back to `RuneLite.AppImage`.
+
+### Windows
+
+This route is written from how the pieces are documented to behave and compiles, but nobody has
+run it yet. Reports of what happens are welcome.
+
+The launcher runs `RuneLite.exe` from the RuneLite install folder, `%LOCALAPPDATA%\RuneLite` by
+default, with the login session in its environment. That executable is a small native stub that
+reads `config.json` beside it for the class path, main class and JVM options to start on its
+bundled Java, so pointing that file at our client is all the wrapping needed. The stub and the
+launcher stay as they are.
+
+1. Install RuneLite from the Jagex Launcher if you have not already, and start it once.
+2. In PowerShell, from the repository folder:
+
+       .\gradlew.bat launchScript
+       .\tools\install-jagex-launcher.ps1
+
+   The script finds the RuneLite folder through the installer's registry entry, or takes it as
+   `-RuneLiteDir`, and keeps the original as `config.json.stock`. If PowerShell refuses to run
+   scripts, start it as `powershell -ExecutionPolicy Bypass -File .\tools\install-jagex-launcher.ps1`.
+3. Press Play in the Jagex Launcher.
+
+To uninstall, copy `config.json.stock` back over `config.json`. Reinstalling RuneLite rewrites
+`config.json` as well, after which the install script needs running again.
 
 ### Skyboxes
 
@@ -97,9 +128,10 @@ the procedural sky is used. No skybox images are distributed here.
     ./gradlew run
 
 starts the developer-mode client directly, without the launcher, which works for a legacy
-account login or for checking that the renderer comes up. Add `-PruneliteHome=/some/dir` to
-use a separate RuneLite home so your real profile is untouched. A fresh home has the GPU plugin
-on by default; turn it off in that client before enabling RLTX.
+account login or for checking that the renderer comes up; so does running the launch script
+from `build` by hand. Add `-PruneliteHome=/some/dir` to use a separate RuneLite home so your
+real profile is untouched. A fresh home has the GPU plugin on by default; turn it off in that
+client before enabling RLTX. On Windows the Gradle command is `gradlew.bat`.
 
 ## Sideloadable jar
 

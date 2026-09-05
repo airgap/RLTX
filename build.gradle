@@ -69,21 +69,35 @@ tasks.register('run', JavaExec) {
 	args "--developer-mode"
 }
 
-// Writes a script that starts the dev client on this machine's resolved classpath. The Jagex
-// Launcher can be pointed at it; it passes the JX_* login environment through to the client.
+// Writes a script that starts the dev client on this machine's resolved classpath, and that
+// classpath one entry per line for the launcher installers in tools/. The Jagex Launcher can be
+// pointed at the script; it passes the JX_* login environment through to the client.
 tasks.register('launchScript') {
 	dependsOn 'testClasses'
-	def out = layout.buildDirectory.file('rltx-client.sh')
-	outputs.file out
+	def windows = System.getProperty('os.name').toLowerCase().contains('windows')
+	def out = layout.buildDirectory.file(windows ? 'rltx-client.cmd' : 'rltx-client.sh')
+	def classpathFile = layout.buildDirectory.file('rltx-classpath.txt')
+	def argsFile = layout.buildDirectory.file('rltx-java.args')
+	outputs.files out, classpathFile, argsFile
 	doLast {
-		def javaBin = new File(System.getProperty('java.home'), 'bin/java').absolutePath
-		def cp = sourceSets.test.runtimeClasspath.asPath
+		def javaBin = new File(System.getProperty('java.home'), windows ? 'bin/java.exe' : 'bin/java').absolutePath
+		def entries = sourceSets.test.runtimeClasspath.files*.absolutePath
+		classpathFile.get().asFile.text = entries.join('\n') + '\n'
 		// Console output goes to a file: the Jagex Launcher gives the client a stdout pipe it never
 		// drains, and once that fills every log write blocks the client.
-		out.get().asFile.text = """#!/bin/sh
+		if (windows) {
+			// cmd.exe caps a command line at 8 KiB, so the JVM options ride in an @argfile; forward
+			// slashes keep the classpath clear of the argfile's backslash escaping.
+			argsFile.get().asFile.text = "-ea\n--add-opens java.base/java.lang.reflect=ALL-UNNAMED\n-Xss2m\n-cp \"${entries.collect { it.replace('\\', '/') }.join(';')}\"\n"
+			out.get().asFile.text = "@echo off\r\n\"${javaBin}\" @\"%~dp0rltx-java.args\" ${pluginMainClass} --developer-mode %* > \"%USERPROFILE%\\.runelite\\logs\\rltx-console.log\" 2>&1\r\n"
+		} else {
+			argsFile.get().asFile.delete()
+			def cp = sourceSets.test.runtimeClasspath.asPath
+			out.get().asFile.text = """#!/bin/sh
 exec "${javaBin}" -ea --add-opens java.base/java.lang.reflect=ALL-UNNAMED -Xss2m -cp "${cp}" ${pluginMainClass} --developer-mode "\$@" > "\$HOME/.runelite/logs/rltx-console.log" 2>&1
 """
-		out.get().asFile.setExecutable(true, false)
+			out.get().asFile.setExecutable(true, false)
+		}
 	}
 }
 
