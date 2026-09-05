@@ -36,6 +36,11 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 lights;
   vec4 material;
   vec4 post3;     // contrast, saturation, colour temperature, soft glow opacity
+  vec4 wind;
+  vec4 skyAmbient;
+  vec4 eye;
+  vec4 guide;
+  vec4 marks;     // ground marker count, marker glow scale, NPC rim glow scale, lens flare strength
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -139,6 +144,66 @@ vec3 vignette(ivec2 p, vec3 c) {
   return c * (1.0 - u.post.x * pow(smoothstep(0.3, 1.0, r), 1.5));
 }
 
+// Lens flare from the sun or moon when it is in frame and unhidden: a glow about it, a
+// six-pointed starburst, a horizontal streak, and a string of ghost discs mirrored through
+// the frame centre as a lens's internal reflections make them.
+vec3 lensFlare(ivec2 p, ivec2 size) {
+  float strength = u.marks.w;
+  if (strength <= 0.0 || u.sun.w <= 0.0) {
+    return vec3(0.0);
+  }
+  // The camera rows map view space to the world, so their columns map it back.
+  vec3 s = u.sun.xyz;
+  vec3 v = vec3(dot(vec3(u.r0.x, u.r1.x, u.r2.x), s), dot(vec3(u.r0.y, u.r1.y, u.r2.y), s), dot(vec3(u.r0.z, u.r1.z, u.r2.z), s));
+  if (v.z <= 0.05) {
+    return vec3(0.0);
+  }
+  vec2 centre = vec2(size) * 0.5;
+  vec2 sunPx = centre + v.xy / v.z * u.cam.w;
+  float diagonal = length(vec2(size));
+  // Fades as the source leaves the frame, and with how much of the sky around it is hidden.
+  vec2 outside = max(abs(sunPx - centre) - centre, 0.0);
+  float inFrame = 1.0 - smoothstep(0.0, 0.15 * diagonal, length(outside));
+  if (inFrame <= 0.0) {
+    return vec3(0.0);
+  }
+  float open = 0.0;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      ivec2 q = clamp(ivec2(sunPx) + ivec2(dx, dy) * 6, ivec2(0), size - 1);
+      open += imageLoad(currPos, q).w < 0.0 ? 1.0 / 9.0 : 0.0;
+    }
+  }
+  if (open <= 0.0) {
+    return vec3(0.0);
+  }
+  vec2 pos = vec2(p) + 0.5;
+  vec2 d = (pos - sunPx) / diagonal;
+  float r = length(d);
+  vec3 tint = normalize(u.sunColor.rgb + vec3(0.2)) * 1.2;
+  // Glow and a soft six-pointed star, both about the source itself.
+  float glow = exp(-r * 18.0) * 0.5;
+  float angle = atan(d.y, d.x);
+  float star = pow(abs(cos(angle * 3.0 + 0.35)), 30.0) * exp(-r * 4.0) * 0.35;
+  // A horizontal streak, a few pixels tall, in the cool cast of an anamorphic lens.
+  float streak = exp(-abs(d.y) * diagonal / 3.0) * exp(-abs(d.x) * 5.0) * 0.5;
+  vec3 flare = tint * (glow + star) + vec3(0.55, 0.7, 1.0) * streak;
+  // Ghosts along the line through the frame centre, opposite the source and beyond it.
+  vec2 axis = (centre - sunPx) / diagonal;
+  const float places[6] = float[](-0.55, -0.25, 0.35, 0.7, 1.1, 1.6);
+  const float radii[6] = float[](0.05, 0.03, 0.045, 0.08, 0.035, 0.11);
+  for (int i = 0; i < 6; ++i) {
+    vec2 ghost = axis * (1.0 + places[i]);
+    float g = length(d - ghost) / radii[i];
+    float disc = (1.0 - smoothstep(0.6, 1.0, g)) * (0.4 + 0.6 * g);
+    // A hue per ghost, as the coatings colour each reflection differently.
+    vec3 hue = 0.6 + 0.4 * cos(6.2832 * (float(i) * 0.17 + vec3(0.0, 0.33, 0.67)));
+    flare += hue * tint * (disc * 0.05);
+  }
+  float bright = clamp(dot(u.sunColor.rgb, vec3(0.33)) * u.sun.w * u.params.y * 0.5, 0.0, 1.0);
+  return flare * (strength * inFrame * open * bright);
+}
+
 vec3 depthOfField(ivec2 p, ivec2 size, vec3 centre) {
   float depth = imageLoad(currPos, p).w;
   float own = coc(depth);
@@ -181,6 +246,7 @@ void main() {
   if (u.post.y > 0.0) {
     c += u.post.y * bloom(p);
   }
+  c += lensFlare(p, size);
   c = graded(c);
   if (u.post2.x > 0.0) {
     c = grain(p, c);

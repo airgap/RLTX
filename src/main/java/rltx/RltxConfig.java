@@ -842,6 +842,20 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	@Range(max = 200)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "lensFlare",
+		name = "Lens flare",
+		description = "Glow, starburst, streak and ghost reflections from the sun or moon when it is in frame",
+		section = cameraSection,
+		position = 27
+	)
+	default int lensFlare()
+	{
+		return 60;
+	}
+
 	@Range(max = 2000)
 	@ConfigItem(
 		keyName = "photoBurst",

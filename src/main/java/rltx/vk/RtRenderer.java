@@ -2126,7 +2126,7 @@ public final class RtRenderer
 		b.putFloat(p.skyAmbientR).putFloat(p.skyAmbientG).putFloat(p.skyAmbientB).putFloat(p.rainSpeed);
 		b.putFloat(p.eyeX).putFloat(p.eyeY).putFloat(p.eyeZ).putFloat(p.unseenDarkness);
 		b.putFloat(p.guideR).putFloat(p.guideG).putFloat(p.guideB).putFloat(p.guideCount);
-		b.putFloat(p.markerCount).putFloat(p.markerStrength).putFloat(p.rimStrength).putFloat(0f);
+		b.putFloat(p.markerCount).putFloat(p.markerStrength).putFloat(p.rimStrength).putFloat(p.lensFlare);
 		for (float c : p.highlightColours)
 		{
 			b.putFloat(c);
