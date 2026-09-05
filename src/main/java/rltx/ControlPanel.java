@@ -49,14 +49,20 @@ final class ControlPanel
 {
 	private final ConfigManager configManager;
 	private final RltxConfig config;
+	private final Presets presets;
+	private final AreaRules areas;
+	private final java.util.function.IntSupplier currentRegion;
 	private final Map<String, Consumer<Object>> refreshers = new HashMap<>();
 	private JFrame frame;
 	private boolean updating;
 
-	ControlPanel(ConfigManager configManager, RltxConfig config)
+	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.IntSupplier currentRegion)
 	{
 		this.configManager = configManager;
 		this.config = config;
+		this.presets = presets;
+		this.areas = areas;
+		this.currentRegion = currentRegion;
 	}
 
 	/** Shows the window, building it on first use; called on any thread. */
@@ -200,6 +206,9 @@ final class ControlPanel
 			tabs.addTab(sectionNames.getOrDefault(section, section), scroll);
 		}
 
+		tabs.addTab("Presets", presetsTab());
+		tabs.addTab("Areas", areasTab());
+
 		JFrame window = new JFrame("RLTX");
 		window.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
 		window.getContentPane().setLayout(new BorderLayout());
@@ -324,5 +333,232 @@ final class ControlPanel
 	private static int clamp(int v, int lo, int hi)
 	{
 		return Math.max(lo, Math.min(hi, v));
+	}
+
+	// Whole settings saved by name to files, or carried on the clipboard.
+	private JComponent presetsTab()
+	{
+		JPanel page = new JPanel(new GridBagLayout());
+		page.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+		GridBagConstraints c = new GridBagConstraints();
+		c.gridx = 0;
+		c.gridy = 0;
+		c.weightx = 1;
+		c.fill = GridBagConstraints.HORIZONTAL;
+		c.insets = new Insets(4, 0, 4, 0);
+		JLabel status = new JLabel(" ");
+		JComboBox<String> saved = new JComboBox<>(presets.names().toArray(new String[0]));
+		saved.setEditable(true);
+		Runnable refreshNames = () ->
+		{
+			Object keep = saved.getEditor().getItem();
+			saved.removeAllItems();
+			for (String name : presets.names())
+			{
+				saved.addItem(name);
+			}
+			saved.getEditor().setItem(keep);
+		};
+		page.add(new JLabel("Preset name, or pick a saved one:"), c);
+		++c.gridy;
+		page.add(saved, c);
+		++c.gridy;
+		JPanel buttons = new JPanel(new java.awt.GridLayout(2, 2, 6, 6));
+		buttons.add(button("Save to file", () ->
+		{
+			String name = String.valueOf(saved.getEditor().getItem()).trim();
+			if (name.isEmpty())
+			{
+				status.setText("Give the preset a name first.");
+				return;
+			}
+			presets.save(name, presets.capture());
+			refreshNames.run();
+			status.setText("Saved " + name + " in " + Presets.DIR);
+		}, status));
+		buttons.add(button("Load from file", () ->
+		{
+			String name = String.valueOf(saved.getEditor().getItem()).trim();
+			presets.apply(presets.load(name));
+			status.setText("Applied " + name);
+		}, status));
+		buttons.add(button("Copy to clipboard", () ->
+		{
+			presets.copy(presets.capture());
+			status.setText("Settings copied as JSON.");
+		}, status));
+		buttons.add(button("Paste from clipboard", () ->
+		{
+			Map<String, String> values = presets.paste();
+			if (values == null)
+			{
+				status.setText("The clipboard holds no settings.");
+				return;
+			}
+			presets.apply(values);
+			status.setText("Applied " + values.size() + " settings from the clipboard.");
+		}, status));
+		page.add(buttons, c);
+		++c.gridy;
+		page.add(button("Delete file", () ->
+		{
+			String name = String.valueOf(saved.getEditor().getItem()).trim();
+			presets.delete(name);
+			refreshNames.run();
+			status.setText("Deleted " + name);
+		}, status), c);
+		++c.gridy;
+		page.add(status, c);
+		++c.gridy;
+		c.weighty = 1;
+		page.add(Box.createVerticalGlue(), c);
+		return page;
+	}
+
+	// Settings bound to map regions: what differs from a base preset while standing in the area.
+	private JComponent areasTab()
+	{
+		JPanel page = new JPanel(new GridBagLayout());
+		page.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+		GridBagConstraints c = new GridBagConstraints();
+		c.gridx = 0;
+		c.gridy = 0;
+		c.weightx = 1;
+		c.fill = GridBagConstraints.HORIZONTAL;
+		c.insets = new Insets(4, 0, 4, 0);
+		JLabel status = new JLabel(" ");
+		javax.swing.DefaultListModel<AreaRules.Rule> model = new javax.swing.DefaultListModel<>();
+		for (AreaRules.Rule rule : areas.rules())
+		{
+			model.addElement(rule);
+		}
+		javax.swing.JList<AreaRules.Rule> list = new javax.swing.JList<>(model);
+		list.setVisibleRowCount(6);
+		JTextField name = new JTextField(18);
+		JTextField regions = new JTextField(18);
+		JComboBox<String> base = new JComboBox<>(presets.names().toArray(new String[0]));
+		list.addListSelectionListener(e ->
+		{
+			AreaRules.Rule rule = list.getSelectedValue();
+			if (rule != null)
+			{
+				name.setText(rule.name);
+				StringBuilder text = new StringBuilder();
+				for (Integer region : rule.regions)
+				{
+					text.append(text.length() == 0 ? "" : ", ").append(region);
+				}
+				regions.setText(text.toString());
+			}
+		});
+		JCheckBox enabled = new JCheckBox("Apply area settings", config.areaSettings());
+		enabled.addActionListener(e -> set("areaSettings", enabled.isSelected()));
+		refreshers.put("areaSettings", v -> enabled.setSelected((Boolean) v));
+		page.add(enabled, c);
+		++c.gridy;
+		JLabel help = new JLabel("<html>Set the look you want while standing in the area, choose the preset that holds your usual settings as the base, and save. Only what differs is kept for the area, and it is put back when you leave.</html>");
+		page.add(help, c);
+		++c.gridy;
+		page.add(new JScrollPane(list), c);
+		++c.gridy;
+		page.add(labelled("Area name", name), c);
+		++c.gridy;
+		JPanel regionRow = new JPanel(new BorderLayout(6, 0));
+		regionRow.add(regions, BorderLayout.CENTER);
+		regionRow.add(button("Add current region", () ->
+		{
+			int region = currentRegion.getAsInt();
+			if (region < 0)
+			{
+				status.setText("Not in the world.");
+				return;
+			}
+			String text = regions.getText().trim();
+			regions.setText(text.isEmpty() ? Integer.toString(region) : text + ", " + region);
+		}, status), BorderLayout.EAST);
+		page.add(labelled("Map regions", regionRow), c);
+		++c.gridy;
+		page.add(labelled("Base preset", base), c);
+		++c.gridy;
+		JPanel buttons = new JPanel(new java.awt.GridLayout(1, 2, 6, 6));
+		buttons.add(button("Save differences from base", () ->
+		{
+			String areaName = name.getText().trim();
+			if (areaName.isEmpty() || base.getSelectedItem() == null)
+			{
+				status.setText("Name the area and choose a base preset.");
+				return;
+			}
+			AreaRules.Rule rule = new AreaRules.Rule();
+			rule.name = areaName;
+			for (String part : regions.getText().split("[,\\s]+"))
+			{
+				if (!part.isEmpty())
+				{
+					rule.regions.add(Integer.parseInt(part));
+				}
+			}
+			rule.overrides = Presets.diff(presets.load(String.valueOf(base.getSelectedItem())), presets.capture());
+			areas.put(rule);
+			areas.save();
+			model.removeAllElements();
+			for (AreaRules.Rule r : areas.rules())
+			{
+				model.addElement(r);
+			}
+			status.setText(areaName + ": " + rule.overrides.size() + " settings differ from the base.");
+		}, status));
+		buttons.add(button("Remove area", () ->
+		{
+			AreaRules.Rule rule = list.getSelectedValue();
+			if (rule == null)
+			{
+				return;
+			}
+			areas.remove(rule.name);
+			areas.save();
+			model.removeElement(rule);
+			status.setText("Removed " + rule.name);
+		}, status));
+		page.add(buttons, c);
+		++c.gridy;
+		page.add(status, c);
+		++c.gridy;
+		c.weighty = 1;
+		page.add(Box.createVerticalGlue(), c);
+		return page;
+	}
+
+	private interface Action
+	{
+		void run() throws java.io.IOException;
+	}
+
+	// File and clipboard failures are shown on the tab rather than thrown into Swing.
+	private static JButton button(String label, Action action, JLabel status)
+	{
+		JButton button = new JButton(label);
+		button.addActionListener(e ->
+		{
+			try
+			{
+				action.run();
+			}
+			catch (java.io.IOException | NumberFormatException ex)
+			{
+				status.setText(ex.getMessage());
+			}
+		});
+		return button;
+	}
+
+	private static JComponent labelled(String label, JComponent control)
+	{
+		JPanel row = new JPanel(new BorderLayout(8, 0));
+		JLabel text = new JLabel(label);
+		text.setPreferredSize(new Dimension(90, text.getPreferredSize().height));
+		row.add(text, BorderLayout.WEST);
+		row.add(control, BorderLayout.CENTER);
+		return row;
 	}
 }

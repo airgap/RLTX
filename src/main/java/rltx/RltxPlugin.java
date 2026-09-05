@@ -463,6 +463,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private ExecutorService cinemaWriter;
 
 	private ControlPanel controlPanel;
+	private Presets presets;
+	private AreaRules areaRules;
+	private volatile int currentRegion = -1;
 
 	private final HotkeyListener controlPanelKey = new HotkeyListener(() -> config.controlPanelKey())
 	{
@@ -1098,6 +1101,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
+		Player local = client.getLocalPlayer();
+		currentRegion = local == null ? -1 : WorldPoint.fromLocalInstance(client, local.getLocalLocation()).getRegionID();
+		String area = areaRules.tick(currentRegion, config.areaSettings());
+		if (area != null)
+		{
+			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", area, null);
+		}
 		if (config.pathGlow() && shortestPath.bind())
 		{
 			shortestPath.hideTileOverlay();
@@ -1765,7 +1775,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		shortestPath = new ShortestPath(pluginManager, overlayManager);
 		groundMarkers = new GroundMarkers(pluginManager, overlayManager);
-		controlPanel = new ControlPanel(configManager, config);
+		presets = new Presets(configManager, config, gson);
+		areaRules = new AreaRules(presets, gson);
+		try
+		{
+			areaRules.load();
+		}
+		catch (IOException e)
+		{
+			log.warn("Area settings not loaded from {}", AreaRules.FILE, e);
+		}
+		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentRegion);
 		keyManager.registerKeyListener(controlPanelKey);
 		keyManager.registerKeyListener(quadPhotoKey);
 		keyManager.registerKeyListener(photoModeKey);
@@ -1853,6 +1873,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		keyManager.unregisterKeyListener(controlPanelKey);
 		keyManager.unregisterKeyListener(quadPhotoKey);
 		controlPanel.dispose();
+		areaRules.reset();
 		keyManager.unregisterKeyListener(cinemaKeyframeKey);
 		keyManager.unregisterKeyListener(cinemaClearKey);
 		keyManager.unregisterKeyListener(cinemaRenderKey);

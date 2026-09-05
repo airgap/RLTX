@@ -67,9 +67,16 @@ public interface RltxConfig extends Config
 	String pluginsSection = "plugins";
 
 	@ConfigSection(
+		name = "Areas",
+		description = "Settings that change with where you stand, kept in the F8 panel's Areas tab",
+		position = 7
+	)
+	String areasSection = "areas";
+
+	@ConfigSection(
 		name = "Debug",
 		description = "Development toggles",
-		position = 7,
+		position = 8,
 		closedByDefault = true
 	)
 	String debugSection = "debug";
@@ -1777,6 +1784,18 @@ public interface RltxConfig extends Config
 		position = 42
 	)
 	default boolean textureDisplacement()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "areaSettings",
+		name = "Apply area settings",
+		description = "Whether the settings saved for map regions in the F8 panel's Areas tab take over when you enter them. Presets of every setting can be saved to files or the clipboard in its Presets tab.",
+		section = areasSection,
+		position = 0
+	)
+	default boolean areaSettings()
 	{
 		return true;
 	}
