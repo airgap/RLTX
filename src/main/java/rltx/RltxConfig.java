@@ -1432,6 +1432,32 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "stars",
+		name = "Real stars",
+		description = "With the procedural sky, the night shows the real stars and Milky Way for your place and the hour, and the moon lights the scene from where it truly is, showing its phase. Star positions come from the Yale Bright Star Catalogue.",
+		section = skySection,
+		position = 43
+	)
+	default boolean stars()
+	{
+		return true;
+	}
+
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "starBrightness",
+		name = "Star brightness",
+		description = "Brightness of the real stars and Milky Way",
+		section = skySection,
+		position = 44
+	)
+	default int starBrightness()
+	{
+		return 60;
+	}
+
+	@ConfigItem(
 		keyName = "lightning",
 		name = "Lightning",
 		description = "Flashes of light during thunderstorms.",

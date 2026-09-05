@@ -116,8 +116,11 @@ import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
 import rltx.sky.SkyboxLoader;
+import rltx.sky.LunarPosition;
 import rltx.sky.Season;
+import rltx.sky.Sidereal;
 import rltx.sky.SolarPosition;
+import rltx.sky.StarMap;
 import rltx.sky.GeoLocation;
 import rltx.sky.WeatherService;
 import rltx.sky.WeatherState;
@@ -1351,6 +1354,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				compositor = new GlCompositor(caps);
 				vk = VkContext.create(compositor.deviceUuid());
 				renderer = new RtRenderer(vk);
+				loadStarMap();
 				float[] materials = Materials.table(gson);
 				GroundTextures.applyMaterials(materials);
 				renderer.setMaterials(materials);
@@ -1459,6 +1463,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			// Everything the new renderer must be given again on the next start.
 			gameTexturesUploaded = false;
 			skyboxLoaded = false;
+			starMapLoaded = false;
 			requestedSkybox = null;
 			skyHorizon = null;
 			skyboxSunAzimuth = Double.NaN;
@@ -1511,6 +1516,35 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			staticDirty = true;
 		}
+	}
+
+	private volatile boolean starMapLoaded;
+
+	// Rendering the catalogue takes a moment, so it happens off the client thread; the upload
+	// then joins the client thread where all Vulkan work happens.
+	private void loadStarMap()
+	{
+		Thread loader = new Thread(() ->
+		{
+			ByteBuffer pixels = StarMap.render();
+			clientThread.invoke(() ->
+			{
+				try
+				{
+					if (renderer != null)
+					{
+						renderer.setStarMap(StarMap.WIDTH, StarMap.HEIGHT, pixels);
+						starMapLoaded = true;
+					}
+				}
+				finally
+				{
+					MemoryUtil.memFree(pixels);
+				}
+			});
+		}, "rltx-stars");
+		loader.setDaemon(true);
+		loader.start();
 	}
 
 	// Decodes on a worker thread, then uploads on the client thread where all Vulkan work happens.
@@ -1615,9 +1649,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		double azimuth;
 		double elevation;
-		if (config.sunMode() != RltxConfig.SunMode.MANUAL)
+		long now = System.currentTimeMillis() + (config.sunMode() == RltxConfig.SunMode.REAL_TIME_SET ? config.timeOffset() * 3_600_000L : 0L);
+		boolean realTime = config.sunMode() != RltxConfig.SunMode.MANUAL;
+		if (realTime)
 		{
-			long now = System.currentTimeMillis() + (config.sunMode() == RltxConfig.SunMode.REAL_TIME_SET ? config.timeOffset() * 3_600_000L : 0L);
 			SolarPosition sun = SolarPosition.compute(now, latitude(), longitude());
 			azimuth = sun.azimuthDegrees;
 			elevation = sun.elevationDegrees;
@@ -1627,6 +1662,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			azimuth = config.sunAzimuth();
 			elevation = config.sunElevation();
 		}
+		// The fixed stars turn with the real clock whatever the sun setting.
+		Sidereal.rotation(now, latitude(), longitude(), frame.starRotation);
+		frame.starBrightness = config.stars() && starMapLoaded ? config.starBrightness() / 100f : 0f;
+		frame.moonFraction = -1f;
 
 		double daylight = Math.max(0.0, Math.min(1.0, (elevation + 2.0) / 8.0));
 		double lightAzimuth;
@@ -1640,6 +1679,25 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.sunR = 1.0f;
 			frame.sunG = 0.55f + 0.45f * warmth;
 			frame.sunB = 0.30f + 0.70f * warmth;
+		}
+		else if (realTime && config.stars())
+		{
+			// Moonlight from where the moon really is, as bright as its phase allows, and none
+			// once it has set; the sun's direction below the horizon shades the disc.
+			LunarPosition moon = LunarPosition.compute(now);
+			float[] toMoon = Sidereal.worldDirection(now, latitude(), longitude(), moon.raDegrees, moon.decDegrees);
+			lightElevation = Math.toDegrees(Math.asin(Math.max(-1.0, Math.min(1.0, -toMoon[1]))));
+			lightAzimuth = Math.toDegrees(Math.atan2(toMoon[0], toMoon[2]));
+			frame.sunIntensity = lightElevation > 0.0 ? (float) (config.sunIntensity() / 100.0 * config.moonlight() / 100.0 * (0.03 + 0.97 * moon.illuminatedFraction)) : 0f;
+			frame.sunR = 0.60f;
+			frame.sunG = 0.72f;
+			frame.sunB = 1.00f;
+			frame.moonFraction = (float) moon.illuminatedFraction;
+			double sunAz = Math.toRadians(azimuth);
+			double sunEl = Math.toRadians(elevation);
+			frame.moonSunX = (float) (Math.sin(sunAz) * Math.cos(sunEl));
+			frame.moonSunY = (float) -Math.sin(sunEl);
+			frame.moonSunZ = (float) (Math.cos(sunAz) * Math.cos(sunEl));
 		}
 		else
 		{

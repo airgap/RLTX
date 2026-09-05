@@ -176,6 +176,10 @@ adapted form:
 **RuneLite** (https://runelite.net), BSD 2-Clause. The plugin builds against the RuneLite client
 and its `rlawt` OpenGL context and does not redistribute them.
 
+**Yale Bright Star Catalogue**, 5th revised edition (Hoffleit and Warren 1991), obtained from the
+CDS VizieR archive as catalogue V/50. The positions, magnitudes and colours of its 9,096 stars
+are repacked into `src/main/resources/rltx/stars.bin` and drawn as the real night sky.
+
 **Open-Meteo** (https://open-meteo.com), weather data under CC BY 4.0. In the real-weather mode
 the plugin fetches current conditions from Open-Meteo. Weather data by Open-Meteo.com.
 

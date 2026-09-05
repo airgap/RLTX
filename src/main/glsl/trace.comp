@@ -50,6 +50,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 night;    // direction to the sun while the moon lights the scene, moon illuminated fraction
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
+layout(set = 0, binding = 41) uniform sampler2D starMap;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
 // resolve and denoise passes need; the albedo is multiplied back in at the very end.
 layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D currPos;
@@ -589,14 +590,33 @@ vec3 proceduralSky(vec3 d, bool withDisc) {
   float glow = pow(max(cosS, 0.0), 48.0) + 0.2 * pow(max(cosS, 0.0), 6.0);
   sky += u.sunColor.rgb * (0.05 * mix(0.15, 1.0, day) * (1.0 + 4.0 * low)) * glow;
   if (day < 0.5) {
-    // Sparse stars, fading with dawn.
-    float star = step(0.9985, hash13(floor(d * 220.0)));
-    sky += vec3(0.6) * star * (1.0 - day * 2.0);
+    float nightly = 1.0 - day * 2.0;
+    if (u.star0.w > 0.0) {
+      // The real sky: the view direction taken back to equatorial coordinates and looked up.
+      vec3 e = vec3(dot(u.star0.xyz, d), dot(u.star1.xyz, d), dot(u.star2.xyz, d));
+      vec2 uv = vec2(fract(atan(e.y, e.x) / 6.2831853), 0.5 - asin(clamp(e.z, -1.0, 1.0)) / 3.14159265);
+      sky += texture(starMap, uv).rgb * (u.star0.w * nightly);
+    } else {
+      // Sparse stars, fading with dawn.
+      float star = step(0.9985, hash13(floor(d * 220.0)));
+      sky += vec3(0.6) * star * nightly;
+    }
   }
   if (withDisc) {
     // The disc's size is its own setting, independent of the shadow softness.
     float r = max(u.wind.z, 0.001);
     float disc = smoothstep(cos(r * 1.6), cos(r), cosS);
+    if (disc > 0.0 && day < 0.5 && u.night.w >= 0.0) {
+      // The moon: its sphere shaded by the sun's direction, so the disc shows the phase.
+      vec3 side = normalize(cross(u.sun.xyz, abs(u.sun.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+      vec3 upDir = cross(side, u.sun.xyz);
+      vec3 across = d - u.sun.xyz * cosS;
+      vec2 offset = vec2(dot(across, side), dot(across, upDir)) / sin(r);
+      float rr = min(dot(offset, offset), 1.0);
+      vec3 n = normalize(side * offset.x + upDir * offset.y - u.sun.xyz * sqrt(1.0 - rr));
+      float lit = smoothstep(-0.03, 0.12, dot(n, u.night.xyz));
+      disc *= mix(0.03, 1.0, lit);
+    }
     sky += u.sunColor.rgb * mix(2.0, 30.0, day) * disc;
   }
   return sky;

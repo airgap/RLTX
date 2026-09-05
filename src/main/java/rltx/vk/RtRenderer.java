@@ -159,7 +159,8 @@ public final class RtRenderer
 	private static final int BINDING_GUIDE = 38;
 	private static final int BINDING_PLUMES = 39;
 	private static final int BINDING_MARKERS = 40;
-	private static final int BINDING_COUNT = 41;
+	private static final int BINDING_STARS = 41;
+	private static final int BINDING_COUNT = 42;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -301,6 +302,7 @@ public final class RtRenderer
 	private final Img[] moments = new Img[2];
 	private final Img[] filter = new Img[2];
 	private Img skybox;
+	private Img starMap;
 	private long skyboxSampler;
 	private Img gameTextures;
 	private long textureSampler;
@@ -606,6 +608,7 @@ public final class RtRenderer
 			types[BINDING_GUIDE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_PLUMES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MARKERS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_STARS] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -622,7 +625,7 @@ public final class RtRenderer
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(40);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
-			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
+			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(8);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
@@ -946,13 +949,23 @@ public final class RtRenderer
 	 */
 	public void setSkybox(int width, int height, ByteBuffer rgba)
 	{
+		skybox = replaceSampled(skybox, width, height, rgba, BINDING_SKYBOX);
+	}
+
+	/** Replaces the star map, equirectangular in equatorial coordinates. Blocks until the upload completes. */
+	public void setStarMap(int width, int height, ByteBuffer rgba)
+	{
+		starMap = replaceSampled(starMap, width, height, rgba, BINDING_STARS);
+	}
+
+	private Img replaceSampled(Img old, int width, int height, ByteBuffer rgba, int binding)
+	{
 		idle();
-		if (skybox != null)
+		if (old != null)
 		{
-			destroyImage(skybox);
-			skybox = null;
+			destroyImage(old);
 		}
-		skybox = createImage(width, height, VK_FORMAT_R8G8B8A8_UNORM,
+		Img skybox = createImage(width, height, VK_FORMAT_R8G8B8A8_UNORM,
 			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
 
 		long bytes = (long) width * height * 4;
@@ -985,13 +998,14 @@ public final class RtRenderer
 				VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
 				write.get(0).sType$Default()
 					.dstSet(set)
-					.dstBinding(BINDING_SKYBOX)
+					.dstBinding(binding)
 					.descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 					.descriptorCount(1)
 					.pImageInfo(info);
 				vkUpdateDescriptorSets(device, write, null);
 			}
 		}
+		return skybox;
 	}
 
 	private void imageLayout(VkCommandBuffer commandBuffer, long image, int layers, int oldLayout, int newLayout,
@@ -2188,6 +2202,10 @@ public final class RtRenderer
 		if (skybox != null)
 		{
 			destroyImage(skybox);
+		}
+		if (starMap != null)
+		{
+			destroyImage(starMap);
 		}
 		vkDestroySampler(device, skyboxSampler, null);
 		vkDestroyPipeline(device, tracePipeline, null);
