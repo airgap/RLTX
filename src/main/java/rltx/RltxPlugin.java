@@ -34,7 +34,9 @@ import net.runelite.api.Perspective;
 import net.runelite.api.Player;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.coords.LocalPoint;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.BeforeRender;
+import net.runelite.api.events.GameTick;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.kit.KitType;
 import net.runelite.api.Projection;
@@ -59,6 +61,7 @@ import net.runelite.client.input.KeyManager;
 import net.runelite.client.input.MouseAdapter;
 import net.runelite.client.input.MouseManager;
 import net.runelite.client.ui.DrawManager;
+import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.HotkeyListener;
 import net.runelite.api.Actor;
 import net.runelite.api.Constants;
@@ -149,6 +152,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	@Inject
 	private DrawManager drawManager;
+
+	@Inject
+	private OverlayManager overlayManager;
 
 	// Photo mode: the interface layer is left out of the composite, and two corners of the view
 	// act as invisible buttons, top-left to restore it and bottom-right to save a photo.
@@ -606,6 +612,104 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setSwayedZones(WorldView.TOPLEVEL, top.swayed);
 	}
 
+	// The Shortest Path plugin's route, refreshed each game tick and drawn as a ribbon of light in
+	// the composite pass instead of the plugin's own tile outlines.
+	private ShortestPath shortestPath;
+	private WorldPoint[] route;
+	private final float[] guidePacked = new float[(RtRenderer.MAX_GUIDE_POINTS + 1) * 4];
+
+	@Subscribe
+	public void onGameTick(GameTick event)
+	{
+		if (config.pathGlow() && shortestPath.bind())
+		{
+			shortestPath.hideTileOverlay();
+			route = shortestPath.route();
+		}
+		else
+		{
+			route = null;
+		}
+	}
+
+	// Packs the route for the composite pass: a bounding box, then tile centres with their distance
+	// along the route in w. Tiles off this plane or outside the scene break the ribbon, marked by an
+	// entry with a negative w; the pulses run on across the break as if the route were unbroken.
+	private void fillGuide()
+	{
+		WorldView wv = client.getTopLevelWorldView();
+		WorldPoint[] tiles = route;
+		if (tiles == null || tiles.length < 2 || wv == null)
+		{
+			frame.guideCount = 0;
+			return;
+		}
+		int plane = client.getPlane();
+		float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+		float along = 0f, lastX = 0f, lastY = 0f, lastZ = 0f;
+		boolean gap = true;
+		int n = 0;
+		for (WorldPoint tile : tiles)
+		{
+			LocalPoint lp = tile.getPlane() == plane ? LocalPoint.fromWorld(wv, tile) : null;
+			if (lp == null)
+			{
+				gap = true;
+				continue;
+			}
+			if (gap && n > 0)
+			{
+				if (n >= RtRenderer.MAX_GUIDE_POINTS)
+				{
+					break;
+				}
+				guidePacked[(n + 1) * 4 + 3] = -1f;
+				++n;
+			}
+			if (n >= RtRenderer.MAX_GUIDE_POINTS)
+			{
+				break;
+			}
+			float x = lp.getX();
+			float y = Perspective.getTileHeight(client, lp, plane);
+			float z = lp.getY();
+			if (!gap)
+			{
+				along += (float) Math.sqrt((x - lastX) * (x - lastX) + (y - lastY) * (y - lastY) + (z - lastZ) * (z - lastZ));
+			}
+			int o = (n + 1) * 4;
+			guidePacked[o] = x;
+			guidePacked[o + 1] = y;
+			guidePacked[o + 2] = z;
+			guidePacked[o + 3] = along;
+			++n;
+			minX = Math.min(minX, x);
+			minZ = Math.min(minZ, z);
+			maxX = Math.max(maxX, x);
+			maxZ = Math.max(maxZ, z);
+			lastX = x;
+			lastY = y;
+			lastZ = z;
+			gap = false;
+		}
+		if (n < 2)
+		{
+			frame.guideCount = 0;
+			return;
+		}
+		guidePacked[0] = minX;
+		guidePacked[1] = minZ;
+		guidePacked[2] = maxX;
+		guidePacked[3] = maxZ;
+		renderer.setGuide(guidePacked, (n + 1) * 4);
+		frame.guideCount = n;
+		Color colour = config.pathGlowColour();
+		float strength = 2f * config.pathGlowStrength() / 100f;
+		frame.guideR = (float) Math.pow(colour.getRed() / 255.0, 2.2) * strength;
+		frame.guideG = (float) Math.pow(colour.getGreen() / 255.0, 2.2) * strength;
+		frame.guideB = (float) Math.pow(colour.getBlue() / 255.0, 2.2) * strength;
+	}
+
 	// The torch the character can be shown carrying: the lit torch item in the weapon slot, with
 	// 117 HD's wall torch light following the flame of its model.
 	private static final int HELD_TORCH = ItemID.TORCH_LIT + PlayerComposition.ITEM_OFFSET;
@@ -796,6 +900,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Override
 	protected void startUp()
 	{
+		shortestPath = new ShortestPath(pluginManager, overlayManager);
 		keyManager.registerKeyListener(photoModeKey);
 		keyManager.registerKeyListener(freeCameraKey);
 		keyManager.registerKeyListener(flightKeys);
@@ -880,10 +985,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		chromeHidden = false;
 		freeCamera = false;
 		torchCarried = false;
+		route = null;
 		heldKeys.clear();
 		clientThread.invoke(() ->
 		{
 			restoreWeapon();
+			shortestPath.restoreTileOverlay();
 			client.setGpuFlags(0);
 			client.setDrawCallbacks(null);
 
@@ -952,6 +1059,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
 		{
 			clientThread.invoke(this::restoreWeapon);
+		}
+		if ("pathGlow".equals(event.getKey()) && !config.pathGlow())
+		{
+			route = null;
+			clientThread.invoke(shortestPath::restoreTileOverlay);
 		}
 		if (renderer == null)
 		{
@@ -1495,6 +1607,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		addOffscreenActors();
 		pushFoliage();
 		fillLights();
+		fillGuide();
 		fillRunoff();
 		renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending);
 		motion.endFrame();

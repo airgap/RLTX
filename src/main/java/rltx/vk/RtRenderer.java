@@ -154,10 +154,13 @@ public final class RtRenderer
 	private static final int BINDING_DIFFUSE_B = 35;
 	private static final int BINDING_HEIGHTS = 36;
 	private static final int BINDING_RUNOFF = 37;
-	private static final int BINDING_COUNT = 38;
+	private static final int BINDING_GUIDE = 38;
+	private static final int BINDING_COUNT = 39;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
+	/** Route entries uploaded per frame after the bounding box, four floats each. */
+	public static final int MAX_GUIDE_POINTS = 256;
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -298,6 +301,7 @@ public final class RtRenderer
 	private VkBuf mistGrid;
 	private VkBuf exposureReadback;
 	private VkBuf lights;
+	private VkBuf guide;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -357,6 +361,8 @@ public final class RtRenderer
 		exposureReadback.mapped.asFloatBuffer().put(0, Float.NaN);
 		lights = ctx.createBuffer((long) MAX_LIGHTS * 8 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		guide = ctx.createBuffer((long) (MAX_GUIDE_POINTS + 1) * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -369,6 +375,7 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_HEIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, terrainHeights);
 			writeBufferDescriptor(set, BINDING_MATERIALS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materials);
 			writeBufferDescriptor(set, BINDING_LIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, lights);
+			writeBufferDescriptor(set, BINDING_GUIDE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, guide);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
@@ -580,6 +587,7 @@ public final class RtRenderer
 			types[BINDING_DIFFUSE_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_HEIGHTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_RUNOFF] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_GUIDE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -594,7 +602,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(32);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(40);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -1199,6 +1207,15 @@ public final class RtRenderer
 	public void setLights(float[] packed, int count)
 	{
 		lights.mapped.asFloatBuffer().put(packed, 0, Math.min(count, MAX_LIGHTS) * 8);
+	}
+
+	/**
+	 * The route to glow for the coming frame: its bounding box, then tile centres with their
+	 * distance along the route, four floats each. Written between beginFrame and submit.
+	 */
+	public void setGuide(float[] packed, int floats)
+	{
+		guide.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, (MAX_GUIDE_POINTS + 1) * 4));
 	}
 
 	/** Water depth and flow per ground vertex from the runoff simulation; written between beginFrame and submit. */
@@ -2069,6 +2086,7 @@ public final class RtRenderer
 		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(p.sunDiscRadius).putFloat(p.rainLength);
 		b.putFloat(p.skyAmbientR).putFloat(p.skyAmbientG).putFloat(p.skyAmbientB).putFloat(p.rainSpeed);
 		b.putFloat(p.eyeX).putFloat(p.eyeY).putFloat(p.eyeZ).putFloat(p.unseenDarkness);
+		b.putFloat(p.guideR).putFloat(p.guideG).putFloat(p.guideB).putFloat(p.guideCount);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -2111,6 +2129,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(mistGrid);
 		ctx.destroyBuffer(exposureReadback);
 		ctx.destroyBuffer(lights);
+		ctx.destroyBuffer(guide);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
 		ctx.destroyBuffer(runoff);

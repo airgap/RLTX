@@ -40,6 +40,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 post3;
   vec4 wind;      // wind velocity x and z in world units per second, light disc radius, rain streak length scale
   vec4 skyAmbient; // linear sky light on things in the open, rain speed scale
+  vec4 eye;
+  vec4 guide;      // display-space colour of the route glow, and the number of guide entries
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -58,6 +60,7 @@ layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
 layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } mistGrid;
 layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
 layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
+layout(std430, set = 0, binding = 38) readonly buffer Guide { vec4 v[]; } guidePath;
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
@@ -441,6 +444,46 @@ void writeOutput(ivec2 p, vec3 c) {
   }
 }
 
+// The Shortest Path plugin's route as a ribbon of light on the ground, with pulses running along
+// it toward the destination. Entry 0 is the route's bounding box in x and z; the rest are tile
+// centres with their distance along the route in w, and a negative w marks a break in the route.
+vec3 pathGlow(vec3 pos, vec3 n) {
+  int count = int(u.guide.w);
+  float up = max(-n.y, 0.0);
+  if (count < 2 || up <= 0.0) {
+    return vec3(0.0);
+  }
+  vec4 box = guidePath.v[0];
+  if (pos.x < box.x - 64.0 || pos.z < box.y - 64.0 || pos.x > box.z + 64.0 || pos.z > box.w + 64.0) {
+    return vec3(0.0);
+  }
+  float best = 1e30;
+  float along = 0.0;
+  for (int i = 1; i < count; ++i) {
+    vec4 a = guidePath.v[i];
+    vec4 b = guidePath.v[i + 1];
+    if (a.w < 0.0 || b.w < 0.0) {
+      continue;
+    }
+    vec3 ab = b.xyz - a.xyz;
+    float t = clamp(dot(pos - a.xyz, ab) / max(dot(ab, ab), 1.0), 0.0, 1.0);
+    vec3 d = pos - (a.xyz + ab * t);
+    d.y *= 0.5;
+    float d2 = dot(d, d);
+    if (d2 < best) {
+      best = d2;
+      along = mix(a.w, b.w, t);
+    }
+  }
+  float dist = sqrt(best);
+  float ribbon = 1.0 - smoothstep(16.0, 56.0, dist);
+  float core = 1.0 - smoothstep(0.0, 20.0, dist);
+  // A comet every three tiles, its tail trailing back toward the character.
+  float tail = fract((u.weather3.x * 320.0 - along) / 384.0);
+  float pulse = exp(-tail * 5.0);
+  return u.guide.rgb * up * (0.3 * ribbon + 0.7 * core) * (0.55 + 0.9 * pulse);
+}
+
 void main() {
   uvec2 px = gl_GlobalInvocationID.xy;
   int w = int(u.misc.z);
@@ -525,7 +568,7 @@ void main() {
   if (pc.last != 0) {
     vec3 albedo = imageLoad(albedoImage, p).rgb;
     float depth = imageLoad(currPos, p).w;
-    vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p), cameraRay(p), depth);
+    vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p) + pathGlow(position.xyz, normal) / u.params.y, cameraRay(p), depth);
     writeBright(p, hdr * u.params.y, luminance(hdr));
     vec3 c = tonemap(hdr);
     // Sky pixels carry a negative depth; they are fogged in the trace pass instead.

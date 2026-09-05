@@ -60,9 +60,16 @@ public interface RltxConfig extends Config
 	String surfacesSection = "surfaces";
 
 	@ConfigSection(
+		name = "Other plugins",
+		description = "How RLTX draws what other plugins put on the scene",
+		position = 6
+	)
+	String pluginsSection = "plugins";
+
+	@ConfigSection(
 		name = "Debug",
 		description = "Development toggles",
-		position = 6,
+		position = 7,
 		closedByDefault = true
 	)
 	String debugSection = "debug";
@@ -1261,5 +1268,43 @@ public interface RltxConfig extends Config
 	default boolean lightning()
 	{
 		return true;
+	}
+
+	@ConfigItem(
+		keyName = "pathGlow",
+		name = "Shortest Path glow",
+		description = "With the Shortest Path plugin installed, draws its route as a ribbon of light on the ground with pulses running toward the destination, in place of its tile outlines.",
+		section = pluginsSection,
+		position = 0
+	)
+	default boolean pathGlow()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "pathGlowColour",
+		name = "Route glow colour",
+		description = "Colour of the Shortest Path route glow",
+		section = pluginsSection,
+		position = 1
+	)
+	default Color pathGlowColour()
+	{
+		return new Color(255, 196, 96);
+	}
+
+	@Range(min = 10, max = 400)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "pathGlowStrength",
+		name = "Route glow strength",
+		description = "Brightness of the Shortest Path route glow",
+		section = pluginsSection,
+		position = 2
+	)
+	default int pathGlowStrength()
+	{
+		return 100;
 	}
 }

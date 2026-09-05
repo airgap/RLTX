@@ -100,4 +100,7 @@ public final class FrameParams
 	public float aperture, focusDistance;
 	/** Diffuse bounces per path; 0 leaves only direct light and the ambient floor. */
 	public int bounces;
+	/** Display-space colour of the route glow, and how many route entries were uploaded; 0 draws none. */
+	public float guideR, guideG, guideB;
+	public int guideCount;
 }
