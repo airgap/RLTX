@@ -23,6 +23,9 @@ public final class ModelPusher
 	public static final int FLAME_BIT = 1 << 29;
 	/** Whether hot-coloured faces of the models being pushed are flames of a light-bearing object. */
 	public boolean flames;
+	/** Horizontal centre and highest point, in world space, of the flame faces the last push marked. */
+	public float flameX, flameTop, flameZ;
+	public int flameFaces;
 
 	// Vanilla flames are saturated orange to yellow faces; hue sits in the top six bits of the
 	// packed HSL as sixty-fourths of a turn, saturation in three bits, lightness in seven.
@@ -84,6 +87,11 @@ public final class ModelPusher
 			ty[v] = py;
 			tz[v] = pz;
 		}
+
+		flameFaces = 0;
+		flameX = 0f;
+		flameZ = 0f;
+		flameTop = Float.MAX_VALUE;
 
 		final int faceCount = m.getFaceCount();
 		final int[] i1 = m.getFaceIndices1();
@@ -164,9 +172,18 @@ public final class ModelPusher
 			{
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
 					rgb | opacity, FLAME_BIT, 0f, 0f, 0f, 0f, 0f, 0f);
+				flameX += tx[a] + tx[b] + tx[c];
+				flameZ += tz[a] + tz[b] + tz[c];
+				flameTop = Math.min(flameTop, Math.min(ty[a], Math.min(ty[b], ty[c])));
+				++flameFaces;
 				continue;
 			}
 			out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz, rgb | opacity);
+		}
+		if (flameFaces > 0)
+		{
+			flameX /= 3f * flameFaces;
+			flameZ /= 3f * flameFaces;
 		}
 	}
 

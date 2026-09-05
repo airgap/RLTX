@@ -17,8 +17,8 @@ import net.runelite.api.coords.LocalPoint;
 
 /**
  * Lights placed in a loaded scene: the fixed ones inside its bounds and those attached to its
- * objects, plus per frame the ones following NPCs. Packs the nearest for the GPU with 117 HD's
- * flicker and pulse animation applied.
+ * objects, plus per frame the ones following NPCs and the one the player carries. Packs the
+ * nearest for the GPU with 117 HD's flicker and pulse animation applied.
  */
 public final class SceneLights
 {
@@ -45,6 +45,7 @@ public final class SceneLights
 
 	private final List<Placed> scene = new ArrayList<>();
 	private final List<Placed> frame = new ArrayList<>();
+	private Placed carried;
 	private final float[] packed;
 	private final Random random = new Random(7);
 	private final float[] placement = new float[3];
@@ -139,6 +140,12 @@ public final class SceneLights
 		}
 	}
 
+	/** The light the player carries this frame, or null for none. */
+	public void carry(LightDefinition def, float x, float y, float z)
+	{
+		carried = def == null ? null : new Placed(def, x, y, z, 0.61f);
+	}
+
 	/**
 	 * Packs this frame's lights, nearest to the camera first, up to the buffer's capacity.
 	 *
@@ -169,6 +176,10 @@ public final class SceneLights
 				def.placement(npc.getCurrentOrientation(), 1, 1, placement);
 				frame.add(new Placed(def, lp.getX() + placement[0], ground - 1f - def.height + placement[1], lp.getY() + placement[2], 0.37f));
 			}
+		}
+		if (carried != null)
+		{
+			frame.add(carried);
 		}
 		int capacity = packed.length / FLOATS_PER_LIGHT;
 		if (frame.size() > capacity)

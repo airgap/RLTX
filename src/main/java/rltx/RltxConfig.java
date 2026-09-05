@@ -824,6 +824,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "heldTorch",
+		name = "Torch in hand",
+		description = "Shows your character carrying a lit torch in place of their weapon, with its own flickering light. Only you see it, and local lights must be on for the light.",
+		section = cameraSection,
+		position = 24
+	)
+	default boolean heldTorch()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
 		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",

@@ -32,12 +32,17 @@ import net.runelite.api.GameState;
 import net.runelite.api.Model;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
+import net.runelite.api.PlayerComposition;
 import net.runelite.api.coords.LocalPoint;
+import net.runelite.api.events.BeforeRender;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.kit.KitType;
 import net.runelite.api.Projection;
 import net.runelite.api.Renderable;
 import net.runelite.api.Scene;
 import net.runelite.api.Texture;
 import com.google.gson.Gson;
+import com.google.gson.JsonPrimitive;
 import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.event.MouseEvent;
@@ -93,6 +98,7 @@ import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.scene.TextureCutouts;
 import rltx.scene.WaterSim;
+import rltx.scene.lights.LightDefinition;
 import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
@@ -600,8 +606,96 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setSwayedZones(WorldView.TOPLEVEL, top.swayed);
 	}
 
+	// The torch the character can be shown carrying: the lit torch item in the weapon slot, with
+	// 117 HD's wall torch light following the flame of its model.
+	private static final int HELD_TORCH = ItemID.TORCH_LIT + PlayerComposition.ITEM_OFFSET;
+	private static final LightDefinition HELD_TORCH_LIGHT = heldTorchLight();
+	private Integer heldTorchOriginal;
+	private boolean torchCarried;
+	private int torchFlameFaces;
+	private float torchX, torchTop, torchZ;
+
+	private static LightDefinition heldTorchLight()
+	{
+		LightDefinition def = new LightDefinition();
+		def.description = "Torch in hand";
+		def.radius = 300f;
+		def.strength = 10f;
+		def.color = new JsonPrimitive("#fc9403");
+		def.type = LightDefinition.Type.FLICKER;
+		def.range = 20f;
+		return def;
+	}
+
+	// The server's appearance updates put the real weapon back, so the swap is redone each frame.
+	@Subscribe
+	public void onBeforeRender(BeforeRender event)
+	{
+		torchCarried = config.heldTorch();
+		torchFlameFaces = 0;
+		if (torchCarried)
+		{
+			applyHeldTorch();
+		}
+	}
+
+	private void applyHeldTorch()
+	{
+		Player local = client.getLocalPlayer();
+		PlayerComposition composition = local == null ? null : local.getPlayerComposition();
+		if (composition == null)
+		{
+			return;
+		}
+		int[] ids = composition.getEquipmentIds();
+		int slot = KitType.WEAPON.getIndex();
+		if (ids[slot] != HELD_TORCH)
+		{
+			heldTorchOriginal = ids[slot];
+			ids[slot] = HELD_TORCH;
+			composition.setHash();
+		}
+	}
+
+	private void restoreWeapon()
+	{
+		Player local = client.getLocalPlayer();
+		PlayerComposition composition = local == null ? null : local.getPlayerComposition();
+		if (composition != null && heldTorchOriginal != null)
+		{
+			int[] ids = composition.getEquipmentIds();
+			int slot = KitType.WEAPON.getIndex();
+			if (ids[slot] == HELD_TORCH)
+			{
+				ids[slot] = heldTorchOriginal;
+				composition.setHash();
+			}
+		}
+		heldTorchOriginal = null;
+	}
+
+	// The torch's light sits just above its flame so the flame's own faces do not shade the
+	// ground; when the character was not drawn this frame it hangs at hand height over them.
+	private void carryTorch(SceneLights lights)
+	{
+		Player local = client.getLocalPlayer();
+		LocalPoint lp = torchCarried && local != null ? local.getLocalLocation() : null;
+		if (lp == null)
+		{
+			lights.carry(null, 0f, 0f, 0f);
+			return;
+		}
+		if (torchFlameFaces > 0)
+		{
+			lights.carry(HELD_TORCH_LIGHT, torchX, torchTop - 24f, torchZ);
+			return;
+		}
+		float ground = Perspective.getTileHeight(client, lp, local.getWorldLocation().getPlane());
+		lights.carry(HELD_TORCH_LIGHT, lp.getX(), ground - 180f, lp.getY());
+	}
+
 	// Uploads this frame's local lights: the scene's fixed and object lights plus those
-	// following NPCs, nearest first.
+	// following NPCs and the carried torch, nearest first.
 	private void fillLights()
 	{
 		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
@@ -611,6 +705,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.lightCount = 0;
 			return;
 		}
+		carryTorch(top.lights);
 		int count = top.lights.pack(wv.npcs(), lightLibrary(),
 			(lp, plane) -> Perspective.getTileHeight(client, lp, plane),
 			frame.cameraX, frame.cameraY, frame.cameraZ, frame.timeSeconds, config.lightRange() / 100f);
@@ -784,9 +879,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		mouseManager.unregisterMouseListener(freeLook);
 		chromeHidden = false;
 		freeCamera = false;
+		torchCarried = false;
 		heldKeys.clear();
 		clientThread.invoke(() ->
 		{
+			restoreWeapon();
 			client.setGpuFlags(0);
 			client.setDrawCallbacks(null);
 
@@ -848,7 +945,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
-		if (!RltxConfig.GROUP.equals(event.getGroup()) || renderer == null)
+		if (!RltxConfig.GROUP.equals(event.getGroup()))
+		{
+			return;
+		}
+		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
+		{
+			clientThread.invoke(this::restoreWeapon);
+		}
+		if (renderer == null)
 		{
 			return;
 		}
@@ -1272,9 +1377,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		++statDynamicCalls;
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
-		framePusher.flames = tileObject != null && hasLight(tileObject.getId());
+		boolean torch = torchCarried && renderable == client.getLocalPlayer();
+		framePusher.flames = torch || tileObject != null && hasLight(tileObject.getId());
 		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		framePusher.flames = false;
+		if (torch)
+		{
+			torchFlameFaces = framePusher.flameFaces;
+			torchX = framePusher.flameX;
+			torchTop = framePusher.flameTop;
+			torchZ = framePusher.flameZ;
+		}
 		motion.record(renderable, dynamic, opaqueStart, dynamicTranslucent, translucentStart);
 	}
 
