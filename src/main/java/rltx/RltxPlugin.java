@@ -116,6 +116,7 @@ import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
 import rltx.sky.SkyboxLoader;
+import rltx.sky.Atmosphere;
 import rltx.sky.LunarPosition;
 import rltx.sky.Season;
 import rltx.sky.Sidereal;
@@ -1472,6 +1473,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			gameTexturesUploaded = false;
 			skyboxLoaded = false;
 			starMapLoaded = false;
+			atmosphereLoaded = false;
+			atmosphereMap = null;
+			atmosphereIntensity = -1f;
 			requestedSkybox = null;
 			skyHorizon = null;
 			skyboxSunAzimuth = Double.NaN;
@@ -1527,6 +1531,60 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	}
 
 	private volatile boolean starMapLoaded;
+
+	// The scattered-light sky is recomputed off the client thread whenever the light has moved
+	// or the haze has changed enough to show, and uploaded when ready.
+	private volatile boolean atmosphereLoaded;
+	private volatile float[] atmosphereMap;
+	private boolean atmosphereBusy;
+	private float atmosphereX, atmosphereY, atmosphereZ, atmosphereIntensity = -1f, atmosphereHaze;
+
+	private void updateAtmosphere(float intensity)
+	{
+		if (!config.physicalSky() || !frame.proceduralSky || atmosphereBusy)
+		{
+			return;
+		}
+		float dx = frame.sunX - atmosphereX, dy = frame.sunY - atmosphereY, dz = frame.sunZ - atmosphereZ;
+		boolean moved = dx * dx + dy * dy + dz * dz > 0.003f * 0.003f;
+		if (!moved && Math.abs(intensity - atmosphereIntensity) < 0.02f && Math.abs(frame.fogAmount - atmosphereHaze) < 0.03f)
+		{
+			return;
+		}
+		float lx = frame.sunX, ly = frame.sunY, lz = frame.sunZ, haze = frame.fogAmount;
+		atmosphereX = lx;
+		atmosphereY = ly;
+		atmosphereZ = lz;
+		atmosphereIntensity = intensity;
+		atmosphereHaze = haze;
+		atmosphereBusy = true;
+		Thread worker = new Thread(() ->
+		{
+			float[] map = Atmosphere.render(lx, ly, lz, intensity, haze);
+			clientThread.invoke(() ->
+			{
+				atmosphereBusy = false;
+				if (renderer == null)
+				{
+					return;
+				}
+				ByteBuffer pixels = MemoryUtil.memAlloc(map.length * Float.BYTES);
+				try
+				{
+					pixels.asFloatBuffer().put(map);
+					renderer.setAtmosphere(Atmosphere.WIDTH, Atmosphere.HEIGHT, pixels);
+				}
+				finally
+				{
+					MemoryUtil.memFree(pixels);
+				}
+				atmosphereMap = map;
+				atmosphereLoaded = true;
+			});
+		}, "rltx-atmosphere");
+		worker.setDaemon(true);
+		worker.start();
+	}
 
 	// Rendering the catalogue takes a moment, so it happens off the client thread; the upload
 	// then joins the client thread where all Vulkan work happens.
@@ -1729,6 +1787,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.sunX = (float) (Math.sin(az) * Math.cos(el));
 		frame.sunY = (float) -Math.sin(el);
 		frame.sunZ = (float) (Math.cos(az) * Math.cos(el));
+		updateAtmosphere(daylight > 0.0 ? frame.sunIntensity : frame.sunIntensity * 0.1f);
+		frame.physicalSky = config.physicalSky() && atmosphereLoaded;
 
 		Skybox.Phase phase = elevation > 8.0 ? Skybox.Phase.DAY
 			: elevation > -4.0 ? (azimuth < 180.0 ? Skybox.Phase.SUNRISE : Skybox.Phase.SUNSET)
@@ -2331,6 +2391,25 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// fog and distance fade to meet.
 	private float[] proceduralHorizon()
 	{
+		float[] map = atmosphereMap;
+		if (frame.physicalSky && map != null)
+		{
+			// The scattered-light map's row just above the horizon, averaged around the compass.
+			int row = (int) ((0.5 - 2.0 / 180.0) * Atmosphere.HEIGHT);
+			float[] h = new float[3];
+			for (int i = 0; i < Atmosphere.WIDTH; ++i)
+			{
+				int o = (row * Atmosphere.WIDTH + i) * 4;
+				h[0] += map[o];
+				h[1] += map[o + 1];
+				h[2] += map[o + 2];
+			}
+			for (int c = 0; c < 3; ++c)
+			{
+				h[c] /= Atmosphere.WIDTH;
+			}
+			return h;
+		}
 		float day = smoothstep(-0.12f, 0.15f, frame.sunUp);
 		float low = (1f - smoothstep(0f, 0.35f, Math.abs(frame.sunUp))) * day;
 		float[] h = new float[3];

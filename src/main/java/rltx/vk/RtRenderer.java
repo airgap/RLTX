@@ -118,6 +118,7 @@ public final class RtRenderer
 	private static final int FLAG_DUST = 524288;
 	private static final int FLAG_STILL = 1048576;
 	private static final int FLAG_THIN_LENS = 2097152;
+	private static final int FLAG_PHYSICAL_SKY = 8388608;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -162,7 +163,8 @@ public final class RtRenderer
 	private static final int BINDING_PLUMES = 39;
 	private static final int BINDING_MARKERS = 40;
 	private static final int BINDING_STARS = 41;
-	private static final int BINDING_COUNT = 42;
+	private static final int BINDING_SKY_LUT = 42;
+	private static final int BINDING_COUNT = 43;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -305,6 +307,7 @@ public final class RtRenderer
 	private final Img[] filter = new Img[2];
 	private Img skybox;
 	private Img starMap;
+	private Img skyLut;
 	private long skyboxSampler;
 	private Img gameTextures;
 	private long textureSampler;
@@ -611,6 +614,7 @@ public final class RtRenderer
 			types[BINDING_PLUMES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MARKERS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STARS] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			types[BINDING_SKY_LUT] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
 			VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(BINDING_COUNT, stack);
 			for (int i = 0; i < BINDING_COUNT; ++i)
@@ -627,7 +631,7 @@ public final class RtRenderer
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(40);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
-			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(8);
+			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
@@ -951,26 +955,32 @@ public final class RtRenderer
 	 */
 	public void setSkybox(int width, int height, ByteBuffer rgba)
 	{
-		skybox = replaceSampled(skybox, width, height, rgba, BINDING_SKYBOX);
+		skybox = replaceSampled(skybox, width, height, rgba, BINDING_SKYBOX, VK_FORMAT_R8G8B8A8_UNORM, 4);
 	}
 
 	/** Replaces the star map, equirectangular in equatorial coordinates. Blocks until the upload completes. */
 	public void setStarMap(int width, int height, ByteBuffer rgba)
 	{
-		starMap = replaceSampled(starMap, width, height, rgba, BINDING_STARS);
+		starMap = replaceSampled(starMap, width, height, rgba, BINDING_STARS, VK_FORMAT_R8G8B8A8_UNORM, 4);
 	}
 
-	private Img replaceSampled(Img old, int width, int height, ByteBuffer rgba, int binding)
+	/** Replaces the scattered-light sky map, RGBA floats over scene azimuth and elevation. Blocks until the upload completes. */
+	public void setAtmosphere(int width, int height, ByteBuffer rgba)
+	{
+		skyLut = replaceSampled(skyLut, width, height, rgba, BINDING_SKY_LUT, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
+	}
+
+	private Img replaceSampled(Img old, int width, int height, ByteBuffer rgba, int binding, int format, int bytesPerPixel)
 	{
 		idle();
 		if (old != null)
 		{
 			destroyImage(old);
 		}
-		Img skybox = createImage(width, height, VK_FORMAT_R8G8B8A8_UNORM,
+		Img skybox = createImage(width, height, format,
 			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
 
-		long bytes = (long) width * height * 4;
+		long bytes = (long) width * height * bytesPerPixel;
 		VkBuf staging = ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		MemoryUtil.memCopy(MemoryUtil.memAddress(rgba), MemoryUtil.memAddress(staging.mapped), bytes);
@@ -2128,7 +2138,8 @@ public final class RtRenderer
 			| (p.fireflies ? FLAG_FIREFLIES : 0)
 			| (p.dustMotes ? FLAG_DUST : 0)
 			| (p.still ? FLAG_STILL : 0)
-			| (p.thinLens ? FLAG_THIN_LENS : 0);
+			| (p.thinLens ? FLAG_THIN_LENS : 0)
+			| (p.physicalSky ? FLAG_PHYSICAL_SKY : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);
@@ -2216,6 +2227,10 @@ public final class RtRenderer
 		if (starMap != null)
 		{
 			destroyImage(starMap);
+		}
+		if (skyLut != null)
+		{
+			destroyImage(skyLut);
 		}
 		vkDestroySampler(device, skyboxSampler, null);
 		vkDestroyPipeline(device, tracePipeline, null);

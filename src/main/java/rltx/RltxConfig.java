@@ -1458,6 +1458,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "physicalSky",
+		name = "Physical atmosphere",
+		description = "Computes the procedural sky from sunlight scattering in the air, for the true colours of dawn, dusk and twilight; off keeps the painted gradient.",
+		section = skySection,
+		position = 45
+	)
+	default boolean physicalSky()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "lightning",
 		name = "Lightning",
 		description = "Flashes of light during thunderstorms.",

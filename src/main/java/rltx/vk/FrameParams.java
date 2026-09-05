@@ -75,6 +75,8 @@ public final class FrameParams
 	/** Sine of the real sun's elevation, negative at night, for day and night blending in the sky. */
 	public float sunUp;
 	public boolean proceduralSky, clouds, cloudShadows, autoExposure;
+	/** Whether the procedural sky reads the scattered-light map instead of its painted gradient. */
+	public boolean physicalSky;
 	/** Number of local lights uploaded this frame and their brightness scale. */
 	public int lightCount;
 	public float lightStrength;

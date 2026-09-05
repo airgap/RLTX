@@ -51,6 +51,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 layout(set = 0, binding = 41) uniform sampler2D starMap;
+layout(set = 0, binding = 42) uniform sampler2D skyLut;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
 // resolve and denoise passes need; the albedo is multiplied back in at the very end.
 layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D currPos;
@@ -93,6 +94,7 @@ const uint FLAG_SMOOTH_TERRAIN = 32768u;
 const uint FLAG_RUNOFF = 65536u;
 const uint FLAG_STILL = 1048576u;
 const uint FLAG_THIN_LENS = 2097152u;
+const uint FLAG_PHYSICAL_SKY = 8388608u;
 const uint WATER_BIT = 0x80000000u;
 const uint TERRAIN_BIT = 0x40000000u;
 const uint FLAME_BIT = 0x20000000u;
@@ -432,6 +434,11 @@ vec2 skyUv(vec3 d) {
   return vec2(az / TWO_PI + 0.5, acos(clamp(-d.y, -1.0, 1.0)) / 3.14159265359);
 }
 
+// The scattered-light sky map is laid out the same way, fixed to north.
+vec2 atmosphereUv(vec3 d) {
+  return vec2(atan(d.x, d.z) / TWO_PI + 0.5, acos(clamp(-d.y, -1.0, 1.0)) / 3.14159265359);
+}
+
 float hash13(vec3 p) {
   p = fract(p * 0.1031);
   p += dot(p, p.zyx + 31.32);
@@ -587,19 +594,26 @@ vec3 proceduralSky(vec3 d, bool withDisc) {
   float up = clamp(-d.y, 0.0, 1.0);
   float sunUp = u.post2.w;
   float day = smoothstep(-0.12, 0.15, sunUp);
-  float low = (1.0 - smoothstep(0.0, 0.35, abs(sunUp))) * day;
-  float horizonWeight = pow(1.0 - up, 2.5);
-  vec3 zenith = mix(vec3(0.004, 0.006, 0.014), vec3(0.16, 0.36, 0.78), day);
-  vec3 horizon = mix(vec3(0.012, 0.014, 0.024), vec3(0.62, 0.74, 0.90), day);
-  vec3 sky = mix(zenith, horizon, horizonWeight);
-  vec2 flatDir = normalize(d.xz + 1e-5);
-  vec2 flatSun = normalize(u.sun.xz + 1e-5);
-  float towardSun = pow(max(dot(flatDir, flatSun), 0.0), 3.0);
-  sky = mix(sky, vec3(0.95, 0.45, 0.2), low * horizonWeight * (0.4 + 0.6 * towardSun));
   float cosS = dot(d, u.sun.xyz);
-  // A tight glow around the light with a faint wide halo, both stronger near the horizon.
-  float glow = pow(max(cosS, 0.0), 48.0) + 0.2 * pow(max(cosS, 0.0), 6.0);
-  sky += u.sunColor.rgb * (0.05 * mix(0.15, 1.0, day) * (1.0 + 4.0 * low)) * glow;
+  vec3 sky;
+  if ((u.misc.y & FLAG_PHYSICAL_SKY) != 0u) {
+    // Sunlight scattered in the air, computed on the CPU into a map; the sun's own glow is in
+    // it. A faint floor stands in for starlight and airglow once the light has gone.
+    sky = texture(skyLut, atmosphereUv(d)).rgb + vec3(0.0025, 0.003, 0.006) * (1.0 - day);
+  } else {
+    float low = (1.0 - smoothstep(0.0, 0.35, abs(sunUp))) * day;
+    float horizonWeight = pow(1.0 - up, 2.5);
+    vec3 zenith = mix(vec3(0.004, 0.006, 0.014), vec3(0.16, 0.36, 0.78), day);
+    vec3 horizon = mix(vec3(0.012, 0.014, 0.024), vec3(0.62, 0.74, 0.90), day);
+    sky = mix(zenith, horizon, horizonWeight);
+    vec2 flatDir = normalize(d.xz + 1e-5);
+    vec2 flatSun = normalize(u.sun.xz + 1e-5);
+    float towardSun = pow(max(dot(flatDir, flatSun), 0.0), 3.0);
+    sky = mix(sky, vec3(0.95, 0.45, 0.2), low * horizonWeight * (0.4 + 0.6 * towardSun));
+    // A tight glow around the light with a faint wide halo, both stronger near the horizon.
+    float glow = pow(max(cosS, 0.0), 48.0) + 0.2 * pow(max(cosS, 0.0), 6.0);
+    sky += u.sunColor.rgb * (0.05 * mix(0.15, 1.0, day) * (1.0 + 4.0 * low)) * glow;
+  }
   if (day < 0.5) {
     float nightly = 1.0 - day * 2.0;
     if (u.star0.w > 0.0) {
