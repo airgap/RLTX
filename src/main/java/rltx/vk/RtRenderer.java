@@ -1690,7 +1690,11 @@ public final class RtRenderer
 	 *
 	 * @param waitForGl whether OpenGL signalled the shared semaphore after its last read of the output image
 	 */
-	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, boolean waitForGl)
+	/**
+	 * Renders a frame. The binary semaphores shared with OpenGL may only be signalled once per
+	 * wait, so a frame that OpenGL will never see passes signalGl false.
+	 */
+	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, boolean waitForGl, boolean signalGl)
 	{
 		if (output == null)
 		{
@@ -1850,8 +1854,11 @@ public final class RtRenderer
 			check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
 			VkSubmitInfo submit = VkSubmitInfo.calloc(stack).sType$Default()
-				.pCommandBuffers(stack.pointers(cmd))
-				.pSignalSemaphores(stack.longs(semaphoreVkDone));
+				.pCommandBuffers(stack.pointers(cmd));
+			if (signalGl)
+			{
+				submit.pSignalSemaphores(stack.longs(semaphoreVkDone));
+			}
 			if (waitForGl)
 			{
 				submit.waitSemaphoreCount(1)

@@ -74,6 +74,13 @@ public final class LightDefinition
 	/** Object names from 117 HD's game value table, or plain ids. */
 	public List<String> objectIds;
 	public List<String> npcIds;
+	/** Spot animation names from RuneLite's game value table, or plain ids. */
+	public List<String> projectileIds;
+	public List<String> graphicsObjectIds;
+	/** Milliseconds: how long after its bearer appears the light starts, then ramps up, and how long before the end it ramps down. */
+	public float spawnDelay;
+	public float fadeInDuration;
+	public float fadeOutDuration;
 
 	public boolean fixed()
 	{

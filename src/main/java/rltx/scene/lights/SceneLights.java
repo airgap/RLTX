@@ -7,9 +7,11 @@ import java.util.Random;
 import net.runelite.api.Constants;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.GameObject;
+import net.runelite.api.GraphicsObject;
 import net.runelite.api.GroundObject;
 import net.runelite.api.NPC;
 import net.runelite.api.Perspective;
+import net.runelite.api.Projectile;
 import net.runelite.api.Scene;
 import net.runelite.api.Tile;
 import net.runelite.api.WallObject;
@@ -17,8 +19,8 @@ import net.runelite.api.coords.LocalPoint;
 
 /**
  * Lights placed in a loaded scene: the fixed ones inside its bounds and those attached to its
- * objects, plus per frame the ones following NPCs and the one the player carries. Packs the
- * nearest for the GPU with 117 HD's flicker and pulse animation applied.
+ * objects, plus per frame the ones following NPCs, projectiles and spell effects and the one the
+ * player carries. Packs the nearest for the GPU with 117 HD's flicker and pulse animation applied.
  */
 public final class SceneLights
 {
@@ -32,14 +34,22 @@ public final class SceneLights
 		final float y;
 		final float z;
 		final float phase;
+		/** Strength scale from the light's fade in and out, 1 for a light that is simply there. */
+		final float fade;
 
 		Placed(LightDefinition def, float x, float y, float z, float phase)
+		{
+			this(def, x, y, z, phase, 1f);
+		}
+
+		Placed(LightDefinition def, float x, float y, float z, float phase, float fade)
 		{
 			this.def = def;
 			this.x = x;
 			this.y = y;
 			this.z = z;
 			this.phase = phase;
+			this.fade = fade;
 		}
 	}
 
@@ -146,15 +156,33 @@ public final class SceneLights
 		carried = def == null ? null : new Placed(def, x, y, z, 0.61f);
 	}
 
+	// How far into its life a light attached to something short-lived has come: 117 HD's spawn
+	// delay, fade in and, when the end is known, fade out, all in milliseconds.
+	private static float fade(LightDefinition def, float ageMillis, float remainingMillis)
+	{
+		float since = ageMillis - def.spawnDelay;
+		if (since < 0f)
+		{
+			return 0f;
+		}
+		float in = def.fadeInDuration > 0f ? Math.min(since / def.fadeInDuration, 1f) : 1f;
+		float out = def.fadeOutDuration > 0f && remainingMillis >= 0f ? Math.min(remainingMillis / def.fadeOutDuration, 1f) : 1f;
+		return in * out;
+	}
+
 	/**
 	 * Packs this frame's lights, nearest to the camera first, up to the buffer's capacity.
 	 *
-	 * @param npcs      NPCs currently in the world view, for attached lights
-	 * @param npcHeight  ground height under an NPC's position
-	 * @param rangeScale multiplier on every light's radius
+	 * @param npcs        NPCs currently in the world view, for attached lights
+	 * @param projectiles projectiles in flight, whose lights travel with them
+	 * @param effects     spell and other graphics objects on the ground
+	 * @param gameCycle   the client's cycle counter, 20 ms per cycle, for the fades
+	 * @param npcHeight   ground height under an NPC's position
+	 * @param rangeScale  multiplier on every light's radius
 	 * @return how many lights were packed
 	 */
-	public int pack(Iterable<? extends NPC> npcs, LightLibrary library, HeightLookup npcHeight, float camX, float camY, float camZ, float seconds, float rangeScale)
+	public int pack(Iterable<? extends NPC> npcs, Iterable<? extends Projectile> projectiles, Iterable<? extends GraphicsObject> effects, int gameCycle,
+		LightLibrary library, HeightLookup npcHeight, float camX, float camY, float camZ, float seconds, float rangeScale)
 	{
 		frame.clear();
 		frame.addAll(scene);
@@ -177,6 +205,47 @@ public final class SceneLights
 				frame.add(new Placed(def, lp.getX() + placement[0], ground - 1f - def.height + placement[1], lp.getY() + placement[2], 0.37f));
 			}
 		}
+		for (Projectile projectile : projectiles)
+		{
+			List<LightDefinition> defs = library.byProjectile.get(projectile.getId());
+			if (defs == null)
+			{
+				continue;
+			}
+			float age = (gameCycle - projectile.getStartCycle()) * 20f;
+			float remaining = projectile.getRemainingCycles() * 20f;
+			for (LightDefinition def : defs)
+			{
+				float fade = fade(def, age, remaining);
+				if (fade <= 0f)
+				{
+					continue;
+				}
+				def.placement(projectile.getOrientation(), 1, 1, placement);
+				frame.add(new Placed(def, (float) projectile.getX() + placement[0], (float) projectile.getZ() - def.height + placement[1],
+					(float) projectile.getY() + placement[2], 0.53f, fade));
+			}
+		}
+		for (GraphicsObject effect : effects)
+		{
+			List<LightDefinition> defs = effect.finished() ? null : library.byGraphicsObject.get(effect.getId());
+			if (defs == null)
+			{
+				continue;
+			}
+			LocalPoint lp = effect.getLocation();
+			float age = (gameCycle - effect.getStartCycle()) * 20f;
+			for (LightDefinition def : defs)
+			{
+				float fade = fade(def, age, -1f);
+				if (fade <= 0f)
+				{
+					continue;
+				}
+				def.placement(0, 1, 1, placement);
+				frame.add(new Placed(def, lp.getX() + placement[0], effect.getZ() - 1f - def.height + placement[1], lp.getY() + placement[2], 0.71f, fade));
+			}
+		}
 		if (carried != null)
 		{
 			frame.add(carried);
@@ -191,7 +260,7 @@ public final class SceneLights
 		for (int i = 0; i < count; ++i)
 		{
 			Placed p = frame.get(i);
-			float strength = Math.min(p.def.strength, MAX_STRENGTH);
+			float strength = Math.min(p.def.strength, MAX_STRENGTH) * p.fade;
 			float radius = p.def.radius * rangeScale;
 			switch (p.def.type)
 			{

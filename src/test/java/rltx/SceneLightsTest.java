@@ -19,7 +19,7 @@ public class SceneLightsTest
 
 	private static int pack(SceneLights lights)
 	{
-		return lights.pack(Collections.<NPC>emptyList(), null, (lp, plane) -> 0f, 0f, 0f, 0f, 0f, 1f);
+		return lights.pack(Collections.<NPC>emptyList(), Collections.emptyList(), Collections.emptyList(), 0, null, (lp, plane) -> 0f, 0f, 0f, 0f, 0f, 1f);
 	}
 
 	@Test

@@ -39,6 +39,8 @@ import net.runelite.api.events.BeforeRender;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.kit.KitType;
+import net.runelite.api.Projectile;
+import net.runelite.api.GraphicsObject;
 import net.runelite.api.Projection;
 import net.runelite.api.Renderable;
 import net.runelite.api.Scene;
@@ -309,14 +311,45 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		freeZ += (inv[8] * forward + inv[6] * right) * speed;
 	}
 
+	private volatile boolean burstPending;
+
 	private void takePhoto()
 	{
-		drawManager.requestNextFrameListener(image ->
+		if (config.photoBurst() > 0)
 		{
-			Thread saver = new Thread(() -> savePhoto(image), "rltx-photo");
-			saver.setDaemon(true);
-			saver.start();
-		});
+			burstPending = true;
+		}
+		else
+		{
+			drawManager.requestNextFrameListener(this::savePhotoAsync);
+		}
+	}
+
+	private void savePhotoAsync(Image image)
+	{
+		Thread saver = new Thread(() -> savePhoto(image), "rltx-photo");
+		saver.setDaemon(true);
+		saver.start();
+	}
+
+	// Holds this frame's scene still and accumulates many more samples of it before it is shown,
+	// so the photo taken of it has neither noise nor denoiser blur. The client waits meanwhile.
+	private void burst()
+	{
+		int frames = config.photoBurst();
+		frame.historyFrames = frames + 1;
+		frame.dynamicHistoryFrames = frames + 1;
+		frame.denoisePasses = 1;
+		frame.shutter = 0f;
+		for (int i = 0; i <= frames; ++i)
+		{
+			if (i > 0)
+			{
+				renderer.beginFrame();
+			}
+			renderer.submit(frame, dynamic, dynamicTranslucent, i == 0 && glSignalPending, i == frames);
+		}
+		drawManager.requestNextFrameListener(this::savePhotoAsync);
 	}
 
 	private void savePhoto(Image image)
@@ -810,7 +843,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			return;
 		}
 		carryTorch(top.lights);
-		int count = top.lights.pack(wv.npcs(), lightLibrary(),
+		int count = top.lights.pack(wv.npcs(), client.getProjectiles(), wv.getGraphicsObjects(), client.getGameCycle(), lightLibrary(),
 			(lp, plane) -> Perspective.getTileHeight(client, lp, plane),
 			frame.cameraX, frame.cameraY, frame.cameraZ, frame.timeSeconds, config.lightRange() / 100f);
 		renderer.setLights(top.lights.packed(), count);
@@ -1490,7 +1523,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
 		boolean torch = torchCarried && renderable == client.getLocalPlayer();
-		framePusher.flames = torch || tileObject != null && hasLight(tileObject.getId());
+		framePusher.flames = torch || tileObject != null && hasLight(tileObject.getId())
+			|| renderable instanceof Projectile && lightLibrary().byProjectile.containsKey(((Projectile) renderable).getId())
+			|| renderable instanceof GraphicsObject && lightLibrary().byGraphicsObject.containsKey(((GraphicsObject) renderable).getId());
 		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		framePusher.flames = false;
 		if (torch)
@@ -1609,7 +1644,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillLights();
 		fillGuide();
 		fillRunoff();
-		renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending);
+		if (burstPending)
+		{
+			burstPending = false;
+			burst();
+		}
+		else
+		{
+			renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending, true);
+		}
 		motion.endFrame();
 		statSubmitNanos += System.nanoTime() - start;
 		glSignalPending = false;
@@ -2057,7 +2100,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 			}
 			frame.pattern = true;
-			renderer.submit(frame, empty, empty, glSignalPending);
+			renderer.submit(frame, empty, empty, glSignalPending, true);
 			glSignalPending = false;
 			compositor.drawScene(0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
 			glSignalPending = true;

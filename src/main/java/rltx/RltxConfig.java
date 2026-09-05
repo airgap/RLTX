@@ -842,6 +842,19 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	@Range(max = 2000)
+	@ConfigItem(
+		keyName = "photoBurst",
+		name = "Photo burst",
+		description = "Frames of the same view accumulated before a photo is saved, so it has no noise or denoiser blur. The game pauses while they render; 0 saves the frame as shown.",
+		section = cameraSection,
+		position = 26
+	)
+	default int photoBurst()
+	{
+		return 150;
+	}
+
 	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
