@@ -1,12 +1,16 @@
 {
   "name": "Lumbridge Graveyard",
-  "rects": [
+  "polygons": [
     [
+      -1,
       3233,
       3188,
       3253,
+      3188,
+      3253,
       3200,
-      -1
+      3233,
+      3200
     ]
   ],
   "regions": [],

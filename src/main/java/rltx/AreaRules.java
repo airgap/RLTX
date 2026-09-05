@@ -19,8 +19,8 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.RuneLite;
 
 /**
- * Settings that belong to places. Each rule names an area by world rectangles, or by map regions
- * where no rectangle is given, and holds the settings that differ there. Standing inside applies
+ * Settings that belong to places. Each rule bounds an area by world polygons, or by map regions
+ * where no polygon is given, and holds the settings that differ there. Standing inside applies
  * them over the live ones, remembering what they replaced; leaving puts those back. Rules ship
  * with the plugin as resources and the user's own, kept in the RuneLite folder, override them
  * by name.
@@ -36,8 +36,8 @@ final class AreaRules
 	static final class Rule
 	{
 		String name;
-		/** World rectangles x1, y1, x2, y2 and plane, -1 for any plane. */
-		List<int[]> rects = new ArrayList<>();
+		/** World polygons: the plane, -1 for any, then the corners' x and y in order. */
+		List<int[]> polygons = new ArrayList<>();
 		List<Integer> regions = new ArrayList<>();
 		Map<String, String> overrides = new LinkedHashMap<>();
 		/** A user rule that only switches a bundled rule of the same name off. */
@@ -46,14 +46,34 @@ final class AreaRules
 
 		boolean contains(WorldPoint p)
 		{
-			for (int[] r : rects)
+			for (int[] polygon : polygons)
 			{
-				if (p.getX() >= r[0] && p.getX() <= r[2] && p.getY() >= r[1] && p.getY() <= r[3] && (r[4] < 0 || p.getPlane() == r[4]))
+				if ((polygon[0] < 0 || p.getPlane() == polygon[0]) && inside(polygon, p.getX(), p.getY()))
 				{
 					return true;
 				}
 			}
-			return rects.isEmpty() && regions.contains(p.getRegionID());
+			return polygons.isEmpty() && regions.contains(p.getRegionID());
+		}
+
+		// Even-odd test against the tile's centre, with the corners taken as tile centres too, so
+		// a polygon marked by standing on its corners holds everything between them.
+		private static boolean inside(int[] polygon, int x, int y)
+		{
+			double px = x + 0.5;
+			double py = y + 0.5;
+			int corners = (polygon.length - 1) / 2;
+			boolean in = false;
+			for (int i = 0, j = corners - 1; i < corners; j = i++)
+			{
+				double xi = polygon[1 + i * 2] + 0.5, yi = polygon[2 + i * 2] + 0.5;
+				double xj = polygon[1 + j * 2] + 0.5, yj = polygon[2 + j * 2] + 0.5;
+				if ((yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+				{
+					in = !in;
+				}
+			}
+			return in;
 		}
 
 		@Override
@@ -142,7 +162,7 @@ final class AreaRules
 		String file = rule.name.replaceAll("[^A-Za-z0-9 _.-]", "_").replace(' ', '-').toLowerCase() + ".json";
 		Rule copy = new Rule();
 		copy.name = rule.name;
-		copy.rects = rule.rects;
+		copy.polygons = rule.polygons;
 		copy.regions = rule.regions;
 		copy.overrides = rule.overrides;
 		try (Writer out = Files.newBufferedWriter(new File(dir, file).toPath(), StandardCharsets.UTF_8))

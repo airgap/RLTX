@@ -436,7 +436,7 @@ final class ControlPanel
 		list.setVisibleRowCount(6);
 		JTextField name = new JTextField(18);
 		JTextField regions = new JTextField(18);
-		JTextField rects = new JTextField(18);
+		JTextField polygons = new JTextField(18);
 		JComboBox<String> base = new JComboBox<>(presets.names().toArray(new String[0]));
 		list.addListSelectionListener(e ->
 		{
@@ -450,12 +450,23 @@ final class ControlPanel
 					text.append(text.length() == 0 ? "" : ", ").append(region);
 				}
 				regions.setText(text.toString());
-				StringBuilder boxes = new StringBuilder();
-				for (int[] r : rule.rects)
+				StringBuilder shapes = new StringBuilder();
+				for (int[] polygon : rule.polygons)
 				{
-					boxes.append(boxes.length() == 0 ? "" : "; ").append(r[0]).append(",").append(r[1]).append(",").append(r[2]).append(",").append(r[3]).append(r[4] < 0 ? "" : "," + r[4]);
+					if (shapes.length() > 0)
+					{
+						shapes.append("; ");
+					}
+					for (int i = 1; i + 1 < polygon.length; i += 2)
+					{
+						shapes.append(i == 1 ? "" : " ").append(polygon[i]).append(",").append(polygon[i + 1]);
+					}
+					if (polygon[0] >= 0)
+					{
+						shapes.append(" @").append(polygon[0]);
+					}
 				}
-				rects.setText(boxes.toString());
+				polygons.setText(shapes.toString());
 			}
 		});
 		JCheckBox enabled = new JCheckBox("Apply area settings", config.areaSettings());
@@ -463,7 +474,7 @@ final class ControlPanel
 		refreshers.put("areaSettings", v -> enabled.setSelected((Boolean) v));
 		page.add(enabled, c);
 		++c.gridy;
-		JLabel help = new JLabel("<html>Bound the area with world rectangles: stand at two opposite corners and mark each, or type them as x1,y1,x2,y2 with an optional plane, separated by semicolons. Without rectangles the map regions are used. Then set the look you want, choose the preset holding your usual settings as the base, and save: only what differs is kept, and it is put back when you leave.</html>");
+		JLabel help = new JLabel("<html>Bound the area with polygons: walk its outline, marking a corner at each turn, and close the shape; or type corners as x,y pairs separated by spaces, an optional @plane at the end, polygons separated by semicolons. Without polygons the map regions are used. Then set the look you want, choose the preset holding your usual settings as the base, and save: only what differs is kept, and it is put back when you leave.</html>");
 		page.add(help, c);
 		++c.gridy;
 		page.add(new JScrollPane(list), c);
@@ -486,10 +497,9 @@ final class ControlPanel
 		}, status), BorderLayout.EAST);
 		page.add(labelled("Map regions", regionRow), c);
 		++c.gridy;
-		int[] corner = new int[4];
-		boolean[] cornerSet = new boolean[1];
-		JPanel rectRow = new JPanel(new BorderLayout(6, 0));
-		rectRow.add(rects, BorderLayout.CENTER);
+		StringBuilder outline = new StringBuilder();
+		JPanel shapeRow = new JPanel(new BorderLayout(6, 0));
+		shapeRow.add(polygons, BorderLayout.CENTER);
 		JPanel cornerButtons = new JPanel(new java.awt.GridLayout(1, 2, 4, 0));
 		cornerButtons.add(button("Mark corner", () ->
 		{
@@ -499,23 +509,24 @@ final class ControlPanel
 				status.setText("Not in the world.");
 				return;
 			}
-			if (!cornerSet[0])
+			outline.append(outline.length() == 0 ? "" : " ").append(here.getX()).append(",").append(here.getY());
+			int corners = outline.toString().split(" ").length;
+			status.setText(corners + (corners == 1 ? " corner marked at " : " corners marked, last at ") + here.getX() + ", " + here.getY() + ". Close the shape when the outline is walked.");
+		}, status));
+		cornerButtons.add(button("Close shape", () ->
+		{
+			if (outline.toString().split(" ").length < 3)
 			{
-				corner[0] = here.getX();
-				corner[1] = here.getY();
-				corner[2] = here.getPlane();
-				cornerSet[0] = true;
-				status.setText("First corner at " + here.getX() + ", " + here.getY() + ". Walk to the opposite corner and mark again.");
+				status.setText("A polygon needs at least three corners.");
 				return;
 			}
-			cornerSet[0] = false;
-			String box = Math.min(corner[0], here.getX()) + "," + Math.min(corner[1], here.getY()) + "," + Math.max(corner[0], here.getX()) + "," + Math.max(corner[1], here.getY());
-			String text = rects.getText().trim();
-			rects.setText(text.isEmpty() ? box : text + "; " + box);
-			status.setText("Rectangle added.");
+			String text = polygons.getText().trim();
+			polygons.setText(text.isEmpty() ? outline.toString() : text + "; " + outline);
+			outline.setLength(0);
+			status.setText("Polygon added.");
 		}, status));
-		rectRow.add(cornerButtons, BorderLayout.EAST);
-		page.add(labelled("Rectangles", rectRow), c);
+		shapeRow.add(cornerButtons, BorderLayout.EAST);
+		page.add(labelled("Polygons", shapeRow), c);
 		++c.gridy;
 		page.add(labelled("Base preset", base), c);
 		++c.gridy;
@@ -537,13 +548,34 @@ final class ControlPanel
 					rule.regions.add(Integer.parseInt(part));
 				}
 			}
-			for (String box : rects.getText().split(";"))
+			for (String shape : polygons.getText().split(";"))
 			{
-				String[] parts = box.trim().split("[,\\s]+");
-				if (parts.length >= 4 && !parts[0].isEmpty())
+				String text = shape.trim();
+				if (text.isEmpty())
 				{
-					rule.rects.add(new int[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Integer.parseInt(parts[3]), parts.length > 4 ? Integer.parseInt(parts[4]) : -1});
+					continue;
 				}
+				int plane = -1;
+				int at = text.indexOf('@');
+				if (at >= 0)
+				{
+					plane = Integer.parseInt(text.substring(at + 1).trim());
+					text = text.substring(0, at).trim();
+				}
+				String[] corners = text.split("\\s+");
+				if (corners.length < 3)
+				{
+					throw new NumberFormatException("A polygon needs at least three corners: " + shape.trim());
+				}
+				int[] polygon = new int[1 + corners.length * 2];
+				polygon[0] = plane;
+				for (int i = 0; i < corners.length; ++i)
+				{
+					String[] xy = corners[i].split(",");
+					polygon[1 + i * 2] = Integer.parseInt(xy[0].trim());
+					polygon[2 + i * 2] = Integer.parseInt(xy[1].trim());
+				}
+				rule.polygons.add(polygon);
 			}
 			rule.overrides = Presets.diff(presets.load(String.valueOf(base.getSelectedItem())), presets.capture());
 			areas.put(rule);
