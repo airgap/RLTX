@@ -33,20 +33,82 @@ time and place, so this is what the sky looked like when the photo was taken.
 
 ## Requirements
 
+- Linux. The install route below goes through the Jagex Launcher's Linux AppImage; there is no
+  Windows or macOS path yet.
 - A GPU and driver with Vulkan 1.2 ray queries (`VK_KHR_ray_query`) and external memory and
-  semaphore file descriptors. Developed on an NVIDIA RTX 4070 Ti on Linux.
-- Java 11 or later to build; the client runs on RuneLite's Java 21.
-- `glslangValidator` on the path to compile the shaders.
+  semaphore file descriptors. Developed on an NVIDIA RTX 4070 Ti.
+- A JDK, 17 or newer. The client runs on whichever Java runs the build.
+- `glslangValidator` on the path to compile the shaders: package `glslang-tools` on Debian and
+  Ubuntu, `glslang` on Arch and Fedora.
+- RuneLite installed through the Jagex Launcher, to play with a Jagex account.
 
 ## Building
 
     ./gradlew build
 
-The tests exercise the camera maths, the solar almanac, the weather mapping, the water table
-and the runoff simulation. `./gradlew shadowJar` produces a jar bundling the LWJGL Vulkan
-bindings; `./gradlew launchScript` writes a launcher that starts the client in developer mode
-with the plugin on the classpath, which `tools/install-jagex-wrapper.sh` can hook into the Jagex
-Launcher's RuneLite install.
+Compiles the plugin and the shaders and runs the tests. Gradle fetches RuneLite and LWJGL from
+RuneLite's repository and Maven Central on the first run.
+
+## Installing
+
+RuneLite switches developer mode off whenever a launcher starts it, and with it goes plugin
+sideloading. RLTX is not on the Plugin Hub, so the way to play with a Jagex account is to have
+the Jagex Launcher start a client of our own with the plugin built in. The launcher runs
+`~/.local/share/Jagex Launcher/games/runelite/RuneLite.AppImage` with the login session in its
+environment, and the installer keeps that file and puts a small wrapper in its place that runs
+our client instead.
+
+1. Install RuneLite from the Jagex Launcher if you have not already, and start it once.
+2. Write the launch script:
+
+       ./gradlew launchScript
+
+   This compiles everything and writes `build/rltx-client.sh` with this machine's classpath.
+   The script points at the build output, so after any code change rerunning this one command
+   and restarting the client is all that is needed.
+3. Install the wrapper:
+
+       tools/install-jagex-wrapper.sh
+
+   The original AppImage is kept beside it as `RuneLite.AppImage.stock`.
+4. Press Play in the Jagex Launcher. The client that opens is RuneLite in developer mode with
+   RLTX in its plugin list.
+5. In the client, turn off the GPU plugin and 117 HD, or any other renderer plugin; only one
+   can own the canvas. Then turn on RLTX.
+
+Console output of the launcher-started client goes to `~/.runelite/logs/rltx-console.log`. The
+launcher never reads the pipe it hands the client, and a full pipe would freeze the game, so
+the script writes to a file instead. If Vulkan setup fails, RLTX disables itself and the reason
+is in that log.
+
+To play the stock client without uninstalling, create the file `~/.runelite/rltx-use-stock`
+and delete it to come back; the wrapper also falls back to the stock client whenever the launch
+script is missing. To uninstall, delete `RuneLite.AppImage` in the folder above and rename
+`RuneLite.AppImage.stock` back to `RuneLite.AppImage`.
+
+### Skyboxes
+
+The Skybox setting lists the skies of the Fantasy Skybox pack by Render Knight and needs its
+`Materials` folder in the Skybox pack folder setting. Without the pack, leave Skybox on None and
+the procedural sky is used. No skybox images are distributed here.
+
+## Running from Gradle
+
+    ./gradlew run
+
+starts the developer-mode client directly, without the launcher, which works for a legacy
+account login or for checking that the renderer comes up. Add `-PruneliteHome=/some/dir` to
+use a separate RuneLite home so your real profile is untouched. A fresh home has the GPU plugin
+on by default; turn it off in that client before enabling RLTX.
+
+## Sideloadable jar
+
+    ./gradlew shadowJar
+
+builds `build/libs/rltx-0.1.0-SNAPSHOT-all.jar`, the plugin with the LWJGL Vulkan bindings
+included, for `~/.runelite/sideloaded-plugins/` in a client started in developer mode. LWJGL's
+core is left out because RuneLite ships its own copy. The launcher-started client never loads
+sideloaded plugins, which is why the wrapper above exists.
 
 ## Third-party components and notices
 
