@@ -1007,9 +1007,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				int o = f * 9;
 				float px = pos[o];
 				float pz = pos[o + 2];
-				float gust = amplitude * ((float) Math.sin(t * 1.1 + px * 0.006 + pz * 0.004) + 0.5f * (float) Math.sin(t * 2.3 + pz * 0.011));
-				float ox = gust * (0.6f * dirX + 0.4f * (float) Math.sin(t * 0.7 + px * 0.01));
-				float oz = gust * (0.6f * dirZ + 0.4f * (float) Math.cos(t * 0.9 + pz * 0.008));
+				// A tall tree is stiffer and slower than a shrub: its crown moves less, in longer gusts.
+				float height = (float) Math.floor(weights[f * 3]);
+				float stiff = Math.min(1f, 260f / Math.max(height, 1f));
+				float pace = 0.55f + 0.45f * stiff;
+				float gust = amplitude * stiff * ((float) Math.sin(t * 1.1 * pace + px * 0.006 + pz * 0.004) + 0.5f * (float) Math.sin(t * 2.3 * pace + pz * 0.011));
+				float ox = gust * (0.6f * dirX + 0.4f * (float) Math.sin(t * 0.7 * pace + px * 0.01));
+				float oz = gust * (0.6f * dirZ + 0.4f * (float) Math.cos(t * 0.9 * pace + pz * 0.008));
 				// Low plants lean away from anyone standing in them; trees are above the reach.
 				for (int a = 0; a < near; ++a)
 				{
@@ -1024,12 +1028,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 						oz += az * push;
 					}
 				}
+				float rustle = 0.3f * amplitude;
 				for (int v = 0; v < 3; ++v)
 				{
-					float w = weights[f * 3 + v];
-					swayScratch[o + v * 3] = pos[o + v * 3] + ox * w;
-					swayScratch[o + v * 3 + 1] = pos[o + v * 3 + 1];
-					swayScratch[o + v * 3 + 2] = pos[o + v * 3 + 2] + oz * w;
+					float w = weights[f * 3 + v] - height;
+					float py = pos[o + v * 3 + 1];
+					// Leaves shiver on their own on top of the whole plant's sway.
+					float rx = rustle * (float) Math.sin(t * 3.7 + pos[o + v * 3] * 0.05 + py * 0.03);
+					float rz = rustle * (float) Math.cos(t * 4.1 + pos[o + v * 3 + 2] * 0.05 - py * 0.04);
+					swayScratch[o + v * 3] = pos[o + v * 3] + (ox + rx) * w;
+					swayScratch[o + v * 3 + 1] = py;
+					swayScratch[o + v * 3 + 2] = pos[o + v * 3 + 2] + (oz + rz) * w;
 				}
 				int uo = f * 6;
 				dynamic.face(swayScratch[o], swayScratch[o + 1], swayScratch[o + 2], swayScratch[o + 3], swayScratch[o + 4], swayScratch[o + 5],
@@ -1425,6 +1434,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setPrints(printPacked, printCount * 8);
 		frame.printCount = printCount;
 		frame.footprintStrength = 1f;
+		frame.textureDisplacement = config.textureDisplacement();
 	}
 
 	// A print lands each time an actor has moved about a third of a tile, a little to one side of

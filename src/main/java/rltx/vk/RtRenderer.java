@@ -124,6 +124,7 @@ public final class RtRenderer
 	private static final int FLAG_SHIMMER = 67108864;
 	private static final int FLAG_RAINBOWS = 134217728;
 	private static final int FLAG_PEAKING = 268435456;
+	private static final int FLAG_DISPLACEMENT = 536870912;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -2297,7 +2298,8 @@ public final class RtRenderer
 			| (p.underwater ? FLAG_UNDERWATER : 0)
 			| (p.heatShimmer ? FLAG_SHIMMER : 0)
 			| (p.rainbows ? FLAG_RAINBOWS : 0)
-			| (p.focusPeaking ? FLAG_PEAKING : 0);
+			| (p.focusPeaking ? FLAG_PEAKING : 0)
+			| (p.textureDisplacement ? FLAG_DISPLACEMENT : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);

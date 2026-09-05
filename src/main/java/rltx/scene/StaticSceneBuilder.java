@@ -688,6 +688,9 @@ public final class StaticSceneBuilder
 			bucket.swayWeights = java.util.Arrays.copyOf(bucket.swayWeights, Math.max(bucket.sway.faces() * 3, bucket.swayWeights.length * 2));
 		}
 		float height = Math.max(m.getModelHeight(), 1) * scale;
+		// Each weight carries the plant's whole height in its integer part and the vertex's
+		// squared share of it in the fraction, so the wind can tell a shrub from a tree.
+		float whole = (float) Math.floor(height);
 		float[] pos = bucket.sway.positions();
 		for (int f = first; f < first + added; ++f)
 		{
@@ -695,7 +698,7 @@ public final class StaticSceneBuilder
 			{
 				float above = (y - pos[(f * 3 + v) * 3 + 1]) / height;
 				float w = Math.max(0f, Math.min(1f, above));
-				bucket.swayWeights[f * 3 + v] = w * w;
+				bucket.swayWeights[f * 3 + v] = whole + Math.min(w * w, 0.999f);
 			}
 		}
 		assert bucket.translucent.faces() >= translucentBefore;

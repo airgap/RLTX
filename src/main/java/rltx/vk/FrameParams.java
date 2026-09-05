@@ -38,6 +38,8 @@ public final class FrameParams
 	public float gameCycle;
 	/** Tilt of the shading normal by texture brightness gradients, 0 to 1; 0 disables. */
 	public float bumpStrength;
+	/** Whether primary rays are marched into that relief, so textures show true depth. */
+	public boolean textureDisplacement;
 	/** Weather: cloud cover, fog amount, falling rain and snow; all 0 to 1 unless scaled up. */
 	public float cloud, fogAmount, rain, snow;
 	/** Ground wetness and snow cover 0 to 1, and how far the wind has carried the air so far, in world units. */

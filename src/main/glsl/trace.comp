@@ -101,6 +101,10 @@ const uint FLAG_THIN_LENS = 2097152u;
 const uint FLAG_PHYSICAL_SKY = 8388608u;
 const uint FLAG_UNDERWATER = 33554432u;
 const uint FLAG_RAINBOWS = 134217728u;
+const uint FLAG_DISPLACEMENT = 536870912u;
+
+// Set around the primary trace: only the rays the camera sees pay for texture displacement.
+bool primaryRay = false;
 const uint WATER_BIT = 0x80000000u;
 const uint TERRAIN_BIT = 0x40000000u;
 const uint FLAME_BIT = 0x20000000u;
@@ -290,6 +294,46 @@ vec3 bumpNormal(vec3 n, vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv,
   return normalize(n - grad);
 }
 
+// Texture displacement: the texture's brightness stands for height, and the view ray is
+// marched into that relief in the surface's own tangent frame until it meets it, so bark,
+// brick and thatch show their ridges and hollows shifting with the viewpoint rather than as
+// paint. Silhouettes stay put; only where the ray lands on the texture moves.
+vec2 displacedUv(vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, vec3 dir, vec3 n, float strength) {
+  uint o = face * 6u;
+  vec2 uv0 = cornerUv(dyn, o);
+  vec2 d1 = cornerUv(dyn, o + 2u) - uv0;
+  vec2 d2 = cornerUv(dyn, o + 4u) - uv0;
+  float det = d1.x * d2.y - d1.y * d2.x;
+  if (abs(det) < 1e-6) {
+    return uv;
+  }
+  vec3 e1 = v1 - v0;
+  vec3 e2 = v2 - v0;
+  vec3 t = (e1 * d2.y - e2 * d1.y) / det;
+  vec3 b = (e2 * d1.x - e1 * d2.x) / det;
+  float into = max(-dot(dir, n), 0.15);
+  vec3 lateral = dir + n * (-dot(dir, n));
+  vec2 slide = vec2(dot(lateral, t) / dot(t, t), dot(lateral, b) / dot(b, b));
+  float amplitude = strength * 24.0;
+  const int STEPS = 10;
+  float ds = amplitude / float(STEPS) / into;
+  float s = 0.0;
+  float lastGap = 0.0;
+  for (int i = 0; i < STEPS; ++i) {
+    s += ds;
+    vec2 q = uv + slide * s;
+    float depthBelow = amplitude * (1.0 - texHeight(q, layer));
+    float gap = depthBelow - into * s;
+    if (gap <= 0.0) {
+      // Crossed the relief between this step and the last; land where they meet.
+      float back = lastGap / max(lastGap - gap, 1e-4);
+      return uv + slide * (s - ds * (1.0 - back));
+    }
+    lastGap = gap;
+  }
+  return uv + slide * s;
+}
+
 // Translucent geometry is built without the opaque flag, so only its triangles show up as
 // candidates here. Textured candidates with a hole at the hit point are skipped; the rest are
 // accepted with probability equal to their opacity, which the accumulation turns into an alpha
@@ -425,6 +469,9 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
     }
   } else if (tex != 0u && !hit.water && (u.misc.y & FLAG_TEXTURES) != 0u) {
     vec2 uv = faceUv(hit.dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, true), tex);
+    if (primaryRay && u.motion.z > 0.0 && (u.misc.y & FLAG_DISPLACEMENT) != 0u) {
+      uv = displacedUv(v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), dir, n, u.motion.z);
+    }
     vec4 texel = texture(gameTextures, vec3(uv, float(tex - 1u)));
     hit.albedo = mix(hit.albedo, texel.rgb, texel.a);
     if (u.motion.z > 0.0) {
@@ -1148,7 +1195,10 @@ void main() {
   uint primaryFlags = (flags & FLAG_CULL) != 0u ? gl_RayFlagsCullBackFacingTrianglesEXT : gl_RayFlagsNoneEXT;
 
   Hit hit;
-  if (!trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_ALL, seed, hit)) {
+  primaryRay = true;
+  bool seen = trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_ALL, seed, hit);
+  primaryRay = false;
+  if (!seen) {
     // A ray heading downward ran out of loaded scene. The sky carries on below the horizon for
     // a while, then gives way to the fog colour of that direction, as the distance fade does.
     vec3 background = dir.y > 0.02 ? mix(skyBackground(dir), horizonAt(dir), smoothstep(0.15, 0.6, dir.y)) : skyBackground(dir);

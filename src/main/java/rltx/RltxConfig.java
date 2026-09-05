@@ -1768,4 +1768,16 @@ public interface RltxConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "textureDisplacement",
+		name = "Texture displacement",
+		description = "Textured surfaces such as bark, brick and thatch are traced into the relief their texture describes, so ridges and hollows shift with the viewpoint rather than only their shading. Uses the Texture relief strength.",
+		section = surfacesSection,
+		position = 42
+	)
+	default boolean textureDisplacement()
+	{
+		return true;
+	}
 }
