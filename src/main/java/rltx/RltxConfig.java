@@ -856,6 +856,81 @@ public interface RltxConfig extends Config
 		return 60;
 	}
 
+	@ConfigItem(
+		keyName = "cinemaKeyframeKey",
+		name = "Cinema keyframe key",
+		description = "In the free camera, records where the camera is and where it looks as the next keyframe of a cinema path.",
+		section = cameraSection,
+		position = 28
+	)
+	default Keybind cinemaKeyframeKey()
+	{
+		return new Keybind(KeyEvent.VK_K, 0);
+	}
+
+	@ConfigItem(
+		keyName = "cinemaClearKey",
+		name = "Cinema clear key",
+		description = "Forgets the recorded cinema keyframes.",
+		section = cameraSection,
+		position = 29
+	)
+	default Keybind cinemaClearKey()
+	{
+		return new Keybind(KeyEvent.VK_K, KeyEvent.SHIFT_DOWN_MASK);
+	}
+
+	@ConfigItem(
+		keyName = "cinemaRenderKey",
+		name = "Cinema render key",
+		description = "Renders a smooth camera path through the keyframes as numbered PNG frames in a new folder under the screenshots folder, each accumulated like a photo, with the interface hidden. The game stalls while it renders; press again to stop early.",
+		section = cameraSection,
+		position = 30
+	)
+	default Keybind cinemaRenderKey()
+	{
+		return new Keybind(KeyEvent.VK_K, KeyEvent.CTRL_DOWN_MASK);
+	}
+
+	@Range(min = 1, max = 30)
+	@ConfigItem(
+		keyName = "cinemaSeconds",
+		name = "Seconds per keyframe",
+		description = "How long the camera takes to travel from one cinema keyframe to the next",
+		section = cameraSection,
+		position = 31
+	)
+	default int cinemaSeconds()
+	{
+		return 4;
+	}
+
+	@Range(min = 12, max = 60)
+	@ConfigItem(
+		keyName = "cinemaFps",
+		name = "Cinema frame rate",
+		description = "Frames per second of the rendered sequence",
+		section = cameraSection,
+		position = 32
+	)
+	default int cinemaFps()
+	{
+		return 30;
+	}
+
+	@Range(max = 500)
+	@ConfigItem(
+		keyName = "cinemaBurst",
+		name = "Cinema burst",
+		description = "Frames accumulated for each cinema frame. More is cleaner and slower; the world's own motion advances between frames by however long each takes.",
+		section = cameraSection,
+		position = 33
+	)
+	default int cinemaBurst()
+	{
+		return 24;
+	}
+
 	@Range(max = 2000)
 	@ConfigItem(
 		keyName = "photoBurst",

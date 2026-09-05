@@ -54,6 +54,8 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 import net.runelite.api.ChatMessageType;
@@ -341,11 +343,180 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		saver.start();
 	}
 
+	// Cinema mode: camera poses recorded from the free camera, rendered as a smooth path through
+	// them at photo quality, one image per output frame, for assembling into a video.
+	private final List<float[]> cinemaKeys = new ArrayList<>();
+	private volatile int cinemaFrame = -1;
+	private volatile boolean cinemaStop;
+	private int cinemaTotal;
+	private File cinemaDir;
+	private boolean cinemaChromeWasHidden;
+	private ExecutorService cinemaWriter;
+
+	private final HotkeyListener cinemaKeyframeKey = new HotkeyListener(() -> config.cinemaKeyframeKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			if (cinemaFrame >= 0)
+			{
+				return;
+			}
+			if (!freeCamera)
+			{
+				say("Cinema: keyframes are recorded from the free camera");
+				return;
+			}
+			cinemaKeys.add(new float[]{freeX, freeY, freeZ, freePitch, freeYaw});
+			say("Cinema: keyframe " + cinemaKeys.size() + " recorded");
+		}
+	};
+
+	private final HotkeyListener cinemaClearKey = new HotkeyListener(() -> config.cinemaClearKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			if (cinemaFrame < 0)
+			{
+				cinemaKeys.clear();
+				say("Cinema: keyframes cleared");
+			}
+		}
+	};
+
+	private final HotkeyListener cinemaRenderKey = new HotkeyListener(() -> config.cinemaRenderKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			if (cinemaFrame >= 0)
+			{
+				cinemaStop = true;
+			}
+			else if (cinemaKeys.size() < 2)
+			{
+				say("Cinema: record at least two keyframes first");
+			}
+			else
+			{
+				startCinema();
+			}
+		}
+	};
+
+	private void say(String message)
+	{
+		clientThread.invoke(() -> client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null));
+	}
+
+	private void startCinema()
+	{
+		File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX/cinema-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()));
+		if (!dir.mkdirs())
+		{
+			say("Cinema: could not create " + dir);
+			return;
+		}
+		cinemaDir = dir;
+		cinemaWriter = Executors.newSingleThreadExecutor(r ->
+		{
+			Thread t = new Thread(r, "rltx-cinema");
+			t.setDaemon(true);
+			return t;
+		});
+		cinemaTotal = (cinemaKeys.size() - 1) * config.cinemaSeconds() * config.cinemaFps();
+		cinemaChromeWasHidden = chromeHidden;
+		chromeHidden = true;
+		freeCamera = true;
+		cinemaStop = false;
+		cinemaFrame = 0;
+		say("Cinema: rendering " + cinemaTotal + " frames to " + dir.getName());
+	}
+
+	private void finishCinema()
+	{
+		int rendered = cinemaFrame;
+		cinemaFrame = -1;
+		chromeHidden = cinemaChromeWasHidden;
+		cinemaWriter.shutdown();
+		say("Cinema: " + rendered + " frames in " + cinemaDir + ". Assemble with: ffmpeg -framerate " + config.cinemaFps()
+			+ " -i frame-%05d.png -c:v libx264 -pix_fmt yuv420p cinema.mp4");
+	}
+
+	// The camera at a frame of the path: a Catmull-Rom spline through the keyframes, one segment
+	// per keyframe interval with the ends clamped, and yaw unwrapped so the camera turns the short way.
+	private void cinemaPose(int frameIndex)
+	{
+		int perSegment = config.cinemaSeconds() * config.cinemaFps();
+		float s = Math.min(frameIndex / (float) perSegment, cinemaKeys.size() - 1 - 1e-4f);
+		int k = (int) s;
+		float t = s - k;
+		float[] a = cinemaKeys.get(Math.max(k - 1, 0));
+		float[] b = cinemaKeys.get(k);
+		float[] c = cinemaKeys.get(k + 1);
+		float[] d = cinemaKeys.get(Math.min(k + 2, cinemaKeys.size() - 1));
+		freeX = catmullRom(a[0], b[0], c[0], d[0], t);
+		freeY = catmullRom(a[1], b[1], c[1], d[1], t);
+		freeZ = catmullRom(a[2], b[2], c[2], d[2], t);
+		freePitch = catmullRom(a[3], b[3], c[3], d[3], t);
+		float yawA = unwrap(a[4], b[4]);
+		float yawC = unwrap(c[4], b[4]);
+		float yawD = unwrap(d[4], yawC);
+		freeYaw = catmullRom(yawA, b[4], yawC, yawD, t);
+	}
+
+	private static float catmullRom(float a, float b, float c, float d, float t)
+	{
+		return 0.5f * (2f * b + (c - a) * t + (2f * a - 5f * b + 4f * c - d) * t * t + (3f * b - a - 3f * c + d) * t * t * t);
+	}
+
+	private static float unwrap(float angle, float near)
+	{
+		while (angle - near > Math.PI)
+		{
+			angle -= (float) (2 * Math.PI);
+		}
+		while (angle - near < -Math.PI)
+		{
+			angle += (float) (2 * Math.PI);
+		}
+		return angle;
+	}
+
+	private void writeCinemaFrame(int index, Image image)
+	{
+		File file = new File(cinemaDir, String.format("frame-%05d.png", index));
+		cinemaWriter.execute(() ->
+		{
+			try
+			{
+				ImageIO.write(toBuffered(image), "png", file);
+			}
+			catch (IOException e)
+			{
+				log.warn("Cinema frame not saved to {}", file, e);
+			}
+		});
+	}
+
+	private static BufferedImage toBuffered(Image image)
+	{
+		if (image instanceof BufferedImage)
+		{
+			return (BufferedImage) image;
+		}
+		BufferedImage buffered = new BufferedImage(image.getWidth(null), image.getHeight(null), BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = buffered.createGraphics();
+		g.drawImage(image, 0, 0, null);
+		g.dispose();
+		return buffered;
+	}
+
 	// Holds this frame's scene still and accumulates many more samples of it before it is shown,
 	// so the photo taken of it has neither noise nor denoiser blur. The client waits meanwhile.
-	private void burst()
+	private void burst(int frames)
 	{
-		int frames = config.photoBurst();
 		frame.historyFrames = frames + 1;
 		frame.dynamicHistoryFrames = frames + 1;
 		frame.denoisePasses = 1;
@@ -358,7 +529,6 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			}
 			renderer.submit(frame, dynamic, dynamicTranslucent, i == 0 && glSignalPending, i == frames);
 		}
-		drawManager.requestNextFrameListener(this::savePhotoAsync);
 	}
 
 	private void savePhoto(Image image)
@@ -370,17 +540,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			return;
 		}
 		File file = new File(dir, "photo-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".png");
-		BufferedImage buffered = image instanceof BufferedImage ? (BufferedImage) image : null;
-		if (buffered == null)
-		{
-			buffered = new BufferedImage(image.getWidth(null), image.getHeight(null), BufferedImage.TYPE_INT_ARGB);
-			Graphics2D g = buffered.createGraphics();
-			g.drawImage(image, 0, 0, null);
-			g.dispose();
-		}
 		try
 		{
-			ImageIO.write(buffered, "png", file);
+			ImageIO.write(toBuffered(image), "png", file);
 		}
 		catch (IOException e)
 		{
@@ -1149,6 +1311,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		groundMarkers = new GroundMarkers(pluginManager, overlayManager);
 		keyManager.registerKeyListener(photoModeKey);
 		keyManager.registerKeyListener(freeCameraKey);
+		keyManager.registerKeyListener(cinemaKeyframeKey);
+		keyManager.registerKeyListener(cinemaClearKey);
+		keyManager.registerKeyListener(cinemaRenderKey);
 		keyManager.registerKeyListener(flightKeys);
 		mouseManager.registerMouseListener(photoButtons);
 		mouseManager.registerMouseListener(freeLook);
@@ -1225,6 +1390,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		keyManager.unregisterKeyListener(photoModeKey);
 		keyManager.unregisterKeyListener(freeCameraKey);
+		keyManager.unregisterKeyListener(cinemaKeyframeKey);
+		keyManager.unregisterKeyListener(cinemaClearKey);
+		keyManager.unregisterKeyListener(cinemaRenderKey);
+		if (cinemaFrame >= 0)
+		{
+			cinemaFrame = -1;
+			cinemaWriter.shutdown();
+		}
 		keyManager.unregisterKeyListener(flightKeys);
 		mouseManager.unregisterMouseListener(photoButtons);
 		mouseManager.unregisterMouseListener(freeLook);
@@ -1680,7 +1853,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		clientYaw = cameraYaw;
 		if (freeCamera)
 		{
-			flyFreeCamera();
+			if (cinemaFrame >= 0)
+			{
+				cinemaPose(cinemaFrame);
+			}
+			else
+			{
+				flyFreeCamera();
+			}
 			cameraX = freeX;
 			cameraY = freeY;
 			cameraZ = freeZ;
@@ -1867,6 +2047,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 
 		fillLighting();
+		if (cinemaFrame >= 0)
+		{
+			// The path's own clock, so water, rain and flames run at the sequence's rate.
+			frame.timeSeconds = cinemaFrame / (float) config.cinemaFps();
+		}
 		frame.pattern = false;
 		long start = System.nanoTime();
 		addOffscreenActors();
@@ -1876,10 +2061,21 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillMarkers();
 		fillPlumes();
 		fillRunoff();
-		if (burstPending)
+		if (cinemaFrame >= 0)
+		{
+			burst(config.cinemaBurst());
+			int index = cinemaFrame;
+			drawManager.requestNextFrameListener(image -> writeCinemaFrame(index, image));
+			if (++cinemaFrame >= cinemaTotal || cinemaStop)
+			{
+				finishCinema();
+			}
+		}
+		else if (burstPending)
 		{
 			burstPending = false;
-			burst();
+			burst(config.photoBurst());
+			drawManager.requestNextFrameListener(this::savePhotoAsync);
 		}
 		else
 		{
