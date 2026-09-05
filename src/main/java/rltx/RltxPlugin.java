@@ -350,8 +350,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	// Cinema mode: camera poses recorded from the free camera, rendered as a smooth path through
 	// them at photo quality, one image per output frame, for assembling into a video.
-	private final List<float[]> cinemaKeys = new ArrayList<>();
+	private final List<double[]> cinemaKeys = new ArrayList<>();
 	private volatile int cinemaFrame = -1;
+	// The clock and manual sun the path is at while rendering, when it follows the keyframes' own.
+	private volatile long cinemaNow = -1;
+	private double cinemaAzimuth, cinemaElevation;
 	private volatile boolean cinemaStop;
 	private int cinemaTotal;
 	private File cinemaDir;
@@ -372,7 +375,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				say("Cinema: keyframes are recorded from the free camera");
 				return;
 			}
-			cinemaKeys.add(new float[]{freeX, freeY, freeZ, freePitch, freeYaw});
+			cinemaKeys.add(new double[]{freeX, freeY, freeZ, freePitch, freeYaw, sunClock(), config.sunAzimuth(), config.sunElevation()});
 			say("Cinema: keyframe " + cinemaKeys.size() + " recorded");
 		}
 	};
@@ -443,6 +446,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		int rendered = cinemaFrame;
 		cinemaFrame = -1;
+		cinemaNow = -1;
 		chromeHidden = cinemaChromeWasHidden;
 		cinemaWriter.shutdown();
 		say("Cinema: " + rendered + " frames in " + cinemaDir + ". Assemble with: ffmpeg -framerate " + config.cinemaFps()
@@ -457,36 +461,49 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float s = Math.min(frameIndex / (float) perSegment, cinemaKeys.size() - 1 - 1e-4f);
 		int k = (int) s;
 		float t = s - k;
-		float[] a = cinemaKeys.get(Math.max(k - 1, 0));
-		float[] b = cinemaKeys.get(k);
-		float[] c = cinemaKeys.get(k + 1);
-		float[] d = cinemaKeys.get(Math.min(k + 2, cinemaKeys.size() - 1));
-		freeX = catmullRom(a[0], b[0], c[0], d[0], t);
-		freeY = catmullRom(a[1], b[1], c[1], d[1], t);
-		freeZ = catmullRom(a[2], b[2], c[2], d[2], t);
-		freePitch = catmullRom(a[3], b[3], c[3], d[3], t);
-		float yawA = unwrap(a[4], b[4]);
-		float yawC = unwrap(c[4], b[4]);
-		float yawD = unwrap(d[4], yawC);
-		freeYaw = catmullRom(yawA, b[4], yawC, yawD, t);
-	}
-
-	private static float catmullRom(float a, float b, float c, float d, float t)
-	{
-		return 0.5f * (2f * b + (c - a) * t + (2f * a - 5f * b + 4f * c - d) * t * t + (3f * b - a - 3f * c + d) * t * t * t);
-	}
-
-	private static float unwrap(float angle, float near)
-	{
-		while (angle - near > Math.PI)
+		double[] a = cinemaKeys.get(Math.max(k - 1, 0));
+		double[] b = cinemaKeys.get(k);
+		double[] c = cinemaKeys.get(k + 1);
+		double[] d = cinemaKeys.get(Math.min(k + 2, cinemaKeys.size() - 1));
+		freeX = (float) catmullRom(a[0], b[0], c[0], d[0], t);
+		freeY = (float) catmullRom(a[1], b[1], c[1], d[1], t);
+		freeZ = (float) catmullRom(a[2], b[2], c[2], d[2], t);
+		freePitch = (float) catmullRom(a[3], b[3], c[3], d[3], t);
+		double yawA = unwrap(a[4], b[4], 2 * Math.PI);
+		double yawC = unwrap(c[4], b[4], 2 * Math.PI);
+		double yawD = unwrap(d[4], yawC, 2 * Math.PI);
+		freeYaw = (float) catmullRom(yawA, b[4], yawC, yawD, t);
+		if (config.cinemaClock())
 		{
-			angle -= (float) (2 * Math.PI);
+			// Time runs evenly between keyframes, so the sun and stars travel with the camera.
+			cinemaNow = Math.round(b[5] + (c[5] - b[5]) * t);
+			cinemaAzimuth = b[6] + (unwrap(c[6], b[6], 360.0) - b[6]) * t;
+			cinemaElevation = b[7] + (c[7] - b[7]) * t;
 		}
-		while (angle - near < -Math.PI)
+	}
+
+	private static double catmullRom(double a, double b, double c, double d, double t)
+	{
+		return 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (3 * b - a - 3 * c + d) * t * t * t);
+	}
+
+	private static double unwrap(double angle, double near, double turn)
+	{
+		while (angle - near > turn / 2)
 		{
-			angle += (float) (2 * Math.PI);
+			angle -= turn;
+		}
+		while (angle - near < -turn / 2)
+		{
+			angle += turn;
 		}
 		return angle;
+	}
+
+	// The moment the sun is computed for: the real clock with the chosen offset, or the cinema path's own.
+	private long sunClock()
+	{
+		return System.currentTimeMillis() + (config.sunMode() == RltxConfig.SunMode.REAL_TIME_SET ? config.timeOffset() * 3_600_000L : 0L);
 	}
 
 	private void writeCinemaFrame(int index, Image image)
@@ -1416,6 +1433,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (cinemaFrame >= 0)
 		{
 			cinemaFrame = -1;
+			cinemaNow = -1;
 			cinemaWriter.shutdown();
 		}
 		keyManager.unregisterKeyListener(flightKeys);
@@ -1715,7 +1733,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		double azimuth;
 		double elevation;
-		long now = System.currentTimeMillis() + (config.sunMode() == RltxConfig.SunMode.REAL_TIME_SET ? config.timeOffset() * 3_600_000L : 0L);
+		boolean pathTime = cinemaFrame >= 0 && cinemaNow >= 0;
+		long now = pathTime ? cinemaNow : sunClock();
 		boolean realTime = config.sunMode() != RltxConfig.SunMode.MANUAL;
 		if (realTime)
 		{
@@ -1725,8 +1744,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		else
 		{
-			azimuth = config.sunAzimuth();
-			elevation = config.sunElevation();
+			azimuth = pathTime ? cinemaAzimuth : config.sunAzimuth();
+			elevation = pathTime ? cinemaElevation : config.sunElevation();
 		}
 		// The fixed stars turn with the real clock whatever the sun setting.
 		Sidereal.rotation(now, latitude(), longitude(), frame.starRotation);
@@ -2349,6 +2368,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.mistEverywhere = config.mistEverywhere();
 		frame.fireflies = config.fireflies();
 		frame.dustMotes = config.dustMotes();
+		frame.wildlife = config.wildlife();
 		frame.season = seasonKind();
 		frame.seasonProgress = seasonProgress();
 		// Leaves fall from early autumn, most thickly late; petals drift around the middle of spring.

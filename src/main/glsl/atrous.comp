@@ -395,9 +395,12 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, int kind, float sp
 const float DRIFT_RANGE = 1400.0;
 const int DRIFT_STEPS = 48;
 
-vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, bool fireflies, float strength) {
-  vec3 cellSize = fireflies ? vec3(190.0, 1.0e5, 190.0) : vec3(110.0);
-  float presence = fireflies ? 0.45 : 0.3;
+// Kinds: 0 fireflies, 1 dust motes, 2 butterflies.
+vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, int kind, float strength) {
+  bool fireflies = kind == 0;
+  bool grounded = kind != 1;
+  vec3 cellSize = grounded ? vec3(190.0, 1.0e5, 190.0) : vec3(110.0);
+  float presence = kind == 0 ? 0.45 : kind == 1 ? 0.3 : 0.16;
   vec3 o = u.cam.xyz;
   vec3 pos = o / cellSize;
   ivec3 cell = ivec3(floor(pos));
@@ -406,7 +409,7 @@ vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, bool fireflies,
   vec3 tDelta = abs(cellSize / safeDir);
   vec3 tNext = ((floor(pos) + max(stepSign, 0.0)) * cellSize - o) / safeDir;
   float tCur = 0.0;
-  int salt = fireflies ? 5 : 6;
+  int salt = 5 + kind;
   for (int i = 0; i < DRIFT_STEPS && tCur < tMax; ++i) {
     ivec3 salted = cell + ivec3(salt * 977, salt * 131, salt * 419);
     if (unitFrom(hashCell(salted)) < presence) {
@@ -415,9 +418,10 @@ vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, bool fireflies,
       vec3 wander = vec3(sin(t * 0.37 + phase.x), 0.5 * sin(t * 0.23 + phase.y), cos(t * 0.31 + phase.z));
       vec3 q = (vec3(cell) + 0.5 + (r - 0.5) * 0.3) * cellSize + wander * (0.3 * cellSize.x);
       bool present = true;
-      if (fireflies) {
+      if (grounded) {
         vec2 ground = mistAt(q.xz);
-        present = ground.y > 0.0;
+        // Fireflies keep to misty ground; butterflies go anywhere the grid knows the ground.
+        present = fireflies ? ground.y > 0.0 : ground.x != 0.0;
         // Up is -y: they hover between knee and head height over the ground.
         q.y = ground.x - (30.0 + 120.0 * r.y) - 15.0 * wander.y;
       }
@@ -426,7 +430,18 @@ vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, bool fireflies,
         float dist = length(cross(q - o, dir));
         float pixel = tQ / zoom;
         float fade = strength * exp(-tQ / 1500.0);
-        if (fireflies) {
+        if (kind == 2) {
+          // A butterfly: a small flat shape whose width pulses with its wingbeat.
+          float beat = abs(cos(t * 9.0 + r.x * 6.2832));
+          vec3 off = (o + dir * tQ) - q;
+          vec2 span = vec2(6.0 + 8.0 * beat, 7.0);
+          float shape = dot(off.xz / span, off.xz / span) + off.y * off.y / 4.0;
+          float cover = (1.0 - smoothstep(0.7, 1.3, shape)) * (1.0 - smoothstep(600.0, 1200.0, tQ));
+          if (cover > 0.01) {
+            vec3 body = r.z < 0.3 ? vec3(1.0, 0.95, 0.85) : r.z < 0.55 ? vec3(1.0, 0.8, 0.15) : r.z < 0.8 ? vec3(1.0, 0.5, 0.1) : vec3(0.35, 0.5, 1.0);
+            c = mix(c, u.mistColor.rgb * body, cover * strength);
+          }
+        } else if (fireflies) {
           // Lit for about a second and a half every few seconds, each on its own clock.
           float period = 3.0 + 3.0 * r.z;
           float cycle = fract(t / period + r.x);
@@ -559,6 +574,103 @@ vec3 smokePlumes(vec3 c, ivec2 px, vec3 dir, float depth) {
   return c;
 }
 
+// A small flying body seen along the ray: two wings on a heading, beating about the body, drawn
+// where the ray passes through the thin shape, its edges softened by about a pixel.
+float wingCover(vec3 o, vec3 dir, float zoom, vec3 body, vec3 heading, float span, float flap, float tMax) {
+  float tQ = dot(body - o, dir);
+  if (tQ < 40.0 || tQ > tMax) {
+    return 0.0;
+  }
+  vec3 off = (o + dir * tQ) - body;
+  if (dot(off, off) > span * span) {
+    return 0.0;
+  }
+  vec3 side = normalize(cross(vec3(0.0, 1.0, 0.0), heading));
+  float along = dot(off, side);
+  float fore = dot(off, heading);
+  float rise = -off.y;
+  float reach = abs(along) / (0.5 * span);
+  if (reach > 1.0) {
+    return 0.0;
+  }
+  float wingRise = flap * pow(reach, 1.3) * 0.25 * span;
+  float pixel = tQ / zoom;
+  float thickness = max(0.06 * span * (1.0 - 0.6 * reach), 0.6 * pixel);
+  float bodyHalf = max(0.08 * span + 0.12 * span * (1.0 - reach), 0.6 * pixel);
+  float edge = max(abs(rise - wingRise) - thickness, abs(fore) - bodyHalf);
+  return 1.0 - smoothstep(-0.5 * pixel, 0.5 * pixel, edge);
+}
+
+// Flocks of birds wheeling in the sky by day and at dusk, and bats over misty ground at night.
+// Flocks belong to wide cells of the world, so they stay put as the camera moves.
+vec3 fliers(vec3 c, vec3 dir, float tMax, float zoom, float t, float day, float night) {
+  vec3 o = u.cam.xyz;
+  float birds = smoothstep(-0.2, -0.05, u.post2.w) * (1.0 - u.weather.z) * (1.0 - 0.6 * u.weather.x);
+  if (birds > 0.01) {
+    vec3 dark = vec3(0.03, 0.03, 0.04) * (0.3 + 0.7 * day);
+    ivec2 home = ivec2(floor(o.xz / 2400.0));
+    for (int fx = -1; fx <= 1; ++fx) {
+      for (int fz = -1; fz <= 1; ++fz) {
+        ivec2 cell = home + ivec2(fx, fz);
+        uint h = hashCell(ivec3(cell.x, 77, cell.y));
+        if (unitFrom(h) > 0.55 * birds) {
+          continue;
+        }
+        vec3 anchor = vec3((float(cell.x) + 0.3 + 0.4 * unitFrom(hashCell(ivec3(cell.x, 1, cell.y)))) * 2400.0,
+          -700.0 - 500.0 * unitFrom(hashCell(ivec3(cell.x, 2, cell.y))),
+          (float(cell.y) + 0.3 + 0.4 * unitFrom(hashCell(ivec3(cell.x, 3, cell.y)))) * 2400.0);
+        float radius = 250.0 + 250.0 * unitFrom(hashCell(ivec3(cell.x, 4, cell.y)));
+        float rate = (0.12 + 0.08 * unitFrom(hashCell(ivec3(cell.x, 5, cell.y)))) * (unitFrom(h) < 0.27 ? 1.0 : -1.0);
+        float phase0 = t * rate + 6.2832 * unitFrom(hashCell(ivec3(cell.x, 6, cell.y)));
+        int flock = 6 + int(6.0 * unitFrom(hashCell(ivec3(cell.x, 7, cell.y))));
+        for (int i = 0; i < flock; ++i) {
+          ivec3 id = ivec3(cell.x, 100 + i, cell.y);
+          vec3 r = vec3(unitFrom(hashCell(id)), unitFrom(hashCell(id + ivec3(0, 31, 0))), unitFrom(hashCell(id + ivec3(0, 63, 0))));
+          float phase = phase0 + (r.x - 0.5) * 0.5;
+          vec3 body = anchor + vec3(cos(phase) * radius, (r.y - 0.5) * 120.0 + 25.0 * sin(t * 0.7 + r.z * 6.2832), sin(phase) * radius);
+          vec3 heading = normalize(vec3(-sin(phase), 0.0, cos(phase)) * sign(rate));
+          float flap = sin(t * (6.0 + 2.0 * r.z) + r.x * 6.2832);
+          float cover = wingCover(o, dir, zoom, body, heading, 44.0, flap, tMax);
+          if (cover > 0.0) {
+            c = mix(c, dark, cover * birds);
+          }
+        }
+      }
+    }
+  }
+  if (night > 0.01 && u.weather3.z >= 2.0) {
+    // Bats: a few per patch of misty ground, jinking about above it.
+    ivec2 home = ivec2(floor(o.xz / 480.0));
+    for (int fx = -2; fx <= 2; ++fx) {
+      for (int fz = -2; fz <= 2; ++fz) {
+        ivec2 cell = home + ivec2(fx, fz);
+        vec2 centre = (vec2(cell) + 0.5) * 480.0;
+        vec2 ground = mistAt(centre);
+        if (ground.y <= 0.0 || unitFrom(hashCell(ivec3(cell.x, 88, cell.y))) > 0.5) {
+          continue;
+        }
+        for (int i = 0; i < 2; ++i) {
+          ivec3 id = ivec3(cell.x, 200 + i, cell.y);
+          vec3 r = vec3(unitFrom(hashCell(id)), unitFrom(hashCell(id + ivec3(0, 31, 0))), unitFrom(hashCell(id + ivec3(0, 63, 0))));
+          vec3 jink = vec3(sin(t * 2.3 + r.x * 6.2832) + 0.5 * sin(t * 5.1 + r.y * 6.2832),
+            0.4 * sin(t * 3.7 + r.z * 6.2832),
+            cos(t * 1.9 + r.y * 6.2832) + 0.5 * cos(t * 4.3 + r.x * 6.2832));
+          vec3 body = vec3(centre.x, ground.x - 90.0 - 140.0 * r.z, centre.y) + jink * vec3(150.0, 60.0, 150.0);
+          vec3 velocity = vec3(2.3 * cos(t * 2.3 + r.x * 6.2832) + 2.55 * cos(t * 5.1 + r.y * 6.2832), 0.0,
+            -1.9 * sin(t * 1.9 + r.y * 6.2832) - 2.15 * sin(t * 4.3 + r.x * 6.2832));
+          vec3 heading = normalize(velocity + vec3(1e-3, 0.0, 0.0));
+          float flap = sin(t * 15.0 + r.x * 6.2832);
+          float cover = wingCover(o, dir, zoom, body, heading, 26.0, flap, min(tMax, 900.0));
+          if (cover > 0.0) {
+            c = mix(c, vec3(0.02, 0.02, 0.025), cover * night);
+          }
+        }
+      }
+    }
+  }
+  return c;
+}
+
 vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
   bool fireflies = (u.misc.y & 262144u) != 0u && u.weather3.z >= 2.0;
   bool dust = (u.misc.y & 524288u) != 0u && u.sun.w > 0.0;
@@ -570,11 +682,19 @@ vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
   // Fireflies keep to dry nights; motes need daylight to be seen at all.
   float night = (1.0 - smoothstep(-0.08, 0.03, u.post2.w)) * (1.0 - u.weather.z);
   if (fireflies && night > 0.01) {
-    c = drifters(c, dir, tMax, u.cam.w, t, true, night);
+    c = drifters(c, dir, tMax, u.cam.w, t, 0, night);
   }
   float day = smoothstep(-0.02, 0.08, u.post2.w);
   if (dust && day > 0.01) {
-    c = drifters(c, dir, tMax, u.cam.w, t, false, day);
+    c = drifters(c, dir, tMax, u.cam.w, t, 1, day);
+  }
+  bool wildlife = (u.misc.y & 16777216u) != 0u;
+  if (wildlife && day > 0.01 && u.weather3.z >= 2.0) {
+    // Butterflies keep to fair weather.
+    c = drifters(c, dir, tMax, u.cam.w, t, 2, day * (1.0 - u.weather.z) * (1.0 - 0.7 * u.weather.x));
+  }
+  if (wildlife) {
+    c = fliers(c, dir, tMax, u.cam.w, t, day, night);
   }
   return c;
 }

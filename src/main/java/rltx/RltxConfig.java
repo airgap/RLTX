@@ -918,6 +918,18 @@ public interface RltxConfig extends Config
 		return 30;
 	}
 
+	@ConfigItem(
+		keyName = "cinemaClock",
+		name = "Cinema follows the clock",
+		description = "Each keyframe also records the time of day, or the manual sun, and the rendered path runs the clock between them, so a path can carry the sun down and the stars out.",
+		section = cameraSection,
+		position = 34
+	)
+	default boolean cinemaClock()
+	{
+		return true;
+	}
+
 	@Range(max = 500)
 	@ConfigItem(
 		keyName = "cinemaBurst",
@@ -1415,6 +1427,18 @@ public interface RltxConfig extends Config
 		position = 42
 	)
 	default boolean smoke()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "wildlife",
+		name = "Wildlife",
+		description = "Flocks of birds wheeling by day and at dusk, bats over swamps and graveyards at night, and butterflies low over the ground in fair weather",
+		section = weatherSection,
+		position = 44
+	)
+	default boolean wildlife()
 	{
 		return true;
 	}

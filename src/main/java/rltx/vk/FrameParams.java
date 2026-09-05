@@ -90,6 +90,8 @@ public final class FrameParams
 	public boolean mistEverywhere;
 	/** Fireflies over misty ground at night, and sunlit dust motes by day. */
 	public boolean fireflies, dustMotes;
+	/** Birds, bats and butterflies. */
+	public boolean wildlife;
 	/** How many smoke plumes were uploaded this frame. */
 	public int plumeCount;
 	/** Ground marker tiles uploaded this frame and their glow scale; 0 draws none. */

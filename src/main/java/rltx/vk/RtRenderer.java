@@ -119,6 +119,7 @@ public final class RtRenderer
 	private static final int FLAG_STILL = 1048576;
 	private static final int FLAG_THIN_LENS = 2097152;
 	private static final int FLAG_PHYSICAL_SKY = 8388608;
+	private static final int FLAG_WILDLIFE = 16777216;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -2139,7 +2140,8 @@ public final class RtRenderer
 			| (p.dustMotes ? FLAG_DUST : 0)
 			| (p.still ? FLAG_STILL : 0)
 			| (p.thinLens ? FLAG_THIN_LENS : 0)
-			| (p.physicalSky ? FLAG_PHYSICAL_SKY : 0);
+			| (p.physicalSky ? FLAG_PHYSICAL_SKY : 0)
+			| (p.wildlife ? FLAG_WILDLIFE : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);
