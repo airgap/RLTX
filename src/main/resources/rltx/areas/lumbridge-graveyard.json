@@ -1,0 +1,18 @@
+{
+  "name": "Lumbridge Graveyard",
+  "rects": [
+    [
+      3233,
+      3188,
+      3253,
+      3200,
+      -1
+    ]
+  ],
+  "regions": [],
+  "overrides": {
+    "wildlife": "false",
+    "skyIntensity": "60",
+    "mistEverywhere": "true"
+  }
+}

@@ -465,7 +465,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private ControlPanel controlPanel;
 	private Presets presets;
 	private AreaRules areaRules;
-	private volatile int currentRegion = -1;
+	private volatile WorldPoint currentPosition;
 
 	private final HotkeyListener controlPanelKey = new HotkeyListener(() -> config.controlPanelKey())
 	{
@@ -1102,8 +1102,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	public void onGameTick(GameTick event)
 	{
 		Player local = client.getLocalPlayer();
-		currentRegion = local == null ? -1 : WorldPoint.fromLocalInstance(client, local.getLocalLocation()).getRegionID();
-		String area = areaRules.tick(currentRegion, config.areaSettings());
+		currentPosition = local == null ? null : WorldPoint.fromLocalInstance(client, local.getLocalLocation());
+		String area = areaRules.tick(currentPosition, config.areaSettings());
 		if (area != null)
 		{
 			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", area, null);
@@ -1785,7 +1785,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			log.warn("Area settings not loaded from {}", AreaRules.FILE, e);
 		}
-		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentRegion);
+		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition);
 		keyManager.registerKeyListener(controlPanelKey);
 		keyManager.registerKeyListener(quadPhotoKey);
 		keyManager.registerKeyListener(photoModeKey);

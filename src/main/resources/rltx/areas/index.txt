@@ -1,0 +1,3 @@
+lumbridge.json
+lumbridge-swamp.json
+lumbridge-graveyard.json

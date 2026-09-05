@@ -1,0 +1,17 @@
+{
+  "name": "Lumbridge Swamp",
+  "rects": [
+    [
+      3140,
+      3140,
+      3260,
+      3192,
+      -1
+    ]
+  ],
+  "regions": [],
+  "overrides": {
+    "fogAmount": "130",
+    "fireflies": "true"
+  }
+}

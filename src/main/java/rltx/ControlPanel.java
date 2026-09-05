@@ -51,18 +51,18 @@ final class ControlPanel
 	private final RltxConfig config;
 	private final Presets presets;
 	private final AreaRules areas;
-	private final java.util.function.IntSupplier currentRegion;
+	private final java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition;
 	private final Map<String, Consumer<Object>> refreshers = new HashMap<>();
 	private JFrame frame;
 	private boolean updating;
 
-	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.IntSupplier currentRegion)
+	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition)
 	{
 		this.configManager = configManager;
 		this.config = config;
 		this.presets = presets;
 		this.areas = areas;
-		this.currentRegion = currentRegion;
+		this.currentPosition = currentPosition;
 	}
 
 	/** Shows the window, building it on first use; called on any thread. */
@@ -436,6 +436,7 @@ final class ControlPanel
 		list.setVisibleRowCount(6);
 		JTextField name = new JTextField(18);
 		JTextField regions = new JTextField(18);
+		JTextField rects = new JTextField(18);
 		JComboBox<String> base = new JComboBox<>(presets.names().toArray(new String[0]));
 		list.addListSelectionListener(e ->
 		{
@@ -449,6 +450,12 @@ final class ControlPanel
 					text.append(text.length() == 0 ? "" : ", ").append(region);
 				}
 				regions.setText(text.toString());
+				StringBuilder boxes = new StringBuilder();
+				for (int[] r : rule.rects)
+				{
+					boxes.append(boxes.length() == 0 ? "" : "; ").append(r[0]).append(",").append(r[1]).append(",").append(r[2]).append(",").append(r[3]).append(r[4] < 0 ? "" : "," + r[4]);
+				}
+				rects.setText(boxes.toString());
 			}
 		});
 		JCheckBox enabled = new JCheckBox("Apply area settings", config.areaSettings());
@@ -456,7 +463,7 @@ final class ControlPanel
 		refreshers.put("areaSettings", v -> enabled.setSelected((Boolean) v));
 		page.add(enabled, c);
 		++c.gridy;
-		JLabel help = new JLabel("<html>Set the look you want while standing in the area, choose the preset that holds your usual settings as the base, and save. Only what differs is kept for the area, and it is put back when you leave.</html>");
+		JLabel help = new JLabel("<html>Bound the area with world rectangles: stand at two opposite corners and mark each, or type them as x1,y1,x2,y2 with an optional plane, separated by semicolons. Without rectangles the map regions are used. Then set the look you want, choose the preset holding your usual settings as the base, and save: only what differs is kept, and it is put back when you leave.</html>");
 		page.add(help, c);
 		++c.gridy;
 		page.add(new JScrollPane(list), c);
@@ -467,16 +474,48 @@ final class ControlPanel
 		regionRow.add(regions, BorderLayout.CENTER);
 		regionRow.add(button("Add current region", () ->
 		{
-			int region = currentRegion.getAsInt();
-			if (region < 0)
+			net.runelite.api.coords.WorldPoint here = currentPosition.get();
+			if (here == null)
 			{
 				status.setText("Not in the world.");
 				return;
 			}
+			int region = here.getRegionID();
 			String text = regions.getText().trim();
 			regions.setText(text.isEmpty() ? Integer.toString(region) : text + ", " + region);
 		}, status), BorderLayout.EAST);
 		page.add(labelled("Map regions", regionRow), c);
+		++c.gridy;
+		int[] corner = new int[4];
+		boolean[] cornerSet = new boolean[1];
+		JPanel rectRow = new JPanel(new BorderLayout(6, 0));
+		rectRow.add(rects, BorderLayout.CENTER);
+		JPanel cornerButtons = new JPanel(new java.awt.GridLayout(1, 2, 4, 0));
+		cornerButtons.add(button("Mark corner", () ->
+		{
+			net.runelite.api.coords.WorldPoint here = currentPosition.get();
+			if (here == null)
+			{
+				status.setText("Not in the world.");
+				return;
+			}
+			if (!cornerSet[0])
+			{
+				corner[0] = here.getX();
+				corner[1] = here.getY();
+				corner[2] = here.getPlane();
+				cornerSet[0] = true;
+				status.setText("First corner at " + here.getX() + ", " + here.getY() + ". Walk to the opposite corner and mark again.");
+				return;
+			}
+			cornerSet[0] = false;
+			String box = Math.min(corner[0], here.getX()) + "," + Math.min(corner[1], here.getY()) + "," + Math.max(corner[0], here.getX()) + "," + Math.max(corner[1], here.getY());
+			String text = rects.getText().trim();
+			rects.setText(text.isEmpty() ? box : text + "; " + box);
+			status.setText("Rectangle added.");
+		}, status));
+		rectRow.add(cornerButtons, BorderLayout.EAST);
+		page.add(labelled("Rectangles", rectRow), c);
 		++c.gridy;
 		page.add(labelled("Base preset", base), c);
 		++c.gridy;
@@ -498,6 +537,14 @@ final class ControlPanel
 					rule.regions.add(Integer.parseInt(part));
 				}
 			}
+			for (String box : rects.getText().split(";"))
+			{
+				String[] parts = box.trim().split("[,\\s]+");
+				if (parts.length >= 4 && !parts[0].isEmpty())
+				{
+					rule.rects.add(new int[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Integer.parseInt(parts[3]), parts.length > 4 ? Integer.parseInt(parts[4]) : -1});
+				}
+			}
 			rule.overrides = Presets.diff(presets.load(String.valueOf(base.getSelectedItem())), presets.capture());
 			areas.put(rule);
 			areas.save();
@@ -515,12 +562,32 @@ final class ControlPanel
 			{
 				return;
 			}
-			areas.remove(rule.name);
+			areas.remove(rule);
 			areas.save();
-			model.removeElement(rule);
+			model.removeAllElements();
+			for (AreaRules.Rule r : areas.rules())
+			{
+				model.addElement(r);
+			}
 			status.setText("Removed " + rule.name);
 		}, status));
 		page.add(buttons, c);
+		++c.gridy;
+		java.io.File repository = AreaRules.repository();
+		JButton bundle = button("Save selected area into the repository as a bundled default", () ->
+		{
+			AreaRules.Rule rule = list.getSelectedValue();
+			if (rule == null)
+			{
+				status.setText("Select an area first.");
+				return;
+			}
+			areas.saveBundled(repository, rule);
+			status.setText("Written to src/main/resources/rltx/areas in " + repository.getName() + "; commit it to ship it.");
+		}, status);
+		bundle.setEnabled(repository != null);
+		bundle.setToolTipText(repository == null ? "Only available when running from a source checkout" : repository.getPath());
+		page.add(bundle, c);
 		++c.gridy;
 		page.add(status, c);
 		++c.gridy;
