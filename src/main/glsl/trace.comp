@@ -443,8 +443,22 @@ float valueNoise2(vec2 p) {
   return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
-// Height of the cloud layer; up is -y and the ground lies near zero.
+float valueNoise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n00 = mix(hash13(i), hash13(i + vec3(1.0, 0.0, 0.0)), f.x);
+  float n10 = mix(hash13(i + vec3(0.0, 1.0, 0.0)), hash13(i + vec3(1.0, 1.0, 0.0)), f.x);
+  float n01 = mix(hash13(i + vec3(0.0, 0.0, 1.0)), hash13(i + vec3(1.0, 0.0, 1.0)), f.x);
+  float n11 = mix(hash13(i + vec3(0.0, 1.0, 1.0)), hash13(i + vec3(1.0, 1.0, 1.0)), f.x);
+  return mix(mix(n00, n10, f.y), mix(n01, n11, f.y), f.z);
+}
+
+// Base of the cloud layer and its thickness; up is -y and the ground lies near zero.
 const float CLOUD_Y = -3200.0;
+const float CLOUD_THICKNESS = 1400.0;
+const int CLOUD_STEPS = 32;
+const float CLOUD_SIGMA = 0.0045;
 
 // Cloud density 0 to 1 over a point of the cloud layer: a drifting noise field thresholded by
 // the weather's cloud cover, so more cover means broader, thicker clouds.
@@ -583,20 +597,86 @@ vec3 proceduralSky(vec3 d, bool withDisc) {
   return sky;
 }
 
-// Clouds painted onto the sky for the camera: the layer is a plane above the scene, lit from
-// above by day and dim at night, thicker parts darker.
+// Cloud density inside the layer: the weather's coverage field shaped into flat-bottomed heaps
+// by a height profile and eroded at its edges by three-dimensional noise drifting with the wind.
+float cloudVolume(vec3 p, float t) {
+  float cover = cloudDensity(p.xz);
+  if (cover <= 0.0) {
+    return 0.0;
+  }
+  float h = (CLOUD_Y - p.y) / CLOUD_THICKNESS;
+  float profile = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(0.5, 1.0, h));
+  float base = cover * profile;
+  if (base <= 0.0) {
+    return 0.0;
+  }
+  vec3 q = (p + vec3(u.weather2.z, 0.0, u.weather2.w) * 0.6 + vec3(9.0, 0.0, 3.0) * t) / 420.0;
+  float n = 0.65 * valueNoise3(q) + 0.35 * valueNoise3(q * 2.7 + 5.0);
+  return smoothstep(0.0, 0.55, base - 0.5 * (1.0 - base) * n) * 0.9;
+}
+
+vec3 skyRadiance(vec3 d);
+
+float henyeyGreenstein(float cosTheta, float g) {
+  float gg = g * g;
+  return (1.0 - gg) / pow(1.0 + gg - 2.0 * g * cosTheta, 1.5);
+}
+
+// Volumetric clouds for the camera: the view ray is marched through the layer, each sample lit
+// by sunlight that has itself been marched toward the sun through the cloud, with forward
+// scattering, a powder darkening of dense cores and ambient light from the sky above. Sky pixels
+// keep no history, so the march is dithered rather than jittered.
 vec3 withClouds(vec3 sky, vec3 d) {
   if ((u.misc.y & FLAG_CLOUDS) == 0u || d.y >= -0.02 || u.weather.x <= 0.0) {
     return sky;
   }
-  vec2 xz = u.cam.xz + d.xz * ((CLOUD_Y - u.cam.y) / d.y);
-  float density = cloudDensity(xz);
-  float day = smoothstep(-0.12, 0.15, u.post2.w);
-  vec3 bright = mix(vec3(0.02, 0.022, 0.03), vec3(1.0, 0.98, 0.95), day);
-  vec3 dark = mix(vec3(0.008, 0.009, 0.014), vec3(0.42, 0.45, 0.52), day);
-  vec3 cloud = mix(bright, dark, density * 0.7);
+  float tA = (CLOUD_Y - u.cam.y) / d.y;
+  float tB = (CLOUD_Y - CLOUD_THICKNESS - u.cam.y) / d.y;
+  float tMin = max(min(tA, tB), 0.0);
+  float tMax = min(max(tA, tB), tMin + 40000.0);
+  if (tMax <= tMin) {
+    return sky;
+  }
+  float t = u.weather3.x;
+  float dt = (tMax - tMin) / float(CLOUD_STEPS);
+  vec2 px = vec2(gl_GlobalInvocationID.xy);
+  float dither = fract(52.9829189 * fract(0.06711056 * px.x + 0.00583715 * px.y));
+  vec3 sunDir = u.sun.xyz;
+  float cosTheta = dot(d, sunDir);
+  float phase = 0.75 * henyeyGreenstein(cosTheta, 0.3) + 0.25 * henyeyGreenstein(cosTheta, -0.15);
+  vec3 sunLight = u.sunColor.rgb * u.sun.w;
+  vec3 ambient = skyRadiance(vec3(0.0, -1.0, 0.0)) * 0.5;
+  bool lit = u.sun.w > 0.0 && sunDir.y < 0.0;
+  float transmittance = 1.0;
+  vec3 scattered = vec3(0.0);
+  for (int i = 0; i < CLOUD_STEPS && transmittance > 0.02; ++i) {
+    vec3 p = u.cam.xyz + d * (tMin + dt * (float(i) + dither));
+    float density = cloudVolume(p, t);
+    if (density <= 0.0) {
+      continue;
+    }
+    float shade = 0.0;
+    if (lit) {
+      vec3 lp = p;
+      float step_ = 160.0;
+      for (int k = 0; k < 3; ++k) {
+        lp += sunDir * step_;
+        if (lp.y < CLOUD_Y - CLOUD_THICKNESS || lp.y > CLOUD_Y) {
+          break;
+        }
+        shade += cloudVolume(lp, t) * step_;
+        step_ *= 1.7;
+      }
+    }
+    float h = (CLOUD_Y - p.y) / CLOUD_THICKNESS;
+    float sunlit = exp(-shade * CLOUD_SIGMA) * (1.0 - 0.6 * exp(-density * 4.0));
+    vec3 light = sunLight * (phase * sunlit * 1.6) + ambient * (0.35 + 0.65 * h);
+    float alpha = 1.0 - exp(-density * dt * CLOUD_SIGMA);
+    scattered += transmittance * alpha * light;
+    transmittance *= 1.0 - alpha;
+  }
   float fade = smoothstep(0.02, 0.18, -d.y);
-  return mix(sky, cloud, density * fade);
+  return sky * mix(1.0, transmittance, fade) + scattered * fade;
 }
 
 // Cloud cover greys and dims the sky towards a uniform overcast.
