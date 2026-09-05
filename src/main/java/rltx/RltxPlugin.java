@@ -2258,7 +2258,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			int zx = (int) (key >> 16) & 0xffff;
 			int zz = (int) key & 0xffff;
 			LoadedScene loaded = scenes.get(id);
-			if (loaded == null)
+			if (loaded == null || zx >= loaded.built.zonesX || zz >= loaded.built.zonesZ)
 			{
 				continue;
 			}

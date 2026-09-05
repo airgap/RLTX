@@ -1192,6 +1192,11 @@ public final class RtRenderer
 		{
 			return false;
 		}
+		if (zx >= set.zonesX || zz >= set.zonesZ)
+		{
+			// Nothing of that zone was ever uploaded, so there is nothing to replace.
+			return true;
+		}
 		int index = zx * set.zonesZ + zz;
 		ZoneRes res = set.zones[index];
 		if (zone == null)

@@ -85,9 +85,11 @@ public final class StaticSceneBuilder
 	}
 
 	/** Number of zones along each axis of the scene's extended tile grid. */
+	// Sub-world scenes need not be a whole number of zones across; the client still invalidates
+	// the partial zone at their edge, so it is counted.
 	public static int zoneCount(Scene scene)
 	{
-		return scene.getExtendedTiles()[0].length >> 3;
+		return (scene.getExtendedTiles()[0].length + 7) >> 3;
 	}
 
 	/**
@@ -478,11 +480,12 @@ public final class StaticSceneBuilder
 		int[][][] roofs = scene.getRoofs();
 		Map<Long, Bucket> groups = new LinkedHashMap<>();
 
+		int size = tiles[0].length;
 		for (int level = 0; level <= 3; ++level)
 		{
-			for (int msx = zx << 3; msx < (zx + 1) << 3; ++msx)
+			for (int msx = zx << 3; msx < Math.min((zx + 1) << 3, size); ++msx)
 			{
-				for (int msz = zz << 3; msz < (zz + 1) << 3; ++msz)
+				for (int msz = zz << 3; msz < Math.min((zz + 1) << 3, size); ++msz)
 				{
 					Tile t = tiles[level][msx][msz];
 					if (t == null)
