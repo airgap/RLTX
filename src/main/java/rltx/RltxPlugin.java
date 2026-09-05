@@ -116,6 +116,7 @@ import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
 import rltx.sky.Skybox;
 import rltx.sky.SkyboxLoader;
+import rltx.sky.Season;
 import rltx.sky.SolarPosition;
 import rltx.sky.GeoLocation;
 import rltx.sky.WeatherService;
@@ -857,6 +858,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			route = null;
 		}
+		// The date moving the season along recolours the static scene.
+		Palette current = palette;
+		if (current != null && (current.season != seasonKind() || current.seasonProgress != seasonProgress()))
+		{
+			staticDirty = true;
+		}
 		WorldView wv = client.getTopLevelWorldView();
 		if (config.markerGlow() && wv != null && groundMarkers.bind())
 		{
@@ -1500,7 +1507,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			// The next frame resolves the choice against the time of day and reloads.
 			requestedSkybox = null;
 		}
-		if ("unlitColours".equals(event.getKey()) || "treeScale".equals(event.getKey()))
+		if ("unlitColours".equals(event.getKey()) || "treeScale".equals(event.getKey()) || "seasonMode".equals(event.getKey()))
 		{
 			staticDirty = true;
 		}
@@ -1694,12 +1701,37 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		Palette p = palette;
 		boolean undo = config.unlitColours();
-		if (p == null || p.brightness() != client.getTextureProvider().getBrightness() || p.undoShading != undo)
+		int season = seasonKind();
+		float progress = seasonProgress();
+		if (p == null || p.brightness() != client.getTextureProvider().getBrightness() || p.undoShading != undo || p.season != season || p.seasonProgress != progress)
 		{
-			p = new Palette(client.getTextureProvider(), undo);
+			p = new Palette(client.getTextureProvider(), undo, season, progress);
 			palette = p;
 		}
 		return p;
+	}
+
+	// The season the scene is coloured for: 0 none, 1 spring to 4 winter, by the setting or the
+	// real date for the machine's hemisphere. Progress is held to twentieths so the static scene
+	// is only rebuilt every few days as the season advances.
+	private int seasonKind()
+	{
+		RltxConfig.SeasonMode mode = config.seasonMode();
+		switch (mode)
+		{
+			case OFF:
+				return 0;
+			case REAL_DATE:
+				return Season.at(System.currentTimeMillis(), latitude()).kind.ordinal() + 1;
+			default:
+				return mode.ordinal();
+		}
+	}
+
+	private float seasonProgress()
+	{
+		float progress = config.seasonMode() == RltxConfig.SeasonMode.REAL_DATE ? Season.at(System.currentTimeMillis(), latitude()).progress : 0.5f;
+		return Math.round(progress * 20f) / 20f;
 	}
 
 	@Override
@@ -2191,6 +2223,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.mistEverywhere = config.mistEverywhere();
 		frame.fireflies = config.fireflies();
 		frame.dustMotes = config.dustMotes();
+		frame.season = seasonKind();
+		frame.seasonProgress = seasonProgress();
+		// Leaves fall from early autumn, most thickly late; petals drift around the middle of spring.
+		frame.leafFall = frame.season == 3 ? 0.3f + 0.7f * frame.seasonProgress : frame.season == 4 ? 0.3f * (1f - Math.min(frame.seasonProgress * 4f, 1f)) : 0f;
+		frame.petals = frame.season == 1 ? Math.max(0f, 1f - Math.abs(frame.seasonProgress - 0.45f) * 2.5f) : 0f;
 		frame.lightShafts = config.lightShafts() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
 		// Wind blows away from its meteorological direction; full strength carries particles

@@ -43,6 +43,8 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 eye;
   vec4 guide;      // display-space colour of the route glow, and the number of guide entries
   vec4 marks;      // ground marker count, marker glow scale, NPC rim glow scale
+  vec4 highlight[16];
+  vec4 season;     // season 0 none to 4 winter, progress, falling leaves, blossom petals
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -290,13 +292,15 @@ vec3 dropScatter(vec3 world, vec3 dir) {
   return scatter;
 }
 
-// Walks one grid along the ray and composites the drops or flakes it meets.
-vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, float speed, float presence, int salt, float t) {
+// Walks one grid along the ray and composites the drops or flakes it meets. Kinds: 0 rain,
+// 1 snow, 2 autumn leaves, 3 blossom petals; the last three are flakes of different colours.
+vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, int kind, float speed, float presence, int salt, float t) {
+  bool raining = kind == 0;
   // Cells are taller than the streak so one always fits with room to sit at a random height.
   float streak = RAIN_BASE_LENGTH * max(u.wind.w, 0.1);
   float cellHeight = streak + 90.0;
   vec3 cellSize = raining ? vec3(RAIN_CELL, cellHeight, RAIN_CELL) : vec3(SNOW_CELL);
-  float driftScale = raining ? 0.6 : 0.4;
+  float driftScale = raining ? 0.6 : kind == 1 ? 0.4 : 0.9;
   // Scrolled space: the grid falls with the drops and drifts with the wind, so a drop is a fixed
   // segment of its cell there. Streaks lie along the velocity so they slant with the wind.
   vec3 scroll = vec3(u.weather2.z * driftScale, speed * t, u.weather2.w * driftScale);
@@ -332,7 +336,10 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, floa
         q = head + fall * uSeg;
         along = uSeg / streak;
       } else {
-        vec2 wobble = 0.3 * vec2(sin(t * 1.7 + rx * 6.2832), cos(t * 1.1 + rz * 6.2832));
+        // Leaves and petals tumble more widely and more slowly than snow.
+        float sway = kind == 1 ? 0.3 : 0.45;
+        float rate = kind == 1 ? 1.0 : 0.6;
+        vec2 wobble = sway * vec2(sin(t * 1.7 * rate + rx * 6.2832), cos(t * 1.1 * rate + rz * 6.2832));
         q = base + (vec3(0.5 + wobble.x, 0.5, 0.5 + wobble.y) + 0.3 * (vec3(rx, ry, rz) - 0.5)) * cellSize;
       }
       float tQ = dot(q - o, dir);
@@ -351,8 +358,15 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, bool raining, floa
             vec3 light = tonemap(dropScatter(world, dir)) * vec3(0.85, 0.9, 1.0);
             c = c * (1.0 - 0.25 * alpha) + light * alpha;
           } else {
-            // Flakes are white bodies lit like the mist.
-            c = mix(c, u.mistColor.rgb, alpha);
+            // Flakes are bodies lit like the mist: white snow, or a leaf or petal in its own colour.
+            vec3 body = vec3(1.0);
+            if (kind == 2) {
+              float pick = unitFrom(hashCell(salted + ivec3(3, 3, 3)));
+              body = pick < 0.35 ? vec3(1.0, 0.45, 0.1) : pick < 0.6 ? vec3(0.75, 0.18, 0.08) : pick < 0.8 ? vec3(0.55, 0.32, 0.12) : vec3(0.95, 0.8, 0.2);
+            } else if (kind == 3) {
+              body = vec3(1.0, 0.82, 0.86);
+            }
+            c = mix(c, u.mistColor.rgb * body, alpha);
           }
         }
       }
@@ -568,7 +582,9 @@ vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
 vec3 precipitation(vec3 c, ivec2 px, float depth) {
   float rain = u.weather.z;
   float snow = u.weather.w;
-  if (rain <= 0.0 && snow <= 0.0) {
+  float leaves = u.season.z;
+  float petals = u.season.w;
+  if (rain <= 0.0 && snow <= 0.0 && leaves <= 0.0 && petals <= 0.0) {
     return c;
   }
   float t = u.weather3.x;
@@ -578,11 +594,19 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
   if (rain > 0.0) {
     // Three populations: small slow drops, medium, and large fast ones.
     float speed = max(u.skyAmbient.w, 0.1);
-    c = traceParticles(c, dir, tMax, zoom, true, 700.0 * speed, 0.2 * rain, 0, t);
-    c = traceParticles(c, dir, tMax, zoom, true, 850.0 * speed, 0.2 * rain, 1, t);
-    c = traceParticles(c, dir, tMax, zoom, true, 1000.0 * speed, 0.15 * rain, 2, t);
-  } else {
-    c = traceParticles(c, dir, tMax, zoom, false, SNOW_SPEED, 0.7 * snow, 0, t);
+    c = traceParticles(c, dir, tMax, zoom, 0, 700.0 * speed, 0.2 * rain, 0, t);
+    c = traceParticles(c, dir, tMax, zoom, 0, 850.0 * speed, 0.2 * rain, 1, t);
+    c = traceParticles(c, dir, tMax, zoom, 0, 1000.0 * speed, 0.15 * rain, 2, t);
+  } else if (snow > 0.0) {
+    c = traceParticles(c, dir, tMax, zoom, 1, SNOW_SPEED, 0.7 * snow, 0, t);
+  }
+  // Autumn leaves and spring petals fall on their own, thinning out in rain.
+  float dry = 1.0 - clamp(rain, 0.0, 1.0);
+  if (leaves > 0.0) {
+    c = traceParticles(c, dir, min(tMax, 1600.0), zoom, 2, 70.0, 0.25 * leaves * dry, 3, t);
+  }
+  if (petals > 0.0) {
+    c = traceParticles(c, dir, min(tMax, 1600.0), zoom, 3, 50.0, 0.2 * petals * dry, 4, t);
   }
   return c;
 }

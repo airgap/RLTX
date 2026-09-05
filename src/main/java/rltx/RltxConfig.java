@@ -1187,6 +1187,29 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	enum SeasonMode
+	{
+		REAL_DATE("Real date and place"),
+		SPRING("Spring"),
+		SUMMER("Summer"),
+		AUTUMN("Autumn"),
+		WINTER("Winter"),
+		OFF("Off");
+
+		private final String label;
+
+		SeasonMode(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
 	enum WeatherMode
 	{
 		REAL_TIME, MANUAL, OFF
@@ -1394,6 +1417,18 @@ public interface RltxConfig extends Config
 	default boolean smoke()
 	{
 		return true;
+	}
+
+	@ConfigItem(
+		keyName = "seasonMode",
+		name = "Season",
+		description = "Leaves turn and fall through autumn, trees stand bare in winter and blossom in spring, by the real date for your hemisphere or a season of your choosing.",
+		section = weatherSection,
+		position = 43
+	)
+	default SeasonMode seasonMode()
+	{
+		return SeasonMode.REAL_DATE;
 	}
 
 	@ConfigItem(

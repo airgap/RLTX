@@ -95,6 +95,14 @@ public final class FrameParams
 	public float markerStrength;
 	/** Lens flare strength, 0 disables. */
 	public float lensFlare;
+	/** Season 0 none to 4 winter and progress through it; falling leaf and blossom petal amounts. */
+	public int season;
+	public float seasonProgress, leafFall, petals;
+	/** Columns of the rotation from equatorial to world directions, for the star map; and its brightness scale. */
+	public final float[] starRotation = new float[9];
+	public float starBrightness;
+	/** Direction to the sun while the moon lights the scene, and the moon's illuminated fraction. */
+	public float moonSunX, moonSunY, moonSunZ, moonFraction;
 	/** Rim glow scale for highlighted NPCs, 0 disables, and the palette of highlight colours their faces index, linear RGB. */
 	public float rimStrength;
 	public final float[] highlightColours = new float[16 * 4];

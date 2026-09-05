@@ -13,12 +13,17 @@ public final class Palette
 	private final double brightness;
 	/** Whether the vanilla renderer's baked shading is reversed out of face and tile colours. */
 	public final boolean undoShading;
+	/** The season the scene is coloured for: 0 none, 1 spring, 2 summer, 3 autumn, 4 winter; and how far through it. */
+	public final int season;
+	public final float seasonProgress;
 
-	public Palette(TextureProvider textureProvider, boolean undoShading)
+	public Palette(TextureProvider textureProvider, boolean undoShading, int season, float seasonProgress)
 	{
 		this.textureProvider = textureProvider;
 		this.brightness = textureProvider.getBrightness();
 		this.undoShading = undoShading;
+		this.season = season;
+		this.seasonProgress = seasonProgress;
 		for (int hsl = 0; hsl < table.length; ++hsl)
 		{
 			table[hsl] = convert(hsl, brightness);
@@ -38,6 +43,79 @@ public final class Palette
 	public int texture(int textureId)
 	{
 		return table[textureProvider.getDefaultColor(textureId) & 0xffff];
+	}
+
+	/**
+	 * The season's version of a green: leaves turn and fall through autumn on their own
+	 * schedules, stand bare and brown in winter, and come up fresh with blossom in spring; the
+	 * ground follows more gently. Returns -1 for a leaf that has fallen.
+	 *
+	 * @param salt varies the schedule between faces
+	 */
+	public int seasonal(int hsl, boolean foliage, int salt)
+	{
+		if (season == 0 || season == 2)
+		{
+			return hsl;
+		}
+		int hue = hsl >> 10 & 63;
+		int sat = hsl >> 7 & 7;
+		int light = hsl & 127;
+		if (hue < 11 || hue > 29 || sat < 2 || light < 8)
+		{
+			return hsl;
+		}
+		float r = ((salt * 0x9E3779B1) >>> 8 & 0xFFFF) / 65536f;
+		float p = seasonProgress;
+		switch (season)
+		{
+			case 3:
+			{
+				float turn = Math.max(0f, Math.min(1f, (p * 1.5f - 0.5f * r) * (foliage ? 1f : 0.4f)));
+				if (foliage && p > 0.7f && r < (p - 0.7f) / 0.3f * 0.6f)
+				{
+					return -1;
+				}
+				hue = Math.round(hue + (9f - 6f * turn - hue) * turn);
+				sat = turn > 0.3f ? Math.min(7, sat + 1) : sat;
+				light = Math.round(light * (1f - 0.3f * turn * turn));
+				break;
+			}
+			case 4:
+				if (foliage)
+				{
+					if (r < 0.6f)
+					{
+						return -1;
+					}
+					hue = 4;
+					sat = Math.max(sat - 2, 1);
+					light = light * 3 / 4;
+				}
+				else
+				{
+					sat = Math.max(sat - 1, 0);
+					light = Math.min(127, light + 8);
+				}
+				break;
+			default:
+				if (foliage)
+				{
+					float bloom = 1f - Math.abs(p - 0.45f) * 2.5f;
+					if (bloom > 0f && r < 0.14f * bloom)
+					{
+						hue = 60;
+						sat = 3;
+						light = 90;
+					}
+					else
+					{
+						light = Math.min(127, Math.round(light + 6f * (1f - p)));
+					}
+				}
+				break;
+		}
+		return hue << 10 | sat << 7 | light;
 	}
 
 	private static final int BASE_LIGHTEN = 10;

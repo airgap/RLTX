@@ -646,7 +646,9 @@ public final class StaticSceneBuilder
 			scale, 0f, 0f, x * (1f - scale),
 			0f, scale, 0f, y * (1f - scale),
 			0f, 0f, scale, z * (1f - scale)};
+		pusher.foliage = true;
 		pusher.push(m, orientation, x, y, z, grow, palette, bucket.sway, bucket.translucent);
+		pusher.foliage = false;
 		int added = bucket.sway.faces() - first;
 		if (added == 0)
 		{
@@ -675,12 +677,12 @@ public final class StaticSceneBuilder
 	{
 		if (terrainLight == null)
 		{
-			return palette.hsl(hsl);
+			return palette.hsl(palette.seasonal(hsl, false, gridX * 131 + gridY));
 		}
 		int size = terrainLight[0].length;
 		int x = Math.max(0, Math.min(size - 1, gridX));
 		int y = Math.max(0, Math.min(size - 1, gridY));
-		return palette.hsl(Palette.undoTerrainShading(hsl, terrainLight[plane][x][y]));
+		return palette.hsl(palette.seasonal(Palette.undoTerrainShading(hsl, terrainLight[plane][x][y]), false, x * 131 + y));
 	}
 
 	// Tile model vertices sit on tile corners or edges; use the light of the nearest grid point.

@@ -43,6 +43,11 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 guide;
   vec4 marks;    // ground marker count, marker glow scale, NPC rim glow scale
   vec4 highlight[16]; // linear colours the faces of highlighted NPCs index
+  vec4 season;   // season 0 none to 4 winter, progress, falling leaves, blossom petals
+  vec4 star0;    // columns of the equatorial to world rotation for the star map; star brightness in w
+  vec4 star1;
+  vec4 star2;
+  vec4 night;    // direction to the sun while the moon lights the scene, moon illuminated fraction
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the

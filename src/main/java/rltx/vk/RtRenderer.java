@@ -2131,6 +2131,12 @@ public final class RtRenderer
 		{
 			b.putFloat(c);
 		}
+		b.putFloat(p.season).putFloat(p.seasonProgress).putFloat(p.leafFall).putFloat(p.petals);
+		float[] s = p.starRotation;
+		b.putFloat(s[0]).putFloat(s[1]).putFloat(s[2]).putFloat(p.starBrightness);
+		b.putFloat(s[3]).putFloat(s[4]).putFloat(s[5]).putFloat(0f);
+		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(0f);
+		b.putFloat(p.moonSunX).putFloat(p.moonSunY).putFloat(p.moonSunZ).putFloat(p.moonFraction);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

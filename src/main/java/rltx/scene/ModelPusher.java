@@ -28,6 +28,8 @@ public final class ModelPusher
 	public int flameFaces;
 	/** Highlight palette index, 1 to 15, stamped on every face pushed; 0 for none. */
 	public int highlight;
+	/** Whether the faces being pushed are leaves and plants, which take the season's colours. */
+	public boolean foliage;
 
 	// Vanilla flames are saturated orange to yellow faces; hue sits in the top six bits of the
 	// packed HSL as sixty-fourths of a turn, saturation in three bits, lightness in seven.
@@ -164,6 +166,14 @@ public final class ModelPusher
 				continue;
 			}
 			int hsl = unlit != null ? unlit[f] & 0xffff : c1[f] & 0xffff;
+			if (foliage)
+			{
+				hsl = palette.seasonal(hsl, true, f * 31 + a);
+				if (hsl < 0)
+				{
+					continue;
+				}
+			}
 			boolean flame = flames && hot(hsl);
 			if (undo && !flame)
 			{
