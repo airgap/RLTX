@@ -130,6 +130,8 @@ public final class FrameParams
 	public float diffusionRadius = 40f;
 	/** Display-space colour distance fog fades to, and the current lightning flash. */
 	public float fogR, fogG, fogB, flash;
+	/** The fog colour by eighth of the compass, RGBA each, so far scenery fades into the sky behind it. */
+	public final float[] fogRing = new float[8 * 4];
 	/** Thin-lens aperture radius in scene units (0 disables) and focus distance along the view axis. */
 	public float aperture, focusDistance;
 	/** Diffuse bounces per path; 0 leaves only direct light and the ambient floor. */

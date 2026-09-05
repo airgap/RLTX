@@ -208,7 +208,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				takePhoto();
 				e.consume();
 			}
-			else if (config.clickToFocus() && e.getButton() == MouseEvent.BUTTON1)
+			else if (config.clickToFocus() && e.getButton() == MouseEvent.BUTTON1 && e.isControlDown())
 			{
 				focusProbeX = e.getX() - client.getViewportXOffset();
 				focusProbeY = e.getY() - client.getViewportYOffset();
@@ -1592,6 +1592,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private long lastWeatherNanos;
 	private final Random lightningRandom = new Random();
 	private volatile float[] skyHorizon;
+	private volatile float[] skyHorizonRing;
 
 	private Canvas canvas;
 	private AWTContext awtContext;
@@ -1825,6 +1826,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			atmosphereIntensity = -1f;
 			requestedSkybox = null;
 			skyHorizon = null;
+			skyHorizonRing = null;
 			skyboxSunAzimuth = Double.NaN;
 			skyboxSunElevation = Double.NaN;
 			patternSampled = false;
@@ -2023,6 +2025,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 					{
 						renderer.setSkybox(decoded.width, decoded.height, decoded.pixels);
 						skyHorizon = decoded.horizon;
+						skyHorizonRing = decoded.horizonRing;
 						skyboxSunAzimuth = sunAzimuth;
 						skyboxSunElevation = sunElevation;
 						skyboxLoaded = true;
@@ -2757,6 +2760,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.fogR = (horizon[0] + (lum - horizon[0]) * grey) * dim;
 		frame.fogG = (horizon[1] + (lum - horizon[1]) * grey) * dim;
 		frame.fogB = (horizon[2] + (lum - horizon[2]) * grey) * dim;
+		// The same by compass eighth, so the fade meets the sky's own colour behind it.
+		float[] ring = horizonRing(horizon);
+		for (int s = 0; s < 8; ++s)
+		{
+			float l = 0.2126f * ring[s * 3] + 0.7152f * ring[s * 3 + 1] + 0.0722f * ring[s * 3 + 2];
+			for (int c = 0; c < 3; ++c)
+			{
+				frame.fogRing[s * 4 + c] = (ring[s * 3 + c] + (l - ring[s * 3 + c]) * grey) * dim;
+			}
+			frame.fogRing[s * 4 + 3] = 1f;
+		}
 		// Sky light in linear radiance for things the final pass lights itself: the sky's own
 		// horizon colour under its intensity and the cloud's dimming, or the flat sky colour.
 		boolean pictured = skyboxLoaded || frame.proceduralSky;
@@ -2773,6 +2787,40 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	// The analytic sky's colour at the horizon, matching proceduralSky() in trace.comp, for the
 	// fog and distance fade to meet.
+	// Horizon colour by eighth of the compass: the skybox's own ring, the scattered-light map's
+	// horizon row, or the single colour repeated.
+	private float[] horizonRing(float[] uniform)
+	{
+		float[] map = atmosphereMap;
+		if (frame.physicalSky && map != null)
+		{
+			int row = (int) ((0.5 - 2.0 / 180.0) * Atmosphere.HEIGHT);
+			float[] ring = new float[8 * 3];
+			for (int i = 0; i < Atmosphere.WIDTH; ++i)
+			{
+				// Map columns and the shaders' sectors share one azimuth mapping.
+				int sector = (int) Math.floor((i + 0.5) / Atmosphere.WIDTH * 8.0) & 7;
+				int o = (row * Atmosphere.WIDTH + i) * 4;
+				for (int c = 0; c < 3; ++c)
+				{
+					ring[sector * 3 + c] += map[o + c] * 8f / Atmosphere.WIDTH;
+				}
+			}
+			return ring;
+		}
+		float[] skyRing = skyHorizonRing;
+		if (!frame.proceduralSky && skyboxLoaded && skyRing != null)
+		{
+			return skyRing;
+		}
+		float[] ring = new float[8 * 3];
+		for (int s = 0; s < 8; ++s)
+		{
+			System.arraycopy(uniform, 0, ring, s * 3, 3);
+		}
+		return ring;
+	}
+
 	private float[] proceduralHorizon()
 	{
 		float[] map = atmosphereMap;

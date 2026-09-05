@@ -2330,6 +2330,10 @@ public final class RtRenderer
 		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(p.treeCount);
 		b.putFloat(p.moonSunX).putFloat(p.moonSunY).putFloat(p.moonSunZ).putFloat(p.moonFraction);
 		b.putFloat(p.printCount).putFloat(p.footprintStrength).putFloat(p.waterSurfaceY).putFloat(p.latitude);
+		for (float c : p.fogRing)
+		{
+			b.putFloat(c);
+		}
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

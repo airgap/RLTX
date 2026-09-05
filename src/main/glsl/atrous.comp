@@ -50,6 +50,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 star2;      // w: number of trees shedding leaves
   vec4 night;
   vec4 ground;     // footprint count, footprint strength, water surface height over the camera, latitude
+  vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -1039,11 +1040,16 @@ void main() {
     if (u.weather.y > 0.0 && depth > 0.0) {
       c = mix(c, u.fog.rgb, 1.0 - exp(-depth * u.weather.y * FOG_EXTINCTION));
     }
-    // The last stretch before the render distance fades into the horizon, where the cut-off
-    // rays beyond it show the same colour; the eased curve keeps the onset gentle.
+    // The last stretch before the render distance fades into the horizon colour in that
+    // direction, which the cut-off rays beyond it show too; the eased curve keeps the onset gentle.
     if (depth > 0.0 && u.post.z > 0.0) {
       float fade = smoothstep(u.post.z * (1.0 - u.post.w), u.post.z, depth);
-      c = mix(c, u.fog.rgb, fade * fade * (3.0 - 2.0 * fade));
+      vec3 dir = cameraRay(p);
+      float turn = (u.misc.y & 256u) != 0u ? 0.0 : u.extra.x;
+      float f = fract((atan(dir.x, dir.z) + turn) / 6.2831853 + 0.5) * 8.0 - 0.5;
+      int i = int(floor(f + 8.0)) & 7;
+      vec3 target = mix(u.horizon[i].rgb, u.horizon[(i + 1) & 7].rgb, fract(f));
+      c = mix(c, target, fade * fade * (3.0 - 2.0 * fade));
     }
     if (underwater) {
       writeOutput(p, c);

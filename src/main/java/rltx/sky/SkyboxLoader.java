@@ -30,6 +30,8 @@ public final class SkyboxLoader
 		public final double sunScore;
 		/** Mean colour just above the horizon, RGB 0 to 1, which distance fog fades scenery into. */
 		public final float[] horizon;
+		/** The same by eighth of the compass around the image, RGB each, so the fade matches the sky behind it. */
+		public final float[] horizonRing;
 
 		Decoded(int width, int height, ByteBuffer pixels)
 		{
@@ -41,7 +43,37 @@ public final class SkyboxLoader
 			this.sunAzimuthDegrees = sun[0];
 			this.sunElevationDegrees = sun[2];
 			this.horizon = horizonColor(pixels, width, height);
+			this.horizonRing = horizonRing(pixels, width, height);
 		}
+	}
+
+	private static float[] horizonRing(ByteBuffer pixels, int width, int height)
+	{
+		int y0 = (int) (height * 0.46);
+		int y1 = (int) (height * 0.5);
+		float[] ring = new float[8 * 3];
+		for (int sector = 0; sector < 8; ++sector)
+		{
+			int x0 = width * sector / 8;
+			int x1 = width * (sector + 1) / 8;
+			double r = 0, g = 0, b = 0;
+			long n = 0;
+			for (int y = y0; y < y1; ++y)
+			{
+				for (int x = x0; x < x1; x += 4)
+				{
+					int i = (y * width + x) * 4;
+					r += pixels.get(i) & 0xff;
+					g += pixels.get(i + 1) & 0xff;
+					b += pixels.get(i + 2) & 0xff;
+					++n;
+				}
+			}
+			ring[sector * 3] = (float) (r / n / 255.0);
+			ring[sector * 3 + 1] = (float) (g / n / 255.0);
+			ring[sector * 3 + 2] = (float) (b / n / 255.0);
+		}
+		return ring;
 	}
 
 	private static float[] horizonColor(ByteBuffer pixels, int width, int height)

@@ -957,7 +957,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "clickToFocus",
 		name = "Click to focus",
-		description = "In photo mode, clicking the view focuses the lens at that distance and switches Focus to a fixed distance.",
+		description = "In photo mode, Ctrl-clicking the view focuses the lens at that distance and switches Focus to a fixed distance. Plain clicks reach the game as usual.",
 		section = cameraSection,
 		position = 35
 	)

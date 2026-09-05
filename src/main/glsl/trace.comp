@@ -49,6 +49,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 star2;
   vec4 night;    // direction to the sun while the moon lights the scene, moon illuminated fraction
   vec4 ground;   // footprint count, footprint strength, water surface height over the camera, latitude
+  vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 layout(set = 0, binding = 41) uniform sampler2D starMap;
@@ -633,8 +634,11 @@ vec3 proceduralSky(vec3 d, bool withDisc) {
   vec3 sky;
   if ((u.misc.y & FLAG_PHYSICAL_SKY) != 0u) {
     // Sunlight scattered in the air, computed on the CPU into a map; the sun's own glow is in
-    // it. A faint floor stands in for starlight and airglow once the light has gone.
-    sky = texture(skyLut, atmosphereUv(d)).rgb + vec3(0.0025, 0.003, 0.006) * (1.0 - day);
+    // it. A faint floor stands in for starlight and airglow once the light has gone. Below the
+    // horizon the map holds only the short path to the ground, so the horizon's own colour is
+    // carried down, dimming with depression.
+    vec3 level = d.y > 0.0 ? normalize(vec3(d.x, 0.0, d.z) + vec3(0.0, 0.0, 1e-5)) : d;
+    sky = texture(skyLut, atmosphereUv(level)).rgb * (1.0 - 0.4 * smoothstep(0.0, 0.5, d.y)) + vec3(0.0025, 0.003, 0.006) * (1.0 - day);
   } else {
     float low = (1.0 - smoothstep(0.0, 0.35, abs(sunUp))) * day;
     float horizonWeight = pow(1.0 - up, 2.5);
@@ -839,6 +843,16 @@ vec3 aurora(vec3 d) {
     sum += mix(vec3(0.15, 1.0, 0.35), vec3(0.65, 0.2, 1.0), smoothstep(0.2, 0.9, h)) * (curtain * ripple * vertical);
   }
   return sum * (0.0045 * weight);
+}
+
+// The fog colour in a direction: the sky's own horizon colour there, so far scenery and the
+// void beyond the loaded scene meet the sky they stand against.
+vec3 horizonAt(vec3 d) {
+  // The skybox turns with its rotation setting; the procedural sky does not.
+  float turn = (u.misc.y & FLAG_PROCEDURAL_SKY) != 0u ? 0.0 : u.extra.x;
+  float f = fract((atan(d.x, d.z) + turn) / TWO_PI + 0.5) * 8.0 - 0.5;
+  int i = int(floor(f + 8.0)) & 7;
+  return mix(u.horizon[i].rgb, u.horizon[(i + 1) & 7].rgb, fract(f));
 }
 
 // What the camera sees where no geometry is: the sky at its painted colours, shown as-is,
@@ -1067,9 +1081,9 @@ void main() {
 
   Hit hit;
   if (!trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_ALL, seed, hit)) {
-    // A ray heading downward never reaches real sky; it ran out of render distance, so it
-    // shows the colour the fade at that distance meets.
-    vec3 background = dir.y > 0.02 ? u.fog.rgb : skyBackground(dir);
+    // A ray heading downward ran out of loaded scene. The sky carries on below the horizon for
+    // a while, then gives way to the fog colour of that direction, as the distance fade does.
+    vec3 background = dir.y > 0.02 ? mix(skyBackground(dir), horizonAt(dir), smoothstep(0.15, 0.6, dir.y)) : skyBackground(dir);
     if ((flags & FLAG_STILL) != 0u) {
       // Held frames accumulate the sky like everything else, so it is stored as the radiance
       // the final tone curve maps back to its painted colour.
