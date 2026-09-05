@@ -1133,8 +1133,12 @@ void main() {
   if ((flags & FLAG_THIN_LENS) != 0u && u.path.y > 0.0) {
     // Thin lens: the ray leaves a random point on the aperture and passes through the point
     // where the pinhole ray meets the plane of focus, so depths out of focus blur for real.
-    vec3 focal = camPos + vec3(dot(row0, viewDir), dot(row1, viewDir), dot(row2, viewDir)) * max(u.path.z, 1.0);
-    float radius = sqrt(rand(seed)) * u.path.y;
+    // The lens is capped so the blur of distant things stays near what the live gather showed:
+    // about a hundredth of the frame's width at infinity, whatever the resolution.
+    float focus = max(u.path.z, 1.0);
+    float aperture = min(u.path.y, 0.01 * float(w) * focus / zoom);
+    vec3 focal = camPos + vec3(dot(row0, viewDir), dot(row1, viewDir), dot(row2, viewDir)) * focus;
+    float radius = sqrt(rand(seed)) * aperture;
     float angle = 6.2831853 * rand(seed);
     vec3 lens = vec3(cos(angle), sin(angle), 0.0) * radius;
     origin = camPos + vec3(dot(row0, lens), dot(row1, lens), dot(row2, lens));

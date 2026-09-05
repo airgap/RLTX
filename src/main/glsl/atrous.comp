@@ -1015,12 +1015,17 @@ void main() {
   variance /= max(varianceWeight, 1e-4);
   float lumDenom = u.denoise.x * sqrt(max(variance, 0.0)) + 1e-4;
 
+  // A held frame that has gathered enough samples is its own average. Its remaining variance is
+  // the spread of what the lens and pixel jitter saw, not noise, and filtering on it would only
+  // smear texture and bokeh the samples already resolved, so the filter stands down.
+  bool converged = (u.misc.y & 1048576u) != 0u && imageLoad(currColor, p).a >= 24.0;
+  int reach = converged ? 0 : 2;
   float centerKernel = KERNEL[2] * KERNEL[2];
   vec3 sum = center.rgb * centerKernel;
   float sumVariance = center.a * centerKernel * centerKernel;
   float sumWeight = centerKernel;
-  for (int dy = -2; dy <= 2; ++dy) {
-    for (int dx = -2; dx <= 2; ++dx) {
+  for (int dy = -reach; dy <= reach; ++dy) {
+    for (int dx = -reach; dx <= reach; ++dx) {
       if (dx == 0 && dy == 0) {
         continue;
       }
