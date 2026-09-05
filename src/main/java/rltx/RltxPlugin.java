@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Random;
@@ -815,6 +816,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float dirZ = (float) Math.cos(to);
 		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
 		int budget = SWAY_FACE_BUDGET;
+		int walkers = config.footprints() ? collectWalkers() : 0;
 		for (int i = 0; i < built.zones.length; ++i)
 		{
 			StaticScene.Zone zone = built.zones[i];
@@ -843,6 +845,16 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				swayScratch = new float[faces * 9];
 			}
+			// Only walkers in or beside this zone can be brushing its plants.
+			int near = 0;
+			for (int a = 0; a < walkers; ++a)
+			{
+				if (Math.abs(walkerPos[a * 3] - centreX) < 4.5f * Perspective.LOCAL_TILE_SIZE && Math.abs(walkerPos[a * 3 + 2] - centreZ) < 4.5f * Perspective.LOCAL_TILE_SIZE)
+				{
+					System.arraycopy(walkerPos, a * 3, nearPos, near * 3, 3);
+					++near;
+				}
+			}
 			int start = dynamic.faces();
 			for (int f = 0; f < faces; ++f)
 			{
@@ -852,6 +864,20 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				float gust = amplitude * ((float) Math.sin(t * 1.1 + px * 0.006 + pz * 0.004) + 0.5f * (float) Math.sin(t * 2.3 + pz * 0.011));
 				float ox = gust * (0.6f * dirX + 0.4f * (float) Math.sin(t * 0.7 + px * 0.01));
 				float oz = gust * (0.6f * dirZ + 0.4f * (float) Math.cos(t * 0.9 + pz * 0.008));
+				// Low plants lean away from anyone standing in them; trees are above the reach.
+				for (int a = 0; a < near; ++a)
+				{
+					float ax = px - nearPos[a * 3];
+					float az = pz - nearPos[a * 3 + 2];
+					float d2 = ax * ax + az * az;
+					if (d2 < BRUSH_RADIUS * BRUSH_RADIUS && d2 > 1f && nearPos[a * 3 + 1] - pos[o + 1] < 90f)
+					{
+						float d = (float) Math.sqrt(d2);
+						float push = (1f - d / BRUSH_RADIUS) * 36f / d;
+						ox += ax * push;
+						oz += az * push;
+					}
+				}
 				for (int v = 0; v < 3; ++v)
 				{
 					float w = weights[f * 3 + v];
@@ -867,6 +893,45 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			dynamic.setPreviousPositions(start, swayScratch, faces);
 		}
 		renderer.setSwayedZones(WorldView.TOPLEVEL, top.swayed);
+	}
+
+	// Where everyone is standing, for the plants they brush: x, ground height and z each.
+	private static final float BRUSH_RADIUS = 80f;
+	private static final int MAX_WALKERS = 96;
+	private final float[] walkerPos = new float[MAX_WALKERS * 3];
+	private final float[] nearPos = new float[MAX_WALKERS * 3];
+
+	private int collectWalkers()
+	{
+		WorldView wv = client.getTopLevelWorldView();
+		if (wv == null)
+		{
+			return 0;
+		}
+		int plane = client.getPlane();
+		int n = 0;
+		for (Player player : wv.players())
+		{
+			n = walker(player, plane, n);
+		}
+		for (NPC npc : wv.npcs())
+		{
+			n = walker(npc, plane, n);
+		}
+		return n;
+	}
+
+	private int walker(Actor actor, int plane, int n)
+	{
+		LocalPoint lp = actor.getLocalLocation();
+		if (n >= MAX_WALKERS || lp == null || actor.getWorldLocation().getPlane() != plane)
+		{
+			return n;
+		}
+		walkerPos[n * 3] = lp.getX();
+		walkerPos[n * 3 + 1] = Perspective.getTileHeight(client, lp, plane);
+		walkerPos[n * 3 + 2] = lp.getY();
+		return n + 1;
 	}
 
 	// The Shortest Path plugin's route, refreshed each game tick and drawn as a ribbon of light in
@@ -886,6 +951,24 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		else
 		{
 			route = null;
+		}
+		// Actors gone from the world drop out of the footprint tracking.
+		if (!lastStep.isEmpty())
+		{
+			WorldView view = client.getTopLevelWorldView();
+			Set<Actor> present = new HashSet<>();
+			if (view != null)
+			{
+				for (Player player : view.players())
+				{
+					present.add(player);
+				}
+				for (NPC npc : view.npcs())
+				{
+					present.add(npc);
+				}
+			}
+			lastStep.keySet().retainAll(present);
 		}
 		// The date moving the season along recolours the static scene.
 		Palette current = palette;
@@ -1098,6 +1181,77 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.guideR = (float) Math.pow(colour.getRed() / 255.0, 2.2) * strength;
 		frame.guideG = (float) Math.pow(colour.getGreen() / 255.0, 2.2) * strength;
 		frame.guideB = (float) Math.pow(colour.getBlue() / 255.0, 2.2) * strength;
+	}
+
+	// Footprints: the last steps of everyone in view, alternating feet, kept in a ring.
+	private final float[] printPacked = new float[RtRenderer.MAX_PRINTS * 8];
+	private int printCount, printNext;
+	private final Map<Actor, float[]> lastStep = new HashMap<>();
+
+	private void trackFootprints()
+	{
+		WorldView wv = client.getTopLevelWorldView();
+		if (!config.footprints() || wv == null)
+		{
+			printCount = 0;
+			printNext = 0;
+			lastStep.clear();
+			frame.printCount = 0;
+			return;
+		}
+		int plane = client.getPlane();
+		for (Player player : wv.players())
+		{
+			step(player, plane);
+		}
+		for (NPC npc : wv.npcs())
+		{
+			step(npc, plane);
+		}
+		renderer.setPrints(printPacked, printCount * 8);
+		frame.printCount = printCount;
+		frame.footprintStrength = 1f;
+	}
+
+	// A print lands each time an actor has moved about a third of a tile, a little to one side of
+	// its path, the side alternating.
+	private void step(Actor actor, int plane)
+	{
+		LocalPoint lp = actor.getLocalLocation();
+		if (lp == null || actor.getWorldLocation().getPlane() != plane)
+		{
+			return;
+		}
+		float[] last = lastStep.get(actor);
+		if (last == null)
+		{
+			lastStep.put(actor, new float[]{lp.getX(), lp.getY(), 0f});
+			return;
+		}
+		float dx = lp.getX() - last[0];
+		float dz = lp.getY() - last[1];
+		float d2 = dx * dx + dz * dz;
+		if (d2 < 48f * 48f)
+		{
+			return;
+		}
+		float len = (float) Math.sqrt(d2);
+		float hx = dx / len, hz = dz / len;
+		float side = last[2] <= 0f ? 1f : -1f;
+		int o = printNext * 8;
+		printPacked[o] = lp.getX() - hz * side * 9f;
+		printPacked[o + 1] = Perspective.getTileHeight(client, lp, plane);
+		printPacked[o + 2] = lp.getY() + hx * side * 9f;
+		printPacked[o + 3] = frame.timeSeconds;
+		printPacked[o + 4] = hx;
+		printPacked[o + 5] = hz;
+		printPacked[o + 6] = side;
+		printPacked[o + 7] = 0f;
+		printNext = (printNext + 1) % RtRenderer.MAX_PRINTS;
+		printCount = Math.min(printCount + 1, RtRenderer.MAX_PRINTS);
+		last[0] = lp.getX();
+		last[1] = lp.getY();
+		last[2] = side;
 	}
 
 	// Smoke sources: the fires drawn this frame, joined by the scene's chimneys at upload.
@@ -2237,6 +2391,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		fillGuide();
 		fillMarkers();
 		fillPlumes();
+		trackFootprints();
 		fillRunoff();
 		if (cinemaFrame >= 0)
 		{

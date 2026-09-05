@@ -45,6 +45,11 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 marks;      // ground marker count, marker glow scale, NPC rim glow scale
   vec4 highlight[16];
   vec4 season;     // season 0 none to 4 winter, progress, falling leaves, blossom petals
+  vec4 star0;
+  vec4 star1;
+  vec4 star2;
+  vec4 night;
+  vec4 ground;     // footprint count, footprint strength, water surface height over the camera, latitude
 } u;
 layout(push_constant) uniform Push {
   int pass;
@@ -66,6 +71,7 @@ layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } local
 layout(std430, set = 0, binding = 38) readonly buffer Guide { vec4 v[]; } guidePath;
 layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plumes;
 layout(std430, set = 0, binding = 40) readonly buffer Markers { vec4 v[]; } markers;
+layout(std430, set = 0, binding = 43) readonly buffer Prints { vec4 v[]; } prints;
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
@@ -216,6 +222,28 @@ vec3 splashes(vec3 c, vec3 p, vec3 n, float depth) {
   float ring = 1.0 - smoothstep(0.0, 1.2, abs(d - radius));
   float fade = 1.0 - since / 0.25;
   return c + vec3(0.12) * ring * fade * fade * near;
+}
+
+// Rings spreading from fresh footsteps on wet ground, gone within a second and a half.
+vec3 footRipples(vec3 c, vec3 p, vec3 n, float depth) {
+  int count = int(u.ground.x);
+  if (count <= 0 || u.weather2.x < 0.3 || -n.y < 0.6 || depth > 1600.0) {
+    return c;
+  }
+  float t = u.weather3.x;
+  for (int i = 0; i < count; ++i) {
+    vec4 a = prints.v[i * 2];
+    float age = t - a.w;
+    if (age < 0.0 || age > 1.5 || abs(p.y - a.y) > 40.0) {
+      continue;
+    }
+    float dist = length(p.xz - a.xz);
+    float radius = 6.0 + age * 45.0;
+    float ring = 1.0 - smoothstep(0.0, 3.0, abs(dist - radius));
+    float fade = 1.0 - age / 1.5;
+    c += vec3(0.1) * ring * fade * fade;
+  }
+  return c;
 }
 
 // Falling rain and snow traced through world-anchored three-dimensional grids. Each view ray
@@ -952,6 +980,7 @@ void main() {
       c = mix(c, u.fog.rgb, fade * fade * (3.0 - 2.0 * fade));
     }
     c = splashes(c, imageLoad(currPos, p).xyz, imageLoad(normalImage, p).xyz, depth);
+    c = footRipples(c, imageLoad(currPos, p).xyz, imageLoad(normalImage, p).xyz, depth);
     c = ambientLife(c, p, cameraRay(p), depth);
     c = smokePlumes(c, p, cameraRay(p), depth);
     c = swampMist(c, p, cameraRay(p), depth);

@@ -48,10 +48,12 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 star1;
   vec4 star2;
   vec4 night;    // direction to the sun while the moon lights the scene, moon illuminated fraction
+  vec4 ground;   // footprint count, footprint strength, water surface height over the camera, latitude
 } u;
 layout(set = 0, binding = 12) uniform sampler2D skybox;
 layout(set = 0, binding = 41) uniform sampler2D starMap;
 layout(set = 0, binding = 42) uniform sampler2D skyLut;
+layout(std430, set = 0, binding = 43) readonly buffer Prints { vec4 v[]; } prints;
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
 // resolve and denoise passes need; the albedo is multiplied back in at the very end.
 layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D currPos;
@@ -570,6 +572,37 @@ vec4 runoffAt(vec2 xz) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// Footprints pressed into snow and wet ground: each an oval turned along the step, darkening the
+// ground and tilting the normal into a shallow hollow, fading as the minutes pass.
+void footprint(inout Hit hit, float snow) {
+  int count = int(u.ground.x);
+  float t = u.weather3.x;
+  float life = snow > 0.05 ? 300.0 : 60.0;
+  for (int i = 0; i < count; ++i) {
+    vec4 a = prints.v[i * 2];
+    vec2 d = hit.surface.xz - a.xz;
+    if (abs(d.x) > 20.0 || abs(d.y) > 20.0 || abs(hit.surface.y - a.y) > 40.0) {
+      continue;
+    }
+    float age = t - a.w;
+    if (age < 0.0 || age > life) {
+      continue;
+    }
+    vec2 heading = prints.v[i * 2 + 1].xy;
+    vec2 local = vec2(dot(d, heading), dot(d, vec2(-heading.y, heading.x)));
+    // A foot: longer along the step than across, a little wider at the toe.
+    vec2 radii = vec2(13.0, 6.5 + 1.5 * smoothstep(-10.0, 10.0, local.x));
+    float r = length(local / radii);
+    if (r > 1.2) {
+      continue;
+    }
+    float press = (1.0 - smoothstep(0.7, 1.2, r)) * (1.0 - age / life) * u.ground.y;
+    vec2 lean = -normalize(d + 1e-4) * smoothstep(0.2, 1.0, r) * (1.0 - smoothstep(0.9, 1.2, r));
+    hit.n = normalize(hit.n + vec3(lean.x, 0.0, lean.y) * (0.6 * press));
+    hit.albedo *= 1.0 - (snow > 0.05 ? 0.25 : 0.35) * press;
+  }
+}
+
 // Sunlight reaching a point under the cloud layer, 1 in the open.
 float cloudShadow(vec3 p) {
   if ((u.misc.y & FLAG_CLOUD_SHADOWS) == 0u || u.weather.x <= 0.0 || u.sun.y >= 0.0) {
@@ -1008,6 +1041,9 @@ void main() {
       }
       hit.n = normalize(hit.n + vec3(-ripple.x, 0.0, -ripple.y) * 0.75);
       puddleNormal = normalize(hit.gn + vec3(-ripple.x, 0.0, -ripple.y));
+    }
+    if (u.ground.x > 0.0 && (u.weather2.y > 0.05 || wetness > 0.2)) {
+      footprint(hit, u.weather2.y);
     }
   }
   // Radiance that does not scale with the albedo: highlights, reflections and glow.

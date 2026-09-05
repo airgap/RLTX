@@ -165,7 +165,8 @@ public final class RtRenderer
 	private static final int BINDING_MARKERS = 40;
 	private static final int BINDING_STARS = 41;
 	private static final int BINDING_SKY_LUT = 42;
-	private static final int BINDING_COUNT = 43;
+	private static final int BINDING_PRINTS = 43;
+	private static final int BINDING_COUNT = 44;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -175,6 +176,8 @@ public final class RtRenderer
 	public static final int MAX_PLUMES = 32;
 	/** Ground marker tiles uploaded per frame after the bounding box, four floats each. */
 	public static final int MAX_MARKERS = 256;
+	/** Footprints kept, eight floats each. */
+	public static final int MAX_PRINTS = 256;
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -320,6 +323,7 @@ public final class RtRenderer
 	private VkBuf guide;
 	private VkBuf plumes;
 	private VkBuf markers;
+	private VkBuf prints;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -385,6 +389,8 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		markers = ctx.createBuffer((long) (MAX_MARKERS + 1) * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		prints = ctx.createBuffer((long) MAX_PRINTS * 8 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -400,6 +406,7 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_GUIDE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, guide);
 			writeBufferDescriptor(set, BINDING_PLUMES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, plumes);
 			writeBufferDescriptor(set, BINDING_MARKERS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, markers);
+			writeBufferDescriptor(set, BINDING_PRINTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, prints);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
@@ -614,6 +621,7 @@ public final class RtRenderer
 			types[BINDING_GUIDE] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_PLUMES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_MARKERS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_PRINTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STARS] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_SKY_LUT] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
@@ -630,7 +638,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(40);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(48);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -1267,6 +1275,12 @@ public final class RtRenderer
 	public void setPlumes(float[] packed, int floats)
 	{
 		plumes.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PLUMES * 4));
+	}
+
+	/** Footprints for the coming frame: position and time, then heading, side and a spare, per print. Written between beginFrame and submit. */
+	public void setPrints(float[] packed, int floats)
+	{
+		prints.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PRINTS * 8));
 	}
 
 	/** Ground marker tiles for the coming frame: a bounding box, then tile centres with the colour's bits in w. Written between beginFrame and submit. */
@@ -2174,6 +2188,7 @@ public final class RtRenderer
 		b.putFloat(s[3]).putFloat(s[4]).putFloat(s[5]).putFloat(0f);
 		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(0f);
 		b.putFloat(p.moonSunX).putFloat(p.moonSunY).putFloat(p.moonSunZ).putFloat(p.moonFraction);
+		b.putFloat(p.printCount).putFloat(p.footprintStrength).putFloat(p.waterSurfaceY).putFloat(p.latitude);
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)
@@ -2219,6 +2234,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(guide);
 		ctx.destroyBuffer(plumes);
 		ctx.destroyBuffer(markers);
+		ctx.destroyBuffer(prints);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
 		ctx.destroyBuffer(runoff);

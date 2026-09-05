@@ -107,6 +107,9 @@ public final class FrameParams
 	public float starBrightness;
 	/** Direction to the sun while the moon lights the scene, and the moon's illuminated fraction. */
 	public float moonSunX, moonSunY, moonSunZ, moonFraction;
+	/** Footprints uploaded and how strongly they mark the ground; the water surface the camera is under; the observer's latitude. */
+	public int printCount;
+	public float footprintStrength, waterSurfaceY, latitude;
 	/** Rim glow scale for highlighted NPCs, 0 disables, and the palette of highlight colours their faces index, linear RGB. */
 	public float rimStrength;
 	public final float[] highlightColours = new float[16 * 4];

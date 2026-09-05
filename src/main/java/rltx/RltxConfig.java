@@ -1582,4 +1582,16 @@ public interface RltxConfig extends Config
 	{
 		return 100;
 	}
+
+	@ConfigItem(
+		keyName = "footprints",
+		name = "Footprints",
+		description = "Footprints pressed into snow and wet ground behind everyone who walks, fading over minutes, rings spreading from each step through puddles, and low plants leaning away from anyone standing in them.",
+		section = surfacesSection,
+		position = 40
+	)
+	default boolean footprints()
+	{
+		return true;
+	}
 }
