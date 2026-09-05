@@ -141,4 +141,8 @@ public final class FrameParams
 	/** Display-space colour of the route glow, and how many route entries were uploaded; 0 draws none. */
 	public float guideR, guideG, guideB;
 	public int guideCount;
+	/** How the route shows, 0 ribbon, 1 trail, 2 wisps, 3 both; and how many wisps follow the route entries. */
+	public int guideStyle, guideWisps;
+	/** Texture layer of bare earth, for the trail the route wears into the ground. */
+	public int dirtLayer;
 }

@@ -175,8 +175,9 @@ public final class RtRenderer
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
-	/** Route entries uploaded per frame after the bounding box, four floats each. */
+	/** Route entries uploaded per frame after the bounding box, four floats each, and the wisps that may follow them. */
 	public static final int MAX_GUIDE_POINTS = 256;
+	public static final int MAX_WISPS = 16;
 	/** Smoke plumes marched per frame, four floats each. */
 	public static final int MAX_PLUMES = 32;
 	/** Ground marker tiles uploaded per frame after the bounding box, four floats each. */
@@ -391,7 +392,7 @@ public final class RtRenderer
 		exposureReadback.mapped.asFloatBuffer().put(0, Float.NaN);
 		lights = ctx.createBuffer((long) MAX_LIGHTS * 8 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		guide = ctx.createBuffer((long) (MAX_GUIDE_POINTS + 1) * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		guide = ctx.createBuffer((long) (MAX_GUIDE_POINTS + 1 + MAX_WISPS) * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		plumes = ctx.createBuffer((long) MAX_PLUMES * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -1285,7 +1286,7 @@ public final class RtRenderer
 	 */
 	public void setGuide(float[] packed, int floats)
 	{
-		guide.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, (MAX_GUIDE_POINTS + 1) * 4));
+		guide.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, (MAX_GUIDE_POINTS + 1 + MAX_WISPS) * 4));
 	}
 
 	/** Smoke sources for the coming frame, nearest first: x, y, z and strength each. Written between beginFrame and submit. */
@@ -2317,7 +2318,8 @@ public final class RtRenderer
 		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(p.sunDiscRadius).putFloat(p.rainLength);
 		b.putFloat(p.skyAmbientR).putFloat(p.skyAmbientG).putFloat(p.skyAmbientB).putFloat(p.rainSpeed);
 		b.putFloat(p.eyeX).putFloat(p.eyeY).putFloat(p.eyeZ).putFloat(p.unseenDarkness);
-		b.putFloat(p.guideR).putFloat(p.guideG).putFloat(p.guideB).putFloat(p.guideCount);
+		// Count, wisp count and style share one float: 10, 6 and 2 bits, exact in a float.
+		b.putFloat(p.guideR).putFloat(p.guideG).putFloat(p.guideB).putFloat(p.guideCount | p.guideWisps << 10 | p.guideStyle << 16);
 		b.putFloat(p.markerCount).putFloat(p.markerStrength).putFloat(p.rimStrength).putFloat(p.lensFlare);
 		for (float c : p.highlightColours)
 		{
@@ -2329,7 +2331,7 @@ public final class RtRenderer
 		b.putFloat(s[3]).putFloat(s[4]).putFloat(s[5]).putFloat(p.auroraWeight);
 		b.putFloat(s[6]).putFloat(s[7]).putFloat(s[8]).putFloat(p.treeCount);
 		b.putFloat(p.moonSunX).putFloat(p.moonSunY).putFloat(p.moonSunZ).putFloat(p.moonFraction);
-		b.putFloat(p.printCount).putFloat(p.footprintStrength).putFloat(p.waterSurfaceY).putFloat(p.latitude);
+		b.putFloat(p.printCount).putFloat(p.footprintStrength).putFloat(p.waterSurfaceY).putFloat(p.dirtLayer);
 		for (float c : p.fogRing)
 		{
 			b.putFloat(c);

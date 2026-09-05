@@ -701,13 +701,39 @@ vec3 fliers(vec3 c, vec3 dir, float tMax, float zoom, float t, float day, float 
   return c;
 }
 
+// Wisps: a few motes of the route's light drifting along it toward the destination, hovering
+// above the ground, bobbing and breathing, each with a soft halo, hidden by what stands before.
+vec3 wisps(vec3 c, vec3 dir, float tMax, float zoom, float t) {
+  int packed = int(u.guide.w);
+  int count = packed & 1023;
+  int n = (packed >> 10) & 63;
+  int style = packed >> 16;
+  if (n == 0 || style < 2) {
+    return c;
+  }
+  vec3 o = u.cam.xyz;
+  for (int k = 0; k < n; ++k) {
+    vec4 w = guidePath.v[count + 1 + k];
+    vec3 q = w.xyz + vec3(6.0 * sin(t * 1.3 + w.w), -36.0 - 10.0 * sin(t * 1.9 + w.w * 2.1), 6.0 * cos(t * 1.1 + w.w * 1.7));
+    float tQ = dot(q - o, dir);
+    if (tQ < 30.0 || tQ > tMax) {
+      continue;
+    }
+    float dist = length(cross(q - o, dir));
+    float pixel = tQ / zoom;
+    float core = 1.0 - smoothstep(0.8 * pixel, 2.2 * pixel, dist);
+    float halo = exp(-dist / (6.0 * pixel));
+    float breath = 0.7 + 0.3 * sin(t * 3.0 + w.w * 2.7);
+    c += u.guide.rgb * (0.5 * (0.8 * core + 0.25 * halo) * breath);
+  }
+  return c;
+}
+
 vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
   bool fireflies = (u.misc.y & 262144u) != 0u && u.weather3.z >= 2.0;
   bool dust = (u.misc.y & 524288u) != 0u && u.sun.w > 0.0;
-  if (!fireflies && !dust) {
-    return c;
-  }
   float t = u.weather3.x;
+  c = wisps(c, dir, depth > 0.0 ? depth : 1.0e9, u.cam.w, t);
   float tMax = min(depth > 0.0 ? depth : DRIFT_RANGE, DRIFT_RANGE);
   // Fireflies keep to dry nights; motes need daylight to be seen at all.
   float night = (1.0 - smoothstep(-0.08, 0.03, u.post2.w)) * (1.0 - u.weather.z);
@@ -872,9 +898,11 @@ void writeOutput(ivec2 p, vec3 c) {
 // it toward the destination. Entry 0 is the route's bounding box in x and z; the rest are tile
 // centres with their distance along the route in w, and a negative w marks a break in the route.
 vec3 pathGlow(vec3 pos, vec3 n) {
-  int count = int(u.guide.w);
+  int packed = int(u.guide.w);
+  int count = packed & 1023;
+  int style = packed >> 16;
   float up = max(-n.y, 0.0);
-  if (count < 2 || up <= 0.0) {
+  if (count < 2 || up <= 0.0 || style != 0) {
     return vec3(0.0);
   }
   vec4 box = guidePath.v[0];

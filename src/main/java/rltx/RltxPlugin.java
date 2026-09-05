@@ -1084,7 +1084,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// the composite pass instead of the plugin's own tile outlines.
 	private ShortestPath shortestPath;
 	private WorldPoint[] route;
-	private final float[] guidePacked = new float[(RtRenderer.MAX_GUIDE_POINTS + 1) * 4];
+	private final float[] guidePacked = new float[(RtRenderer.MAX_GUIDE_POINTS + 1 + RtRenderer.MAX_WISPS) * 4];
 
 	@Subscribe
 	public void onGameTick(GameTick event)
@@ -1193,6 +1193,41 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setMarkers(markerPacked, (n + 1) * 4);
 		frame.markerCount = n;
 		frame.markerStrength = 1.5f * config.markerGlowStrength() / 100f;
+	}
+
+	// Wisps drift along the route at a walking pace, evenly spaced, each placed by walking the
+	// packed polyline to its distance along; entries follow the route points in the same buffer.
+	private int placeWisps(int points, float length)
+	{
+		if (length <= 0f)
+		{
+			return 0;
+		}
+		int wisps = Math.max(1, Math.min(RtRenderer.MAX_WISPS, (int) (length / 384f)));
+		float spacing = length / wisps;
+		float travelled = frame.timeSeconds * 220f;
+		for (int k = 0; k < wisps; ++k)
+		{
+			float target = (travelled + k * spacing) % length;
+			int o = (points + 1 + k) * 4;
+			guidePacked[o + 3] = k;
+			for (int i = 1; i < points; ++i)
+			{
+				int a = (i) * 4;
+				int b = (i + 1) * 4;
+				if (guidePacked[a + 3] < 0f || guidePacked[b + 3] < 0f || guidePacked[b + 3] < target)
+				{
+					continue;
+				}
+				float span = guidePacked[b + 3] - guidePacked[a + 3];
+				float t = span > 0f ? Math.max(0f, Math.min(1f, (target - guidePacked[a + 3]) / span)) : 0f;
+				guidePacked[o] = guidePacked[a] + (guidePacked[b] - guidePacked[a]) * t;
+				guidePacked[o + 1] = guidePacked[a + 1] + (guidePacked[b + 1] - guidePacked[a + 1]) * t;
+				guidePacked[o + 2] = guidePacked[a + 2] + (guidePacked[b + 2] - guidePacked[a + 2]) * t;
+				break;
+			}
+		}
+		return wisps;
 	}
 
 	// Which highlight colour each NPC wears this frame, as an index into the frame's palette; the
@@ -1320,8 +1355,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		guidePacked[1] = minZ;
 		guidePacked[2] = maxX;
 		guidePacked[3] = maxZ;
-		renderer.setGuide(guidePacked, (n + 1) * 4);
+		RltxConfig.PathStyle style = config.pathStyle();
+		int wisps = style == RltxConfig.PathStyle.WISPS || style == RltxConfig.PathStyle.TRAIL_WISPS ? placeWisps(n, along) : 0;
+		renderer.setGuide(guidePacked, (n + 1 + wisps) * 4);
 		frame.guideCount = n;
+		frame.guideStyle = style.ordinal();
+		frame.guideWisps = wisps;
+		frame.dirtLayer = GroundTextures.Kind.DIRT.layer();
 		Color colour = config.pathGlowColour();
 		float strength = 2f * config.pathGlowStrength() / 100f;
 		frame.guideR = (float) Math.pow(colour.getRed() / 255.0, 2.2) * strength;

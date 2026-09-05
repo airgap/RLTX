@@ -1272,6 +1272,27 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	enum PathStyle
+	{
+		RIBBON("Glowing ribbon"),
+		TRAIL("Worn trail"),
+		WISPS("Wisps"),
+		TRAIL_WISPS("Worn trail and wisps");
+
+		private final String label;
+
+		PathStyle(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
 	enum AuroraMode
 	{
 		OFF("Off"),
@@ -1647,11 +1668,23 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "pathGlowColour",
-		name = "Route glow colour",
-		description = "Colour of the Shortest Path route glow",
+		keyName = "pathStyle",
+		name = "Route style",
+		description = "How the Shortest Path route shows: a ribbon of light with pulses running along it; a trail worn into the ground, turf giving way to bare earth; wisps of light drifting along it toward the destination; or the trail with wisps.",
 		section = pluginsSection,
 		position = 1
+	)
+	default PathStyle pathStyle()
+	{
+		return PathStyle.TRAIL_WISPS;
+	}
+
+	@ConfigItem(
+		keyName = "pathGlowColour",
+		name = "Route glow colour",
+		description = "Colour of the Shortest Path ribbon and wisps",
+		section = pluginsSection,
+		position = 2
 	)
 	default Color pathGlowColour()
 	{
@@ -1663,9 +1696,9 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "pathGlowStrength",
 		name = "Route glow strength",
-		description = "Brightness of the Shortest Path route glow",
+		description = "Brightness of the Shortest Path ribbon and wisps",
 		section = pluginsSection,
-		position = 2
+		position = 3
 	)
 	default int pathGlowStrength()
 	{
@@ -1677,7 +1710,7 @@ public interface RltxConfig extends Config
 		name = "Ground marker glow",
 		description = "Draws Ground Markers' tiles as pools of their colour lying on the ground, in place of the plugin's outlines.",
 		section = pluginsSection,
-		position = 3
+		position = 4
 	)
 	default boolean markerGlow()
 	{
@@ -1691,7 +1724,7 @@ public interface RltxConfig extends Config
 		name = "Marker glow strength",
 		description = "Brightness of the ground marker pools",
 		section = pluginsSection,
-		position = 4
+		position = 5
 	)
 	default int markerGlowStrength()
 	{
@@ -1705,7 +1738,7 @@ public interface RltxConfig extends Config
 		name = "NPC highlight rim",
 		description = "Gives NPCs highlighted by NPC Indicators, Slayer and other plugins a rim of light in their highlight colour. Those plugins' own hull, tile and outline drawing stays under their settings; 0 turns the rim off.",
 		section = pluginsSection,
-		position = 5
+		position = 6
 	)
 	default int npcGlow()
 	{
