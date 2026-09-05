@@ -1563,7 +1563,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "seasonMode",
 		name = "Season",
-		description = "Leaves turn and fall through autumn, trees stand bare in winter and blossom in spring, by the real date for your hemisphere or a season of your choosing.",
+		description = "Leaves turn and fall through autumn, trees stand bare in winter and blossom in spring, with the ground and a chosen weather preset following suit, by the real date for your hemisphere or a season of your choosing.",
 		section = weatherSection,
 		position = 43
 	)

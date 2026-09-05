@@ -62,6 +62,37 @@ public final class WeatherState
 	}
 
 	/**
+	 * A preset given the season's character: autumn is windier and greyer with mist late on,
+	 * winter turns rain to snow under a heavier sky, spring is a touch cloudier. Real weather is
+	 * left as reported. Seasons run 1 spring to 4 winter; 0 leaves the preset alone.
+	 */
+	public WeatherState seasonal(int season, float progress)
+	{
+		WeatherState s = new WeatherState(cloud, fog, rain, snow, wind, storm);
+		s.windFromDegrees = windFromDegrees;
+		switch (season)
+		{
+			case 1:
+				s.cloud = Math.min(1f, cloud + 0.1f);
+				break;
+			case 3:
+				s.wind = Math.min(1f, wind + 0.15f + 0.2f * progress);
+				s.cloud = Math.min(1f, cloud + 0.15f);
+				s.fog = Math.min(1f, fog + 0.12f * progress);
+				break;
+			case 4:
+				s.snow = Math.max(snow, rain);
+				s.rain = 0f;
+				s.cloud = Math.min(1f, cloud + 0.1f);
+				s.fog = Math.min(1f, fog + 0.05f);
+				break;
+			default:
+				break;
+		}
+		return s;
+	}
+
+	/**
 	 * Conditions from an Open-Meteo current-weather report: a WMO weather code sets the kind
 	 * of weather, and the measured amounts refine its strength.
 	 *

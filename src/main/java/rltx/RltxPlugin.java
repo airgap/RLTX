@@ -2711,7 +2711,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				}
 				break;
 			case MANUAL:
-				weatherTarget = WeatherState.preset(config.weatherPreset());
+				weatherTarget = WeatherState.preset(config.weatherPreset()).seasonal(seasonKind(), seasonProgress());
 				break;
 			default:
 				weatherTarget = NO_WEATHER;
@@ -2764,8 +2764,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			: auroraMode == RltxConfig.AuroraMode.REAL ? smoothstep(50f, 65f, (float) Math.abs(latitude())) : 0f;
 		frame.season = seasonKind();
 		frame.seasonProgress = seasonProgress();
-		// Leaves fall from early autumn, most thickly late; petals drift around the middle of spring.
-		frame.leafFall = frame.season == 3 ? 0.3f + 0.7f * frame.seasonProgress : frame.season == 4 ? 0.3f * (1f - Math.min(frame.seasonProgress * 4f, 1f)) : 0f;
+		// Leaves fall only in autumn, once the trees have begun to turn, most thickly late; petals
+		// drift around the middle of spring.
+		frame.leafFall = frame.season == 3 ? Math.max(0f, Math.min(1f, (frame.seasonProgress - 0.2f) / 0.5f)) : 0f;
 		frame.petals = frame.season == 1 ? Math.max(0f, 1f - Math.abs(frame.seasonProgress - 0.45f) * 2.5f) : 0f;
 		frame.lightShafts = config.lightShafts() / 100f;
 		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);

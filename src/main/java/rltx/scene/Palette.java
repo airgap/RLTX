@@ -71,7 +71,7 @@ public final class Palette
 		{
 			case 3:
 			{
-				float turn = Math.max(0f, Math.min(1f, (p * 1.5f - 0.5f * r) * (foliage ? 1f : 0.4f)));
+				float turn = Math.max(0f, Math.min(1f, (p * 1.5f - 0.5f * r) * (foliage ? 1f : 0.7f)));
 				if (foliage && p > 0.7f && r < (p - 0.7f) / 0.3f * 0.6f)
 				{
 					return -1;
