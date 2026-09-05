@@ -123,6 +123,7 @@ public final class RtRenderer
 	private static final int FLAG_UNDERWATER = 33554432;
 	private static final int FLAG_SHIMMER = 67108864;
 	private static final int FLAG_RAINBOWS = 134217728;
+	private static final int FLAG_PEAKING = 268435456;
 	private static final int FLAG_SKYBOX = 32;
 
 	private static final int BINDING_TLAS = 0;
@@ -1528,6 +1529,100 @@ public final class RtRenderer
 		}
 	}
 
+	public int outputWidth()
+	{
+		return outputWidth;
+	}
+
+	public int outputHeight()
+	{
+		return outputHeight;
+	}
+
+	/** The hit distance the last finished frame found at a pixel, or a negative value for sky. Waits for the GPU. */
+	public float readbackDepth(int x, int y)
+	{
+		if (output == null || x < 0 || y < 0 || x >= outputWidth || y >= outputHeight)
+		{
+			return -1f;
+		}
+		ByteBuffer pixel = readbackImage(historyPos[parity], x, y, 1, 1, 16);
+		try
+		{
+			return pixel.getFloat(12);
+		}
+		finally
+		{
+			MemoryUtil.memFree(pixel);
+		}
+	}
+
+	/** The last finished frame's accumulated colour, linear RGB floats row by row. Waits for the GPU. */
+	public float[] readbackColor()
+	{
+		ByteBuffer halves = readbackImage(historyColor[parity], 0, 0, outputWidth, outputHeight, 8);
+		try
+		{
+			float[] rgb = new float[outputWidth * outputHeight * 3];
+			for (int i = 0; i < outputWidth * outputHeight; ++i)
+			{
+				rgb[i * 3] = halfToFloat(halves.getShort(i * 8));
+				rgb[i * 3 + 1] = halfToFloat(halves.getShort(i * 8 + 2));
+				rgb[i * 3 + 2] = halfToFloat(halves.getShort(i * 8 + 4));
+			}
+			return rgb;
+		}
+		finally
+		{
+			MemoryUtil.memFree(halves);
+		}
+	}
+
+	private static float halfToFloat(short h)
+	{
+		int sign = (h >> 15) & 1;
+		int exponent = (h >> 10) & 0x1f;
+		int mantissa = h & 0x3ff;
+		float value;
+		if (exponent == 0)
+		{
+			value = mantissa * (float) Math.scalb(1.0, -24);
+		}
+		else if (exponent == 31)
+		{
+			value = mantissa == 0 ? Float.POSITIVE_INFINITY : Float.NaN;
+		}
+		else
+		{
+			value = (1f + mantissa / 1024f) * (float) Math.scalb(1.0, exponent - 15);
+		}
+		return sign == 0 ? value : -value;
+	}
+
+	// Copies a rectangle of a storage image into host memory; the caller frees the buffer.
+	private ByteBuffer readbackImage(Img img, int x, int y, int width, int height, int bytesPerPixel)
+	{
+		idle();
+		long bytes = (long) width * height * bytesPerPixel;
+		VkBuf staging = ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		VkCommandBuffer cmd = ctx.beginOneTime();
+		try (MemoryStack stack = stackPush())
+		{
+			VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
+			region.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0);
+			region.get(0).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
+			region.get(0).imageOffset().x(x).y(y).z(0);
+			region.get(0).imageExtent().width(width).height(height).depth(1);
+			vkCmdCopyImageToBuffer(cmd, img.image, VK_IMAGE_LAYOUT_GENERAL, staging.buffer, region);
+		}
+		ctx.endOneTimeAndWait(cmd);
+		ByteBuffer out = MemoryUtil.memAlloc((int) bytes);
+		MemoryUtil.memCopy(MemoryUtil.memAddress(staging.mapped), MemoryUtil.memAddress(out), bytes);
+		ctx.destroyBuffer(staging);
+		return out;
+	}
+
 	/** Makes the next frame start its history afresh, as when the accumulation changes its units. */
 	public void resetHistory()
 	{
@@ -1561,7 +1656,7 @@ public final class RtRenderer
 		destroyOutput();
 
 		output = createImage(width, height, OUTPUT_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true);
-		int scratchUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		int scratchUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		sample = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		albedo = createImage(width, height, OUTPUT_FORMAT, scratchUsage, false);
 		normal = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
@@ -2161,7 +2256,8 @@ public final class RtRenderer
 			| (p.wildlife ? FLAG_WILDLIFE : 0)
 			| (p.underwater ? FLAG_UNDERWATER : 0)
 			| (p.heatShimmer ? FLAG_SHIMMER : 0)
-			| (p.rainbows ? FLAG_RAINBOWS : 0);
+			| (p.rainbows ? FLAG_RAINBOWS : 0)
+			| (p.focusPeaking ? FLAG_PEAKING : 0);
 		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);

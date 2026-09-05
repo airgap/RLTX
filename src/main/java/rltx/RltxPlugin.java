@@ -208,9 +208,36 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				takePhoto();
 				e.consume();
 			}
+			else if (config.clickToFocus() && e.getButton() == MouseEvent.BUTTON1)
+			{
+				focusProbeX = e.getX() - client.getViewportXOffset();
+				focusProbeY = e.getY() - client.getViewportYOffset();
+				focusProbePending = true;
+				e.consume();
+			}
 			return e;
 		}
 	};
+
+	// Click to focus: the depth under the pointer, read back from the last frame, becomes the
+	// fixed focus distance.
+	private volatile boolean focusProbePending;
+	private volatile int focusProbeX, focusProbeY;
+
+	private void probeFocus()
+	{
+		focusProbePending = false;
+		float depth = renderer.readbackDepth(focusProbeX, focusProbeY);
+		if (depth <= 0f)
+		{
+			say("Focus: nothing there but sky");
+			return;
+		}
+		int tiles = Math.max(1, Math.min(60, Math.round(depth / Perspective.LOCAL_TILE_SIZE)));
+		configManager.setConfiguration(RltxConfig.GROUP, "focusMode", RltxConfig.FocusMode.MANUAL);
+		configManager.setConfiguration(RltxConfig.GROUP, "focusDistance", tiles);
+		say("Focus: " + tiles + " tiles");
+	}
 
 	// Free camera: detached from the client's, flown with the keyboard and turned by middle-drag.
 	private volatile boolean freeCamera;
@@ -344,7 +371,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	private void savePhotoAsync(Image image)
 	{
-		Thread saver = new Thread(() -> savePhoto(image), "rltx-photo");
+		savePhotoAsync(image, null, 0, 0, 1f);
+	}
+
+	private void savePhotoAsync(Image image, float[] linear, int width, int height, float exposure)
+	{
+		Thread saver = new Thread(() -> savePhoto(image, linear, width, height, exposure), "rltx-photo");
 		saver.setDaemon(true);
 		saver.start();
 	}
@@ -562,7 +594,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.resetHistory();
 	}
 
-	private void savePhoto(Image image)
+	private void savePhoto(Image image, float[] linear, int width, int height, float exposure)
 	{
 		File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX");
 		if (!dir.exists() && !dir.mkdirs())
@@ -570,10 +602,20 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			log.warn("Could not create {}", dir);
 			return;
 		}
-		File file = new File(dir, "photo-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".png");
+		String stem = "photo-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
+		File file = new File(dir, stem + ".png");
 		try
 		{
 			ImageIO.write(toBuffered(image), "png", file);
+			if (linear != null)
+			{
+				// Scaled by the exposure so that 1.0 is display white before the tone curve.
+				for (int i = 0; i < linear.length; ++i)
+				{
+					linear[i] *= exposure;
+				}
+				HdrWriter.write(new File(dir, stem + ".hdr"), width, height, linear);
+			}
 		}
 		catch (IOException e)
 		{
@@ -2405,6 +2447,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		}
 
+		if (focusProbePending)
+		{
+			probeFocus();
+		}
 		fillLighting();
 		if (cinemaFrame >= 0)
 		{
@@ -2436,7 +2482,18 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			burstPending = false;
 			burst(config.photoBurst());
-			drawManager.requestNextFrameListener(this::savePhotoAsync);
+			if (config.linearExport())
+			{
+				float[] linear = renderer.readbackColor();
+				int w = renderer.outputWidth();
+				int h = renderer.outputHeight();
+				float exposure = frame.exposure;
+				drawManager.requestNextFrameListener(image -> savePhotoAsync(image, linear, w, h, exposure));
+			}
+			else
+			{
+				drawManager.requestNextFrameListener(this::savePhotoAsync);
+			}
 		}
 		else
 		{
@@ -2554,6 +2611,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.dustMotes = config.dustMotes();
 		frame.wildlife = config.wildlife();
 		frame.rainbows = config.rainbows();
+		frame.focusPeaking = config.focusPeaking();
 		frame.heatShimmer = config.heatShimmer();
 		frame.latitude = (float) latitude();
 		RltxConfig.AuroraMode auroraMode = config.aurora();

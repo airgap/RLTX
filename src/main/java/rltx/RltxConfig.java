@@ -930,6 +930,42 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
+	@ConfigItem(
+		keyName = "clickToFocus",
+		name = "Click to focus",
+		description = "In photo mode, clicking the view focuses the lens at that distance and switches Focus to a fixed distance.",
+		section = cameraSection,
+		position = 35
+	)
+	default boolean clickToFocus()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "focusPeaking",
+		name = "Focus peaking",
+		description = "Paints the edges of whatever the lens holds sharp red, to see the plane of focus while framing. Photos never show it.",
+		section = cameraSection,
+		position = 36
+	)
+	default boolean focusPeaking()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "linearExport",
+		name = "Save linear HDR too",
+		description = "Saves each photo's accumulated light as a Radiance .hdr file beside the PNG, linear and unclipped, for editing elsewhere.",
+		section = cameraSection,
+		position = 37
+	)
+	default boolean linearExport()
+	{
+		return false;
+	}
+
 	@Range(max = 500)
 	@ConfigItem(
 		keyName = "cinemaBurst",

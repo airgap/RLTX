@@ -96,6 +96,8 @@ public final class FrameParams
 	public boolean rainbows, heatShimmer, underwater;
 	/** How strongly the aurora shows, 0 to 1. */
 	public float auroraWeight;
+	/** Outline what is in focus, as a lens's peaking aid does. */
+	public boolean focusPeaking;
 	/** How many smoke plumes were uploaded this frame. */
 	public int plumeCount;
 	/** Ground marker tiles uploaded this frame and their glow scale; 0 draws none. */

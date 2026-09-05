@@ -1,41 +1,36 @@
 # RLTX
 
 A RuneLite plugin that replaces the GPU renderer with a Vulkan ray tracer. Pure triangles with
-ray traced lighting: a sun that follows real time and place, the real night sky with the moon in
-its true place and phase, local lights with shadows, including those of spells and projectiles,
-path traced bounce light, water with refraction and reflection, weather with volumetric clouds,
-mist, smoke and light shafts, seasons from the date that turn and drop the leaves, fireflies and
-dust in the air, and a lens flare. A photo mode accumulates each photo over hundreds of frames
-through a real thin lens, so it carries no noise and true bokeh, and a cinema mode renders
-keyframed camera paths the same way for video. Routes from Shortest Path and tiles from Ground
-Markers are drawn as light on the ground, and NPCs highlighted by other plugins wear a rim of
-their colour. The Vulkan output is composited through the client's OpenGL canvas, so RuneLite's
-own interface is untouched.
+ray traced lighting: a sky computed from sunlight scattering in the air, following real time and
+place, with the real stars and the moon in its true place and phase, aurora at high latitudes and
+rainbows after rain; local lights with shadows, including those of spells and projectiles; path
+traced bounce light; water with refraction and reflection that the camera can dip beneath;
+weather with volumetric clouds, mist, smoke, heat shimmer and light shafts; seasons from the
+date that turn and drop the leaves; birds, bats, butterflies, fireflies and dust in the air;
+footprints in snow and wet ground; and a lens flare. A photo mode accumulates each photo over
+hundreds of frames through a real thin lens, so it carries no noise and true bokeh, with click
+to focus, focus peaking and a linear HDR file beside each shot, and a cinema mode renders
+keyframed camera paths the same way for video, carrying the clock with them. Routes from
+Shortest Path and tiles from Ground Markers are drawn as light on the ground, and NPCs
+highlighted by other plugins wear a rim of their colour. Every one of these has its own toggle.
+The Vulkan output is composited through the client's OpenGL canvas, so RuneLite's own interface
+is untouched.
 
 ## Screenshots
 
-All four were taken in game with the plugin's photo mode.
 
-![Night rain outside a stone house, lit by two wall torches and a window](docs/screenshots/rain-at-the-door.png)
 
-Night rain in front of a stone house. The only light is the two wall torches and the window;
-the rain and the wet ground pick it up, and the shallow focus comes from the depth of field
-setting.
+![home](docs/screenshots/home.png)
 
-![Sunset over the swamp, mist between the dead trees, the castle on the skyline](docs/screenshots/swamp-sunset.png)
+![swamp](docs/screenshots/swamp-sunset.png)
 
-Sunset over the swamp, with the castle on the skyline. The mist between the dead trees is
-volumetric, lit by the low sun and the sky, and thins as the ground rises.
+![standoff](docs/screenshots/standoff.png)
 
-![A cottage under a full moon, its windows and doorway glowing](docs/screenshots/moonlit-cottage.png)
+![forge](docs/screenshots/forge.png)
 
-A cottage under the full moon, with the photo tilt lowering the camera. Moonlight and the
-warm light spilling from the windows and doorway are both ray traced, shadows included.
+![silhouette](docs/screenshots/moonrise.png)
 
-![The player silhouetted against the rising moon](docs/screenshots/moonrise.png)
-
-The moon rising behind the player, seen from the free camera. Sun and moon follow the real
-time and place, so this is what the sky looked like when the photo was taken.
+![library](docs/screenshots/library.png)
 
 ## Requirements
 

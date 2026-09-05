@@ -58,6 +58,12 @@ layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plume
 const float MAX_COC = 20.0;
 const uint FLAG_THIN_LENS = 2097152u;
 const uint FLAG_SHIMMER = 67108864u;
+const uint FLAG_STILL = 1048576u;
+const uint FLAG_PEAKING = 268435456u;
+
+float luminance(vec3 c) {
+  return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -299,6 +305,15 @@ void main() {
   // A held frame traced through a real lens has its blur already.
   if (u.path.y > 0.0 && (u.misc.y & FLAG_THIN_LENS) == 0u) {
     c = depthOfField(p, size, c);
+  }
+  if ((u.misc.y & FLAG_PEAKING) != 0u && (u.misc.y & FLAG_STILL) == 0u && u.path.y > 0.0) {
+    // Focus peaking: edges of what the lens holds sharp, painted red, for framing; never in a photo.
+    float depth = imageLoad(currPos, p).w;
+    if (depth > 0.0 && coc(depth) < 0.7) {
+      float gx = luminance(readColor(clamp(p + ivec2(1, 0), ivec2(0), size - 1))) - luminance(readColor(clamp(p - ivec2(1, 0), ivec2(0), size - 1)));
+      float gy = luminance(readColor(clamp(p + ivec2(0, 1), ivec2(0), size - 1))) - luminance(readColor(clamp(p - ivec2(0, 1), ivec2(0), size - 1)));
+      c = mix(c, vec3(1.0, 0.15, 0.1), 0.85 * smoothstep(0.06, 0.16, abs(gx) + abs(gy)));
+    }
   }
   if (u.post3.w > 0.0) {
     // Soft glow: the blurred whole frame laid back over itself.
