@@ -453,7 +453,7 @@ public interface RltxConfig extends Config
 	)
 	default int bounces()
 	{
-		return 3;
+		return 2;
 	}
 
 	@Range(min = 0, max = 100)

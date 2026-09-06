@@ -469,6 +469,34 @@ vec3 directLocal(Hit hit, inout uint seed) {
   return directLocalSpecular(hit, vec3(0.0), unused, seed);
 }
 
+// Irradiance from the local lights at a deeper bounce, where what arrives has already been
+// attenuated by an albedo or two and the denoiser has little to resolve: one reservoir draw
+// over every light in range and one shadow ray for it, standing in for the total in proportion
+// to its odds.
+vec3 directLocalOnce(Hit hit, inout uint seed) {
+  int count = int(u.lights.x);
+  vec3 l;
+  float d;
+  vec3 color;
+  float total = 0.0;
+  int pick = -1;
+  float pickWeight = 0.0;
+  for (int i = 0; i < count; ++i) {
+    vec3 e = localUnshadowed(i, hit, l, d, color);
+    float w = e.r + e.g + e.b;
+    if (w <= 0.0) { continue; }
+    total += w;
+    if (rand(seed) * total < w) {
+      pick = i;
+      pickWeight = w;
+    }
+  }
+  if (pick < 0) { return vec3(0.0); }
+  vec3 e = localUnshadowed(pick, hit, l, d, color);
+  if (occludedWithin(hit.p, l, d - 2.0)) { return vec3(0.0); }
+  return e * (total / pickWeight);
+}
+
 bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint mask, inout uint seed, out Hit hit) {
   rayQueryEXT rq;
   rayQueryInitializeEXT(rq, tlas, rayFlags, mask, origin, tMin, dir, tMax);
@@ -1396,7 +1424,10 @@ void main() {
       break;
     }
     throughput *= next.albedo;
-    light += throughput * (vec3(u.sky.w) + directSun(next, sunDir, shadows, seed) + directLocal(next, seed));
+    // The first bounce carries most of the indirect light and keeps the full light estimate;
+    // deeper ones make do with a single sampled light, unless sampling is off.
+    vec3 local = b == 0 || (u.flags2.x & 1u) == 0u ? directLocal(next, seed) : directLocalOnce(next, seed);
+    light += throughput * (vec3(u.sky.w) + directSun(next, sunDir, shadows, seed) + local);
     current = next;
   }
   // Water: a Fresnel blend of the lit body colour and a mirror reflection off animated waves,

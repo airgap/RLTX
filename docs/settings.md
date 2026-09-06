@@ -37,7 +37,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Skybox rotation | 0° (0 to 359) | Extra turn applied to the sky image. Images with a visible sun or moon are already aligned to the light direction. |
 | Sky colour | #87aeeb | Colour of the sky when no skybox is selected. Lights surfaces that can see the sky. |
 | Sky intensity | 45% (0 to 200) | Brightness of the sky light |
-| Light bounces | 3 (0 to 4) | Diffuse bounces traced per pixel. One lights surfaces from their neighbours and the sky; two or more carry light around corners into enclosed spaces. 0 disables indirect light. |
+| Light bounces | 2 (0 to 4) | Diffuse bounces traced per pixel. One lights surfaces from their neighbours and the sky; two or more carry light around corners into enclosed spaces. 0 disables indirect light. |
 | Ambient floor | 5% (0 to 100) | Light that reaches every surface regardless of occlusion |
 | Exposure | 180% (25 to 400) | Scales the lit result before the filmic tone curve. 100 keeps midtones roughly as lit. |
 | Real stars | true | With the procedural sky, the night shows the real stars and Milky Way for your place and the hour, and the moon lights the scene from where it truly is, showing its phase. Star positions come from the Yale Bright Star Catalogue. |
