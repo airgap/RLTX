@@ -264,6 +264,7 @@ public final class RtRenderer
 	private VkBuf dynamicUv;
 	private Accel dynamicBlas;
 	private Accel dynamicTranslucentBlas;
+	private Accel dynamicWaterBlas;
 
 	private VkBuf instances;
 	private Accel tlas;
@@ -301,6 +302,8 @@ public final class RtRenderer
 		ZoneRes[] zones;
 		/** Zones whose foliage is drawn swayed through the dynamic path this frame instead. */
 		boolean[] swayed;
+		/** Zones whose water is drawn displaced through the dynamic path this frame instead. */
+		boolean[] displaced;
 		float[] transform;
 		int minLevel;
 		int level;
@@ -756,6 +759,7 @@ public final class RtRenderer
 
 		dynamicBlas = createDynamicBlas(true);
 		dynamicTranslucentBlas = createDynamicBlas(false);
+		dynamicWaterBlas = createDynamicBlas(true);
 	}
 
 	// Both dynamic structures are sized for the whole buffer; each frame builds them over its
@@ -1350,6 +1354,16 @@ public final class RtRenderer
 		}
 	}
 
+	/** Which zones of a scene have their water groups replaced by displaced dynamic copies this frame. */
+	public void setDisplacedZones(int id, boolean[] displaced)
+	{
+		StaticSet set = staticSets.get(id);
+		if (set != null)
+		{
+			set.displaced = displaced;
+		}
+	}
+
 	/** Per-frame placement and visibility of a loaded scene. */
 	public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds)
 	{
@@ -1936,7 +1950,7 @@ public final class RtRenderer
 	 * Renders a frame. The binary semaphores shared with OpenGL may only be signalled once per
 	 * wait, so a frame that OpenGL will never see passes signalGl false.
 	 */
-	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, boolean waitForGl, boolean signalGl)
+	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, GeometryBuffer water, boolean waitForGl, boolean signalGl)
 	{
 		if (output == null)
 		{
@@ -1949,20 +1963,22 @@ public final class RtRenderer
 
 		int opaqueFaces = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		int translucentFaces = Math.min(translucent.faces(), MAX_DYNAMIC_FACES - opaqueFaces);
-		if (dynamic.faces() + translucent.faces() > MAX_DYNAMIC_FACES && !warnedDynamicOverflow)
+		int waterFaces = Math.min(water.faces(), MAX_DYNAMIC_FACES - opaqueFaces - translucentFaces);
+		if (dynamic.faces() + translucent.faces() + water.faces() > MAX_DYNAMIC_FACES && !warnedDynamicOverflow)
 		{
 			warnedDynamicOverflow = true;
 			log.warn("Dynamic geometry exceeded {} faces; extra faces are dropped", MAX_DYNAMIC_FACES);
 		}
-		int dynamicFaces = opaqueFaces + translucentFaces;
+		int dynamicFaces = opaqueFaces + translucentFaces + waterFaces;
 		if (dynamicFaces > 0)
 		{
 			float shutterTime = params.shutter > 0f ? 1f - shutterRandom.nextFloat() * params.shutter : 1f;
 			stageDynamic(dynamic, 0, opaqueFaces, shutterTime);
 			stageDynamic(translucent, opaqueFaces, translucentFaces, shutterTime);
+			stageDynamic(water, opaqueFaces + translucentFaces, waterFaces, shutterTime);
 		}
 
-		int instanceCount = writeInstances(params, opaqueFaces, translucentFaces);
+		int instanceCount = writeInstances(params, opaqueFaces, translucentFaces, waterFaces);
 		writeFrameUniforms(params);
 
 		try (MemoryStack stack = stackPush())
@@ -2010,6 +2026,14 @@ public final class RtRenderer
 					VkAccelerationStructureBuildGeometryInfoKHR info = buildInfo(stack, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
 						VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, geom);
 					recordBuild(cmd, info, dynamicTranslucentBlas.handle, scratchAddress(dynamicTranslucentBlas.scratch), translucentFaces);
+				}
+				if (waterFaces > 0)
+				{
+					VkAccelerationStructureGeometryKHR.Buffer geom = VkAccelerationStructureGeometryKHR.calloc(1, stack);
+					fillTriangles(geom.get(0), dynamicPos.address + (long) (opaqueFaces + translucentFaces) * BYTES_PER_FACE_POS, waterFaces, true);
+					VkAccelerationStructureBuildGeometryInfoKHR info = buildInfo(stack, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+						VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, geom);
+					recordBuild(cmd, info, dynamicWaterBlas.handle, scratchAddress(dynamicWaterBlas.scratch), waterFaces);
 				}
 				memoryBarrier(cmd,
 					VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
@@ -2235,7 +2259,7 @@ public final class RtRenderer
 		return dx * dx + dz * dz <= params.renderDistance * params.renderDistance;
 	}
 
-	private int writeInstances(FrameParams params, int opaqueFaces, int translucentFaces)
+	private int writeInstances(FrameParams params, int opaqueFaces, int translucentFaces, int waterFaces)
 	{
 		VkAccelerationStructureInstanceKHR.Buffer buffer = VkAccelerationStructureInstanceKHR.create(
 			MemoryUtil.memAddress(instances.mapped), MAX_INSTANCES);
@@ -2243,6 +2267,10 @@ public final class RtRenderer
 		if (opaqueFaces > 0)
 		{
 			writeInstance(buffer.get(count++), DYNAMIC_INSTANCE_BIT, dynamicBlas.address, MASK_OPAQUE, null);
+		}
+		if (waterFaces > 0)
+		{
+			writeInstance(buffer.get(count++), DYNAMIC_INSTANCE_BIT | (opaqueFaces + translucentFaces), dynamicWaterBlas.address, MASK_WATER, null);
 		}
 		if (translucentFaces > 0)
 		{
@@ -2258,9 +2286,10 @@ public final class RtRenderer
 					continue;
 				}
 				boolean swayedZone = set.swayed != null && z < set.swayed.length && set.swayed[z];
+				boolean displacedZone = set.displaced != null && z < set.displaced.length && set.displaced[z];
 				for (int g = 0; g < res.handles.length && count < MAX_INSTANCES; ++g)
 				{
-					if (swayedZone && res.sway[g])
+					if ((swayedZone && res.sway[g]) || (displacedZone && res.water[g]))
 					{
 						continue;
 					}
@@ -2420,6 +2449,7 @@ public final class RtRenderer
 		destroyAccel(tlas);
 		destroyAccel(dynamicBlas);
 		destroyAccel(dynamicTranslucentBlas);
+		destroyAccel(dynamicWaterBlas);
 		ctx.destroyBuffer(instances);
 		ctx.destroyBuffer(dynamicStagingPos);
 		ctx.destroyBuffer(dynamicStagingCol);

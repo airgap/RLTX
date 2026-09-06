@@ -1856,6 +1856,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "waveGeometry",
+		name = "Wave geometry near the camera",
+		description = "Water within fourteen tiles rises and falls as real geometry, so shorelines, pillars and low views meet moving waves. Costs client-thread time each frame in proportion to the water in view; watch the frame rate before leaving it on.",
+		section = surfacesSection,
+		position = 43
+	)
+	default boolean waveGeometry()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "areaSettings",
 		name = "Apply area settings",
 		description = "Whether the settings saved for map regions in the F8 panel's Areas tab take over when you enter them. Presets of every setting can be saved to files or the clipboard in its Presets tab.",

@@ -113,6 +113,7 @@ import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.scene.TextureCutouts;
 import rltx.scene.WaterSim;
+import rltx.scene.WaterType;
 import rltx.scene.lights.LightDefinition;
 import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
@@ -880,7 +881,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				renderer.beginFrame();
 			}
-			renderer.submit(frame, dynamic, dynamicTranslucent, i == 0 && glSignalPending, present && i == frames);
+			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, i == 0 && glSignalPending, present && i == frames);
 		}
 		frame.still = false;
 		frame.thinLens = false;
@@ -1237,6 +1238,153 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			dynamic.setPreviousPositions(start, swayScratch, faces);
 		}
 		renderer.setSwayedZones(WorldView.TOPLEVEL, top.swayed);
+	}
+
+	// Water near the camera as real geometry: the eight longest waves of the shader's spectrum lift
+	// and lower the surface each frame, so silhouettes, shorelines and pillars meet moving water.
+	// The chop stays in the shading normals, which the shader still works out for all the waves.
+	private static final float WATER_RANGE = 14 * Perspective.LOCAL_TILE_SIZE;
+	private static final int WATER_FACE_BUDGET = 60_000;
+	private static final int GEOMETRY_WAVES = 8;
+	private final double[] waveK = new double[GEOMETRY_WAVES];
+	private final double[] waveDx = new double[GEOMETRY_WAVES];
+	private final double[] waveDz = new double[GEOMETRY_WAVES];
+	private final double[] waveOmega = new double[GEOMETRY_WAVES];
+	private final double[] waveAmplitude = new double[GEOMETRY_WAVES];
+	private final double[] wavePhase = new double[GEOMETRY_WAVES];
+	private float[] waterScratch = new float[0];
+
+	// The same wave table the shader builds, for its eight longest waves: indices 16 to 23.
+	private void prepareWaves(double windAngle)
+	{
+		for (int w = 0; w < GEOMETRY_WAVES; ++w)
+		{
+			double fi = 24 - GEOMETRY_WAVES + w;
+			double h1 = fract(Math.sin(fi * 12.9898) * 43758.5453);
+			double h2 = fract(Math.sin(fi * 78.233 + 1.0) * 43758.5453);
+			double h3 = fract(Math.sin(fi * 37.719 + 2.0) * 43758.5453);
+			double wavelength = 15.0 * Math.pow(400.0 / 15.0, (fi + h1) / 24.0);
+			double k = 2.0 * Math.PI / wavelength;
+			double spread = 0.35 + (1.2 - 0.35) * (1.0 - fi / 24.0);
+			double a = windAngle + (h2 - 0.5) * 2.0 * spread;
+			waveK[w] = k;
+			waveDx[w] = Math.cos(a);
+			waveDz[w] = Math.sin(a);
+			waveOmega[w] = Math.sqrt(9.8 * 128.0 * k);
+			// The shader's slope amplitude over k gives the height amplitude of the same wave.
+			waveAmplitude[w] = 2.0 * 0.22 * Math.pow(wavelength / 400.0, 0.25) / k;
+			wavePhase[w] = h3 * 2.0 * Math.PI;
+		}
+	}
+
+	private static double fract(double v)
+	{
+		return v - Math.floor(v);
+	}
+
+	// Height of the surface above rest at a point, in world units, for a wave time t.
+	private float waveHeight(float x, float z, double t)
+	{
+		double h = 0.0;
+		for (int w = 0; w < GEOMETRY_WAVES; ++w)
+		{
+			double phase = (waveDx[w] * x + waveDz[w] * z) * waveK[w] - waveOmega[w] * t + wavePhase[w];
+			double s = 0.5 + 0.5 * Math.sin(phase);
+			h += waveAmplitude[w] * (s * Math.sqrt(s) - 0.42);
+		}
+		return (float) h;
+	}
+
+	private void pushWater()
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		if (!config.waveGeometry() || !frame.water || top == null)
+		{
+			renderer.setDisplacedZones(WorldView.TOPLEVEL, null);
+			return;
+		}
+		StaticScene built = top.built;
+		if (top.displaced == null || top.displaced.length != built.zones.length)
+		{
+			top.displaced = new boolean[built.zones.length];
+		}
+		double windAngle = frame.windVelocityX * frame.windVelocityX + frame.windVelocityZ * frame.windVelocityZ > 1f
+			? Math.atan2(frame.windVelocityZ, frame.windVelocityX) : Math.atan2(0.78, 0.62);
+		prepareWaves(windAngle);
+		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
+		int budget = WATER_FACE_BUDGET;
+		WaterType[] types = WaterType.values();
+		for (int i = 0; i < built.zones.length; ++i)
+		{
+			StaticScene.Zone zone = built.zones[i];
+			top.displaced[i] = false;
+			if (zone == null)
+			{
+				continue;
+			}
+			int waterFaces = 0;
+			for (int g = 0; g < zone.groupWater.length; ++g)
+			{
+				waterFaces += zone.groupWater[g] ? zone.groupFaceCount[g] : 0;
+			}
+			if (waterFaces == 0 || budget < waterFaces)
+			{
+				continue;
+			}
+			float centreX = ((i / built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
+			float centreZ = ((i % built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
+			float dx = centreX - frame.cameraX;
+			float dz = centreZ - frame.cameraZ;
+			if (dx * dx + dz * dz > WATER_RANGE * WATER_RANGE)
+			{
+				continue;
+			}
+			top.displaced[i] = true;
+			budget -= waterFaces;
+			float[] pos = zone.geometry.positions();
+			int[] colors = zone.geometry.colors();
+			int[] textures = zone.geometry.textures();
+			float[] uvs = zone.geometry.uvs();
+			for (int g = 0; g < zone.groupWater.length; ++g)
+			{
+				if (!zone.groupWater[g])
+				{
+					continue;
+				}
+				int start = dynamicWater.faces();
+				int first = zone.groupFaceBase[g];
+				int count = zone.groupFaceCount[g];
+				if (waterScratch.length < count * 9)
+				{
+					waterScratch = new float[count * 9];
+				}
+				for (int f = 0; f < count; ++f)
+				{
+					int face = first + f;
+					int o = face * 9;
+					int tex = textures[face];
+					int typeIndex = (tex >> 16) & 0xFF;
+					WaterType type = typeIndex > 0 && typeIndex <= types.length ? types[typeIndex - 1] : null;
+					float strength = type == null || type.flat ? 0f : type.normalStrength * frame.waveStrength;
+					double t = frame.timeSeconds * 0.9 / Math.max(type == null ? 1f : type.duration, 0.05f);
+					int so = f * 9;
+					for (int v = 0; v < 3; ++v)
+					{
+						float x = pos[o + v * 3];
+						float z = pos[o + v * 3 + 2];
+						waterScratch[so + v * 3] = x;
+						waterScratch[so + v * 3 + 1] = pos[o + v * 3 + 1] - (strength > 0f ? waveHeight(x, z, t) * strength : 0f);
+						waterScratch[so + v * 3 + 2] = z;
+					}
+					int uo = face * 6;
+					dynamicWater.face(waterScratch[so], waterScratch[so + 1], waterScratch[so + 2], waterScratch[so + 3], waterScratch[so + 4], waterScratch[so + 5],
+						waterScratch[so + 6], waterScratch[so + 7], waterScratch[so + 8], colors[face], tex,
+						uvs[uo], uvs[uo + 1], uvs[uo + 2], uvs[uo + 3], uvs[uo + 4], uvs[uo + 5]);
+				}
+				dynamicWater.setPreviousPositions(start, waterScratch, count);
+			}
+		}
+		renderer.setDisplacedZones(WorldView.TOPLEVEL, top.displaced);
 	}
 
 	// Where everyone is standing, for the plants they brush: x, ground height and z each.
@@ -1977,6 +2125,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		final SceneLights lights;
 		/** Zones whose foliage was drawn swayed last frame. */
 		boolean[] swayed;
+		/** Zones whose water was drawn displaced last frame. */
+		boolean[] displaced;
 		/** Rain runoff over the ground; null for nested world views. */
 		WaterSim water;
 		/** The mist grid as uploaded, for asking whether ground is misty. */
@@ -2006,6 +2156,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	private final GeometryBuffer dynamic = new GeometryBuffer(1 << 16);
 	private final GeometryBuffer dynamicTranslucent = new GeometryBuffer(1 << 12);
+	private final GeometryBuffer dynamicWater = new GeometryBuffer(1 << 14);
 	private final GeometryBuffer empty = new GeometryBuffer(1);
 	private final ModelPusher framePusher = new ModelPusher();
 	private final MotionHistory motion = new MotionHistory();
@@ -2743,6 +2894,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.beginFrame();
 		dynamic.clear();
 		dynamicTranslucent.clear();
+		dynamicWater.clear();
 
 		clientCamX = cameraX;
 		clientCamY = cameraY;
@@ -2958,6 +3110,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		long start = System.nanoTime();
 		addOffscreenActors();
 		pushFoliage();
+		pushWater();
 		fillLights();
 		fillGuide();
 		fillMarkers();
@@ -2985,7 +3138,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		else if (cinemaFrame >= 0)
 		{
 			// A preview plays the path at the live frame rate with nothing saved.
-			renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending, true);
+			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, glSignalPending, true);
 			if (++cinemaFrame >= cinemaTotal || cinemaStop)
 			{
 				finishCinema();
@@ -3010,7 +3163,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		else
 		{
-			renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending, true);
+			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, glSignalPending, true);
 		}
 		motion.endFrame();
 		statSubmitNanos += System.nanoTime() - start;
@@ -3541,7 +3694,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 			}
 			frame.pattern = true;
-			renderer.submit(frame, empty, empty, glSignalPending, true);
+			renderer.submit(frame, empty, empty, empty, glSignalPending, true);
 			glSignalPending = false;
 			compositor.drawScene(0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
 			glSignalPending = true;
