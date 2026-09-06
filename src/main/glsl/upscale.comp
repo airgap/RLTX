@@ -1,0 +1,41 @@
+#version 460
+
+// Brings the traced image up to the size of the view when it was rendered smaller: a Catmull-Rom
+// filter over the four by four traced pixels around each output pixel, which keeps edges and
+// texture crisper than the bilinear blend at the cost of sixteen loads.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1, rgba8) uniform readonly image2D traced;
+layout(set = 0, binding = 46, rgba8) uniform writeonly image2D presented;
+
+void weights(float t, out float w[4]) {
+  w[0] = t * (-0.5 + t * (1.0 - 0.5 * t));
+  w[1] = 1.0 + t * t * (-2.5 + 1.5 * t);
+  w[2] = t * (0.5 + t * (2.0 - 1.5 * t));
+  w[3] = t * t * (-0.5 + 0.5 * t);
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 outSize = imageSize(presented);
+  if (p.x >= outSize.x || p.y >= outSize.y) {
+    return;
+  }
+  ivec2 inSize = imageSize(traced);
+  vec2 at = (vec2(p) + 0.5) / vec2(outSize) * vec2(inSize) - 0.5;
+  vec2 base = floor(at);
+  vec2 f = at - base;
+  float wx[4];
+  float wy[4];
+  weights(f.x, wx);
+  weights(f.y, wy);
+  vec3 sum = vec3(0.0);
+  for (int j = 0; j < 4; ++j) {
+    for (int i = 0; i < 4; ++i) {
+      ivec2 q = clamp(ivec2(base) + ivec2(i - 1, j - 1), ivec2(0), inSize - 1);
+      sum += imageLoad(traced, q).rgb * (wx[i] * wy[j]);
+    }
+  }
+  imageStore(presented, p, vec4(clamp(sum, 0.0, 1.0), 1.0));
+}

@@ -157,6 +157,11 @@ final class PhotoMode
 		say.accept("Focus: " + tiles + " tiles");
 	}
 
+	boolean burstPending()
+	{
+		return burstPending;
+	}
+
 	/** Whether a burst photo is waiting to be taken, clearing the request. */
 	boolean takeBurst()
 	{

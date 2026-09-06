@@ -175,7 +175,8 @@ public final class RtRenderer
 	private static final int BINDING_PRINTS = 43;
 	private static final int BINDING_TREES = 44;
 	private static final int BINDING_CELLS = 45;
-	private static final int BINDING_COUNT = 46;
+	private static final int BINDING_PRESENTED = 46;
+	private static final int BINDING_COUNT = 47;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -241,6 +242,7 @@ public final class RtRenderer
 	private long bloomPipeline;
 	private long exposurePipeline;
 	private long shaftsPipeline;
+	private long upscalePipeline;
 
 	private final VkCommandBuffer cmd;
 	private long fence;
@@ -248,7 +250,7 @@ public final class RtRenderer
 	private long timestampPool;
 	private double lastGpuMillis;
 	/** GPU time of each stage of the last finished frame, in the order of PASS_NAMES, milliseconds. */
-	private static final String[] PASS_NAMES = {"build", "trace", "shafts", "denoise", "bloom", "post", "meter"};
+	private static final String[] PASS_NAMES = {"build", "trace", "shafts", "denoise", "bloom", "post", "meter", "upscale"};
 	private static final int STAMPS = PASS_NAMES.length + 1;
 	private final double[] passMillis = new double[PASS_NAMES.length];
 	private long semaphoreVkDone;
@@ -356,6 +358,12 @@ public final class RtRenderer
 	private final Img[] historyPos = new Img[2];
 	private int outputWidth;
 	private int outputHeight;
+	// The size the frame is traced and denoised at; the same as the output unless a render scale
+	// below one shrinks it, in which case the upscale pass fills the presented image from it.
+	private int internalWidth;
+	private int internalHeight;
+	/** The image OpenGL composites, always the size of the view; the same as output at full scale. */
+	private Img presented;
 	private boolean outputUninitialized;
 	private int parity;
 
@@ -567,12 +575,12 @@ public final class RtRenderer
 
 	public long outputHandle()
 	{
-		return output.handle;
+		return presented.handle;
 	}
 
 	public long outputAllocationSize()
 	{
-		return output.allocationSize;
+		return presented.allocationSize;
 	}
 
 	private void createSyncObjects()
@@ -612,6 +620,7 @@ public final class RtRenderer
 			int[] types = new int[BINDING_COUNT];
 			types[BINDING_TLAS] = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 			types[BINDING_OUTPUT] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_PRESENTED] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_STATIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_COL] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -669,7 +678,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(36);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(40);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(48);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
@@ -703,6 +712,7 @@ public final class RtRenderer
 		bloomPipeline = createComputePipeline("/rltx/bloom.comp.spv");
 		exposurePipeline = createComputePipeline("/rltx/exposure.comp.spv");
 		shaftsPipeline = createComputePipeline("/rltx/shafts.comp.spv");
+		upscalePipeline = createComputePipeline("/rltx/upscale.comp.spv");
 	}
 
 	private long createComputePipeline(String resource)
@@ -1672,7 +1682,8 @@ public final class RtRenderer
 		{
 			return -1f;
 		}
-		ByteBuffer pixel = readbackImage(historyPos[parity], x, y, 1, 1, 16);
+		// The pointer is in view pixels; the position image is at the traced size.
+		ByteBuffer pixel = readbackImage(historyPos[parity], x * internalWidth / outputWidth, y * internalHeight / outputHeight, 1, 1, 16);
 		try
 		{
 			return pixel.getFloat(12);
@@ -1686,7 +1697,7 @@ public final class RtRenderer
 	/** The last finished frame as shown, ARGB row by row. Waits for the GPU. */
 	public int[] readbackOutput()
 	{
-		ByteBuffer rgba = readbackImage(output, 0, 0, outputWidth, outputHeight, 4);
+		ByteBuffer rgba = readbackImage(presented, 0, 0, outputWidth, outputHeight, 4);
 		try
 		{
 			int[] argb = new int[outputWidth * outputHeight];
@@ -1706,11 +1717,11 @@ public final class RtRenderer
 	/** The last finished frame's accumulated colour, linear RGB floats row by row. Waits for the GPU. */
 	public float[] readbackColor()
 	{
-		ByteBuffer halves = readbackImage(historyColor[parity], 0, 0, outputWidth, outputHeight, 8);
+		ByteBuffer halves = readbackImage(historyColor[parity], 0, 0, internalWidth, internalHeight, 8);
 		try
 		{
-			float[] rgb = new float[outputWidth * outputHeight * 3];
-			for (int i = 0; i < outputWidth * outputHeight; ++i)
+			float[] rgb = new float[internalWidth * internalHeight * 3];
+			for (int i = 0; i < internalWidth * internalHeight; ++i)
 			{
 				rgb[i * 3] = halfToFloat(halves.getShort(i * 8));
 				rgb[i * 3 + 1] = halfToFloat(halves.getShort(i * 8 + 2));
@@ -1808,38 +1819,51 @@ public final class RtRenderer
 	 *
 	 * @return true when a new output image was created and must be re-imported by OpenGL
 	 */
-	public boolean ensureOutput(int width, int height)
+	/**
+	 * Sizes the images for a view of the given size, tracing at the given fraction of it. Returns
+	 * whether the presented image was recreated, so OpenGL must import it again.
+	 */
+	public boolean ensureOutput(int width, int height, float scale)
 	{
-		if (output != null && outputWidth == width && outputHeight == height)
+		int traceWidth = Math.max(1, Math.round(width * scale));
+		int traceHeight = Math.max(1, Math.round(height * scale));
+		boolean presentedChanged = presented == null || outputWidth != width || outputHeight != height;
+		if (!presentedChanged && internalWidth == traceWidth && internalHeight == traceHeight)
 		{
 			return false;
 		}
 		idle();
-		destroyOutput();
+		destroyOutput(presentedChanged);
 
-		output = createImage(width, height, OUTPUT_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true);
 		int scratchUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		sample = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
-		albedo = createImage(width, height, OUTPUT_FORMAT, scratchUsage, false);
-		normal = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
-		shafts = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
-		bloomSource = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		if (presentedChanged)
+		{
+			presented = createImage(width, height, OUTPUT_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true);
+		}
+		output = traceWidth == width && traceHeight == height ? presented : createImage(traceWidth, traceHeight, OUTPUT_FORMAT, scratchUsage, false);
+		sample = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		albedo = createImage(traceWidth, traceHeight, OUTPUT_FORMAT, scratchUsage, false);
+		normal = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		shafts = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		bloomSource = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		for (int i = 0; i < 2; ++i)
 		{
-			bloomBlur[i] = createImage((width + 3) / 4, (height + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
-			diffuseBlur[i] = createImage((width + 3) / 4, (height + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
+			bloomBlur[i] = createImage((traceWidth + 3) / 4, (traceHeight + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
+			diffuseBlur[i] = createImage((traceWidth + 3) / 4, (traceHeight + 3) / 4, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		}
 		for (int i = 0; i < 2; ++i)
 		{
-			historyColor[i] = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
-			historyPos[i] = createImage(width, height, HISTORY_POS_FORMAT, scratchUsage, false);
-			moments[i] = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
-			filter[i] = createImage(width, height, HISTORY_COLOR_FORMAT, scratchUsage, false);
+			historyColor[i] = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
+			historyPos[i] = createImage(traceWidth, traceHeight, HISTORY_POS_FORMAT, scratchUsage, false);
+			moments[i] = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
+			filter[i] = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		}
 		initializeHistory();
 
 		outputWidth = width;
 		outputHeight = height;
+		internalWidth = traceWidth;
+		internalHeight = traceHeight;
 		outputUninitialized = true;
 		hasHistory = false;
 		parity = 0;
@@ -1848,6 +1872,7 @@ public final class RtRenderer
 		{
 			long handle = descriptorSets[set];
 			writeImageDescriptor(handle, BINDING_OUTPUT, output.view);
+			writeImageDescriptor(handle, BINDING_PRESENTED, presented.view);
 			writeImageDescriptor(handle, BINDING_SAMPLE, sample.view);
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
@@ -1866,8 +1891,18 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_PREV_POS, historyPos[set].view);
 			writeImageDescriptor(handle, BINDING_CURR_POS, historyPos[1 - set].view);
 		}
-		log.debug("Output image {}x{} ({} bytes)", width, height, output.allocationSize);
-		return true;
+		log.debug("Output image {}x{} traced at {}x{} ({} bytes)", width, height, traceWidth, traceHeight, presented.allocationSize);
+		return presentedChanged;
+	}
+
+	public int internalWidth()
+	{
+		return internalWidth;
+	}
+
+	public int internalHeight()
+	{
+		return internalHeight;
 	}
 
 	private Img createImage(int width, int height, int format, int usage, boolean exported)
@@ -1975,13 +2010,22 @@ public final class RtRenderer
 		ctx.endOneTimeAndWait(init);
 	}
 
-	private void destroyOutput()
+	// Frees the traced-size images, and the presented image too when the view itself has changed.
+	private void destroyOutput(boolean presentedToo)
 	{
 		if (output == null)
 		{
 			return;
 		}
-		destroyImage(output);
+		if (output != presented)
+		{
+			destroyImage(output);
+		}
+		if (presentedToo)
+		{
+			destroyImage(presented);
+			presented = null;
+		}
 		destroyImage(sample);
 		destroyImage(albedo);
 		destroyImage(normal);
@@ -2132,10 +2176,17 @@ public final class RtRenderer
 				outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+			if (presented != output)
+			{
+				imageBarrier(cmd, presented.image,
+					outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+			}
 			outputUninitialized = false;
 
-			int groupsX = (outputWidth + 7) / 8;
-			int groupsY = (outputHeight + 7) / 8;
+			int groupsX = (internalWidth + 7) / 8;
+			int groupsY = (internalHeight + 7) / 8;
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
 			// Every stamp is written every frame, run or not, so the readback never waits on one.
 			stamp(cmd, 1);
@@ -2173,8 +2224,8 @@ public final class RtRenderer
 					{
 						// The blur pass reads the finished frame from the filter image the last denoiser
 						// pass wrote, so it is told that pass's parity through the step field.
-						int quarterX = ((outputWidth + 3) / 4 + 7) / 8;
-						int quarterY = ((outputHeight + 3) / 4 + 7) / 8;
+						int quarterX = ((internalWidth + 3) / 4 + 7) / 8;
+						int quarterY = ((internalHeight + 3) / 4 + 7) / 8;
 						vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bloomPipeline);
 						computeBarrier(cmd);
 						pushPass(cmd, push, 0, passes, 0, passes);
@@ -2210,7 +2261,14 @@ public final class RtRenderer
 				}
 			}
 
-			imageBarrier(cmd, output.image, VK_IMAGE_LAYOUT_GENERAL,
+			stamp(cmd, 7);
+			if (presented != output)
+			{
+				computeBarrier(cmd);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upscalePipeline);
+				vkCmdDispatch(cmd, (outputWidth + 7) / 8, (outputHeight + 7) / 8, 1);
+			}
+			imageBarrier(cmd, presented.image, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
 			stamp(cmd, STAMPS - 1);
@@ -2427,9 +2485,10 @@ public final class RtRenderer
 	{
 		ByteBuffer b = frameUbo.mapped;
 		b.clear();
-		b.putFloat(p.cameraX).putFloat(p.cameraY).putFloat(p.cameraZ).putFloat(p.zoom);
+		float zoomScale = internalWidth / (float) outputWidth;
+		b.putFloat(p.cameraX).putFloat(p.cameraY).putFloat(p.cameraZ).putFloat(p.zoom * zoomScale);
 		putRows(b, p.inverseRotation);
-		b.putFloat(prevCamera[0]).putFloat(prevCamera[1]).putFloat(prevCamera[2]).putFloat(prevCamera[3]);
+		b.putFloat(prevCamera[0]).putFloat(prevCamera[1]).putFloat(prevCamera[2]).putFloat(prevCamera[3] * zoomScale);
 		putRows(b, prevForward);
 		b.putFloat(p.sunX).putFloat(p.sunY).putFloat(p.sunZ).putFloat(p.sunIntensity);
 		b.putFloat(p.skyR).putFloat(p.skyG).putFloat(p.skyB).putFloat(p.ambient);
@@ -2463,7 +2522,7 @@ public final class RtRenderer
 			| (p.rainbows ? FLAG_RAINBOWS : 0)
 			| (p.focusPeaking ? FLAG_PEAKING : 0)
 			| (p.textureDisplacement ? FLAG_DISPLACEMENT : 0);
-		b.putInt(frameIndex).putInt(flags).putInt(outputWidth).putInt(outputHeight);
+		b.putInt(frameIndex).putInt(flags).putInt(internalWidth).putInt(internalHeight);
 		b.putFloat(p.skyboxRotation).putFloat(p.backgroundR).putFloat(p.backgroundG).putFloat(p.backgroundB);
 		b.putFloat(p.denoiseLuminance).putFloat(DENOISE_NORMAL_POWER).putFloat(DENOISE_POSITION_SIGMA).putFloat(p.plumeCount);
 		b.putFloat(p.sunR).putFloat(p.sunG).putFloat(p.sunB).putFloat(0f);
@@ -2478,7 +2537,7 @@ public final class RtRenderer
 		b.putFloat(p.filmGrain).putFloat(p.chromaticAberration).putFloat(p.aerialPerspective).putFloat(p.sunUp);
 		b.putFloat(p.lightCount).putFloat(p.lightStrength).putFloat(p.surfaceGloss).putFloat(p.surfaceGlossExponent);
 		// The blur runs at quarter resolution and the visible radius spans about two and a half sigmas.
-		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(p.terrainBump).putFloat(p.diffusionRadius / 2.5f / 4f);
+		b.putFloat(p.emissiveStrength).putFloat(p.glossyReflections ? 1f : 0f).putFloat(p.terrainBump).putFloat(p.diffusionRadius * zoomScale / 2.5f / 4f);
 		b.putFloat(p.contrast).putFloat(p.saturation).putFloat(p.temperature).putFloat(p.diffusion);
 		b.putFloat(p.windVelocityX).putFloat(p.windVelocityZ).putFloat(p.sunDiscRadius).putFloat(p.rainLength);
 		b.putFloat(p.skyAmbientR).putFloat(p.skyAmbientG).putFloat(p.skyAmbientB).putFloat(p.rainSpeed);
@@ -2520,7 +2579,7 @@ public final class RtRenderer
 	public void destroy()
 	{
 		vkDeviceWaitIdle(device);
-		destroyOutput();
+		destroyOutput(true);
 		freeAllStatic();
 		ctx.destroyBuffer(staticPos);
 		ctx.destroyBuffer(staticCol);
@@ -2579,6 +2638,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, bloomPipeline, null);
 		vkDestroyPipeline(device, exposurePipeline, null);
 		vkDestroyPipeline(device, shaftsPipeline, null);
+		vkDestroyPipeline(device, upscalePipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);
 		vkDestroyDescriptorSetLayout(device, descriptorLayout, null);

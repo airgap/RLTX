@@ -484,6 +484,20 @@ public interface RltxConfig extends Config
 		return 180;
 	}
 
+	@Range(min = 50, max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "renderScale",
+		name = "Render scale",
+		description = "The fraction of the view's size the frame is traced and denoised at before being scaled up to fit. 75 to 85 saves a third to a half of the GPU time; photos and cinema renders are always traced at full size.",
+		section = temporalSection,
+		position = -1
+	)
+	default int renderScale()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "temporal",
 		name = "Temporal accumulation",

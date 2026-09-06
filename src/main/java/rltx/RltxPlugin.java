@@ -969,7 +969,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			return;
 		}
-		if (renderer.ensureOutput(width, height))
+		// Photos and cinema frames are traced at full size whatever the render scale.
+		float scale = cinema.active() && !cinema.preview() || photo.burstPending() ? 1f : config.renderScale() / 100f;
+		if (renderer.ensureOutput(width, height, scale))
 		{
 			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		}
@@ -1024,8 +1026,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			if (config.linearExport())
 			{
 				float[] linear = renderer.readbackColor();
-				int w = renderer.outputWidth();
-				int h = renderer.outputHeight();
+				int w = renderer.internalWidth();
+				int h = renderer.internalHeight();
 				float exposure = frame.exposure;
 				drawManager.requestNextFrameListener(image -> photo.savePhotoAsync(image, linear, w, h, exposure));
 			}
@@ -1101,7 +1103,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float diffusionRadius = frame.diffusionRadius;
 		frame.zoom = zoom * 2f;
 		frame.diffusionRadius = diffusionRadius * 2f;
-		renderer.ensureOutput(width * 2, height * 2);
+		renderer.ensureOutput(width * 2, height * 2, 1f);
 		burst(config.photoBurst(), false);
 		glSignalPending = false;
 		int[] argb = renderer.readbackOutput();
@@ -1109,7 +1111,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float exposure = frame.exposure;
 		frame.zoom = zoom;
 		frame.diffusionRadius = diffusionRadius;
-		renderer.ensureOutput(width, height);
+		renderer.ensureOutput(width, height, 1f);
 		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
 	}
@@ -1286,7 +1288,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		else if (config.loginPattern() && gameState != GameState.LOGGED_IN && gameState != GameState.LOADING)
 		{
-			if (renderer.ensureOutput(canvasWidth, canvasHeight))
+			if (renderer.ensureOutput(canvasWidth, canvasHeight, 1f))
 			{
 				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 			}

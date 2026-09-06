@@ -77,6 +77,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Setting | Default | Description |
 | --- | --- | --- |
 | Temporal accumulation | true | Reuse lighting from previous frames where the same surface was visible. Off gives a noisy but ghost-free image. |
+| Render scale | 100% (50 to 100) | The fraction of the view's size the frame is traced and denoised at before being scaled up to fit. 75 to 85 saves a third to a half of the GPU time; photos and cinema renders are always traced at full size. |
 | History frames | 32 (1 to 128) | How many frames of lighting are averaged on static surfaces. More frames mean less noise and slower response to changes. |
 | History frames on models | 6 (1 to 64) | Frames averaged on players, NPCs and animated objects |
 | Denoiser passes | 4 (0 to 5) | Edge-aware wavelet filter passes over the accumulated lighting. Each pass doubles the filter radius; 0 disables the denoiser. |
