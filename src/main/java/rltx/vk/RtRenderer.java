@@ -2393,6 +2393,11 @@ public final class RtRenderer
 		{
 			b.putFloat(c);
 		}
+		b.putInt(p.flags2).putInt(0).putInt(0).putInt(0);
+		if (b.position() > FRAME_UBO_SIZE)
+		{
+			throw new IllegalStateException("Frame uniforms exceed the buffer: " + b.position() + " of " + FRAME_UBO_SIZE + " bytes");
+		}
 	}
 
 	private static void putRows(ByteBuffer b, float[] rows)

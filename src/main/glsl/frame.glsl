@@ -41,4 +41,5 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 night;    // direction to the sun while the moon lights the scene, moon illuminated fraction
   vec4 ground;   // footprint count, footprint strength, water surface height over the camera, bare earth texture layer
   vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
+  uvec4 flags2;    // further feature flags once misc.y is full; nothing uses it yet
 } u;
