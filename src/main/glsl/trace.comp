@@ -376,46 +376,78 @@ vec3 localUnshadowed(int i, Hit hit, out vec3 l, out float d, out vec3 color) {
 
 // Up to this many lights in range, every one gets its own shadow ray.
 const int EXACT_LIGHTS = 4;
+// Beyond that, the strongest few keep their own rays and the rest share two sampled ones.
+const int TOP_LIGHTS = 2;
 
 // Irradiance from the local lights at a hit, shadowed; their specular highlights towards the
 // viewer accumulate separately as radiance. Every light's unshadowed share is cheap to work
-// out, so with sampling on and a crowd of lights in range, all of them weigh in but shadow rays
-// go only to two lights drawn in proportion to that share, each standing in for the whole in
-// proportion to its odds. The draws average out over the accumulation and the denoiser, so a
-// lit town costs two shadow rays a hit rather than one per lamp.
+// out, so with sampling on and a crowd of lights in range, all of them weigh in: the two
+// strongest, which carry most of the light, get their own shadow rays, and the rest share two
+// rays drawn in proportion to their share, each standing in for the whole tail in proportion
+// to its odds. The draws average out over the accumulation and the denoiser, and since the
+// tail is the smaller part of the total, what noise they leave is small. A lit town costs
+// four shadow rays a hit rather than one per lamp.
 vec3 directLocalSpecular(Hit hit, vec3 viewDir, inout vec3 specular, inout uint seed) {
   int count = int(u.lights.x);
   vec3 l;
   float d;
   vec3 color;
   if ((u.flags2.x & 1u) != 0u && count > EXACT_LIGHTS) {
-    // Two weighted reservoirs over one pass: light i replaces a reservoir's pick with
-    // probability weight / running total, which leaves the pick on i with probability
-    // weight / final total.
     float total = 0.0;
     int inRange = 0;
-    int pick[2] = int[2](-1, -1);
-    float pickWeight[2] = float[2](0.0, 0.0);
+    int top[TOP_LIGHTS] = int[TOP_LIGHTS](-1, -1);
+    float topWeight[TOP_LIGHTS] = float[TOP_LIGHTS](0.0, 0.0);
     for (int i = 0; i < count; ++i) {
       vec3 e = localUnshadowed(i, hit, l, d, color);
       float w = e.r + e.g + e.b;
       if (w <= 0.0) { continue; }
       ++inRange;
       total += w;
-      for (int r = 0; r < 2; ++r) {
-        if (rand(seed) * total < w) {
-          pick[r] = i;
-          pickWeight[r] = w;
-        }
+      if (w > topWeight[0]) {
+        top[1] = top[0];
+        topWeight[1] = topWeight[0];
+        top[0] = i;
+        topWeight[0] = w;
+      } else if (w > topWeight[1]) {
+        top[1] = i;
+        topWeight[1] = w;
       }
     }
     if (inRange == 0) { return vec3(0.0); }
     if (inRange > EXACT_LIGHTS) {
       vec3 sum = vec3(0.0);
+      for (int r = 0; r < TOP_LIGHTS; ++r) {
+        vec3 e = localUnshadowed(top[r], hit, l, d, color);
+        if (occludedWithin(hit.p, l, d - 2.0)) { continue; }
+        sum += e;
+        specular += specularOf(hit.material, hit.n, viewDir, l, color);
+      }
+      // Two weighted reservoirs over the tail in one pass: light i replaces a reservoir's pick
+      // with probability weight / running total, which leaves the pick on i with probability
+      // weight / tail total.
+      float tail = total - topWeight[0] - topWeight[1];
+      if (tail <= 0.0) { return sum; }
+      int pick[2] = int[2](-1, -1);
+      float pickWeight[2] = float[2](0.0, 0.0);
+      float running = 0.0;
+      for (int i = 0; i < count; ++i) {
+        if (i == top[0] || i == top[1]) { continue; }
+        vec3 e = localUnshadowed(i, hit, l, d, color);
+        float w = e.r + e.g + e.b;
+        if (w <= 0.0) { continue; }
+        running += w;
+        for (int r = 0; r < 2; ++r) {
+          if (rand(seed) * running < w) {
+            pick[r] = i;
+            pickWeight[r] = w;
+          }
+        }
+      }
       for (int r = 0; r < 2; ++r) {
+        if (pick[r] < 0) { continue; }
         vec3 e = localUnshadowed(pick[r], hit, l, d, color);
         if (occludedWithin(hit.p, l, d - 2.0)) { continue; }
-        float share = 0.5 * total / pickWeight[r];
+        float share = 0.5 * tail / pickWeight[r];
         sum += e * share;
         specular += specularOf(hit.material, hit.n, viewDir, l, color) * share;
       }
