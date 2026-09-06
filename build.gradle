@@ -48,10 +48,11 @@ def shaderTasks = fileTree('src/main/glsl').matching { include '*.comp' }.files.
 	def out = spvDir.get().file("rltx/${src.name}.spv").asFile
 	tasks.register("compileShader_${src.name.replace('.', '_')}", Exec) {
 		inputs.file src
+		inputs.files fileTree('src/main/glsl').matching { include '*.glsl' }
 		outputs.file out
 		doFirst { out.parentFile.mkdirs() }
 		executable 'glslangValidator'
-		args '--target-env', 'vulkan1.2', '-V', src.absolutePath, '-o', out.absolutePath
+		args '--target-env', 'vulkan1.2', '-V', '-I' + file('src/main/glsl').absolutePath, src.absolutePath, '-o', out.absolutePath
 	}
 }
 

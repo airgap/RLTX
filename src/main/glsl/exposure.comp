@@ -1,36 +1,12 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
 // Auto exposure meter: one workgroup averages the log luminance the final denoiser pass
 // recorded, over a 64 by 64 grid of points across the frame, weighted towards the centre.
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-layout(std140, set = 0, binding = 6) uniform Frame {
-  vec4 cam;
-  vec4 r0;
-  vec4 r1;
-  vec4 r2;
-  vec4 prevCam;
-  vec4 p0;
-  vec4 p1;
-  vec4 p2;
-  vec4 sun;
-  vec4 sky;
-  vec4 params;
-  uvec4 misc;   // frame, flags, width, height
-  vec4 extra;
-  vec4 denoise;
-  vec4 sunColor;
-  vec4 path;
-  vec4 motion;
-  vec4 weather;
-  vec4 weather2;
-  vec4 fog;
-  vec4 weather3;
-  vec4 mistColor;
-  vec4 post;
-  vec4 post2;
-} u;
+#include "frame.glsl"
 layout(set = 0, binding = 28, rgba16f) uniform readonly image2D bloomSource;
 layout(std430, set = 0, binding = 31) buffer Exposure { float meanLogLuminance; } result;
 

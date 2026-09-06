@@ -1,4 +1,5 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_ray_query : require
 
 // One à-trous wavelet iteration of the SVGF filter over accumulated irradiance. Weights stop
@@ -10,48 +11,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outImage;
-layout(std140, set = 0, binding = 6) uniform Frame {
-  vec4 cam;
-  vec4 r0;
-  vec4 r1;
-  vec4 r2;
-  vec4 prevCam;
-  vec4 p0;
-  vec4 p1;
-  vec4 p2;
-  vec4 sun;
-  vec4 sky;
-  vec4 params;  // sun angular radius (radians), exposure, history frames, dynamic history frames
-  uvec4 misc;   // frame, flags, width, height
-  vec4 extra;
-  vec4 denoise; // luminance, normal and position sigmas, smoke plume count
-  vec4 sunColor;
-  vec4 path;
-  vec4 motion;
-  vec4 weather;  // cloud cover, fog amount, rain, snow
-  vec4 weather2; // ground wetness, snow cover, accumulated wind displacement x and z in world units
-  vec4 fog;      // fog colour in display space, lightning flash
-  vec4 weather3; // seconds, swamp mist density, mist grid side length, mist grid tile offset
-  vec4 mistColor; // display-space colour of lit mist, light shaft strength
-  vec4 post;      // vignette strength, bloom strength, render distance in world units, fade share
-  vec4 post2;     // film grain, chromatic aberration, aerial perspective, sine of the real sun's elevation
-  vec4 lights;    // local light count, local light strength scale
-  vec4 material;
-  vec4 post3;
-  vec4 wind;      // wind velocity x and z in world units per second, light disc radius, rain streak length scale
-  vec4 skyAmbient; // linear sky light on things in the open, rain speed scale
-  vec4 eye;
-  vec4 guide;      // display-space colour of the route glow, and the number of guide entries
-  vec4 marks;      // ground marker count, marker glow scale, NPC rim glow scale
-  vec4 highlight[16];
-  vec4 season;     // season 0 none to 4 winter, progress, falling leaves, blossom petals
-  vec4 star0;
-  vec4 star1;
-  vec4 star2;      // w: number of trees shedding leaves
-  vec4 night;
-  vec4 ground;     // footprint count, footprint strength, water surface height over the camera, latitude
-  vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
-} u;
+#include "frame.glsl"
 layout(push_constant) uniform Push {
   int pass;
   int step;

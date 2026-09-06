@@ -1,27 +1,10 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outImage;
-layout(std140, set = 0, binding = 6) uniform Frame {
-  vec4 cam;     // camera position, zoom
-  vec4 r0;      // inverse rotation rows: view direction to world direction
-  vec4 r1;
-  vec4 r2;
-  vec4 prevCam; // previous camera position, previous zoom
-  vec4 p0;      // previous forward rotation rows: world to view
-  vec4 p1;
-  vec4 p2;
-  vec4 sun;     // unit vector toward the sun, intensity
-  vec4 sky;     // sky radiance, ambient floor
-  vec4 params;  // sun angular radius (radians), exposure, history frames, dynamic history frames
-  uvec4 misc;   // frame, flags, width, height
-  vec4 extra;   // skybox rotation (radians), flat background colour rgb
-  vec4 denoise; // luminance, normal and position sigmas, unused
-  vec4 sunColor;
-  vec4 path;
-  vec4 motion;
-} u;
+#include "frame.glsl"
 layout(push_constant) uniform Push {
   int pass;
   int step;
