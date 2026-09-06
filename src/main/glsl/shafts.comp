@@ -40,7 +40,7 @@ layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
 layout(set = 0, binding = 27, rgba16f) uniform writeonly image2D shaftImage;
 
 // Water surfaces do not block the sun; the same mask the trace pass uses for shadows.
-const uint MASK_SHADOW = 0x3u;
+const uint MASK_SHADOW = 0xBu; // opaque, translucent and hidden roofs
 const int STEPS = 16;
 const float RANGE = 4000.0;
 const float FAR = 1e6;

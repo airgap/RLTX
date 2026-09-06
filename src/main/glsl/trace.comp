@@ -114,8 +114,12 @@ const float RAY_EPS = 0.25;
 // Instance masks: opaque geometry and translucent geometry, so a ray can ignore the latter.
 const uint MASK_OPAQUE = 0x1u;
 // Water surfaces carry their own bit so shadow rays pass through them to the bed beneath.
-const uint MASK_SHADOW = 0x3u;
+// Roofs the client hides carry their own bit: the camera's rays skip them, the rays that light
+// the rooms beneath them do not.
+const uint MASK_HIDDEN_ROOF = 0x8u;
+const uint MASK_SHADOW = 0x3u | MASK_HIDDEN_ROOF;
 const uint MASK_ALL = 0xFFu;
+const uint MASK_VISIBLE = MASK_ALL & ~MASK_HIDDEN_ROOF;
 const float FAR = 1.0e6;
 const float TWO_PI = 6.28318530718;
 
@@ -1196,7 +1200,7 @@ void main() {
 
   Hit hit;
   primaryRay = true;
-  bool seen = trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_ALL, seed, hit);
+  bool seen = trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_VISIBLE, seed, hit);
   primaryRay = false;
   if (!seen) {
     // A ray heading downward ran out of loaded scene. The sky carries on below the horizon for

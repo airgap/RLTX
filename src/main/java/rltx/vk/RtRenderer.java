@@ -90,6 +90,8 @@ public final class RtRenderer
 	private static final int MASK_OPAQUE = 0x1;
 	private static final int MASK_TRANSLUCENT = 0x2;
 	private static final int MASK_WATER = 0x4;
+	/** Roofs the client hides: skipped by the rays the camera sees with, hit by the rays that light. */
+	private static final int MASK_HIDDEN_ROOF = 0x8;
 	private static final int BYTES_PER_FACE_POS = GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
 	private static final int AS_OFFSET_ALIGNMENT = 256;
 	private static final int OUTPUT_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
@@ -2224,6 +2226,11 @@ public final class RtRenderer
 						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g],
 							res.translucent[g] ? MASK_TRANSLUCENT : res.water[g] ? MASK_WATER : MASK_OPAQUE, set.transform);
 					}
+					else if (params.roofOcclusion && hiddenRoof(set, res.level[g], res.roof[g]))
+					{
+						// The room below a hidden roof is still roofed as far as the sun and sky know.
+						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g], MASK_HIDDEN_ROOF, set.transform);
+					}
 				}
 			}
 		}
@@ -2232,6 +2239,11 @@ public final class RtRenderer
 
 	// Same rule as the GPU plugin's Zone.renderOpaque: whole levels within range are drawn,
 	// except roofs above the current level that the client asked to hide.
+	private static boolean hiddenRoof(StaticSet set, int level, int roof)
+	{
+		return level >= set.minLevel && level <= set.maxLevel && roof != 0 && level > set.level && set.hiddenRoofIds.contains(roof);
+	}
+
 	private static boolean groupVisible(StaticSet set, int level, int roof)
 	{
 		if (level < set.minLevel || level > set.maxLevel)

@@ -262,7 +262,7 @@ const float RAIN_RANGE = 3000.0;
 const float SNOW_CELL = 44.0;
 const float SNOW_SPEED = 90.0;
 const int PRECIPITATION_STEPS = 80;
-const uint MASK_SHADOW = 0x3u;
+const uint MASK_SHADOW = 0xBu; // opaque, translucent and hidden roofs
 
 // Integer hash: a fractional hash of whole numbers repeats every few cells and lines drops up.
 uint hashCell(ivec3 c) {
