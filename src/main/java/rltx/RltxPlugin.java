@@ -717,7 +717,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				LoadedScene loaded = e.getValue();
 				loaded.terrainLight = StaticSceneBuilder.terrainLight(loaded.scene, p);
-				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, foliage::kind, config.treeScale() / 100f, lights::hasLight), subTransforms.get(e.getKey()));
+				loaded.built = StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, foliage::kind, config.treeScale() / 100f, lights::hasLight);
+				renderer.setStaticSet(e.getKey(), loaded.built, subTransforms.get(e.getKey()));
 			}
 			return;
 		}
@@ -734,7 +735,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, foliage::kind, config.treeScale() / 100f, lights::hasLight);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
-				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), foliage::kind, config.treeScale() / 100f, lights::hasLight), subTransforms.get(id));
+				loaded.built = StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), foliage::kind, config.treeScale() / 100f, lights::hasLight);
+				renderer.setStaticSet(id, loaded.built, subTransforms.get(id));
 			}
 			else
 			{

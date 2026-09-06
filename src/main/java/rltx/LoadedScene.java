@@ -10,7 +10,8 @@ import rltx.scene.lights.SceneLights;
 final class LoadedScene
 {
 	final Scene scene;
-	final StaticScene built;
+	/** The geometry the renderer holds; replaced whole when the scene is rebuilt, so the swayed and displaced copies come from the same build. */
+	StaticScene built;
 	final StaticSceneBuilder.WaterBed waterBed;
 	/** Lights placed in the scene; null for nested world views. */
 	final SceneLights lights;
