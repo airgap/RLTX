@@ -107,9 +107,14 @@ shadowJar` builds a sideloadable jar for clients started in developer mode.
 ## Settings
 
 Settings live in RuneLite's sidebar under RLTX, and in a floating panel on F8 for when the
-sidebar is out of the way; `docs/settings.md` lists every one with its default. Keys, all rebindable: F11 photo mode, F9 quad-resolution photo, F8
-settings panel, F10 free camera, Ctrl+K, Ctrl+Shift+K and Ctrl+Alt+K to record, clear and render
-a cinema path while the free camera is on.
+sidebar is out of the way; `docs/settings.md` lists every one with its default. The panel also
+holds three tabs the sidebar cannot: Presets save every setting to a file or the clipboard and
+load them back; Areas bind settings to places, bounded by polygons walked corner by corner or by
+misty ground, applied when you enter and undone when you leave, with starter areas for
+Lumbridge bundled; Cinema records, previews, saves and renders camera paths. Keys, all
+rebindable: F11 photo mode, F9 quad-resolution photo, F8 settings panel, F10 free camera, and
+with the free camera on, Ctrl+K, Ctrl+Shift+K, Ctrl+Alt+K and Ctrl+Alt+P to record, clear, render
+and preview a cinema path.
 
 Skyboxes are your own files: the Skybox setting lists the Fantasy Skybox pack by Render Knight
 and needs its `Materials` folder in the pack folder setting. Without it, use the procedural sky.
