@@ -1583,6 +1583,19 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@Range(min = 4, max = 32)
+	@ConfigItem(
+		keyName = "foliageWindRange",
+		name = "Foliage wind range",
+		description = "How many tiles from the camera foliage is animated. Each swaying tree is rebuilt every frame, so this is the main cost of the effect.",
+		section = weatherSection,
+		position = 10
+	)
+	default int foliageWindRange()
+	{
+		return 16;
+	}
+
 	@ConfigItem(
 		keyName = "mistEverywhere",
 		name = "Mist everywhere",

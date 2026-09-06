@@ -63,6 +63,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Puddles | true | Dips in the ground fill with mirror-like water while it rains and dry out afterwards. |
 | Foliage wind | true | Trees, bushes and plants near the camera sway in the wind, their bases fixed and canopies moving. |
 | Foliage wind strength | 100% (0 to 300) | How far foliage bends; the weather's wind adds to it. |
+| Foliage wind range | 16 (4 to 32) | How many tiles from the camera foliage is animated. Each swaying tree is rebuilt every frame, so this is the main cost of the effect. |
 | Fireflies | true | Fireflies drifting over swamps and graveyards on dry nights |
 | Dust motes | true | Specks of dust hanging in the air, seen where sunlight catches them |
 | Smoke | true | Smoke rising from chimneys and fires, carried by the wind |

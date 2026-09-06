@@ -37,8 +37,7 @@ final class Foliage
 	private static final String[] FOLIAGE_WORDS = {"bush", "shrub", "fern", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
 	private static final String[] GRAVE_WORDS = {"grave", "tomb", "coffin", "headstone", "crypt", "sarcophag", "mausoleum"};
 	private static final Pattern FIRE_WORDS = Pattern.compile("\\b(fire|campfire|bonfire|brazier|forge|furnace|range|pyre|hearth|fireplace|stove|oven)\\b", Pattern.CASE_INSENSITIVE);
-	private static final float SWAY_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
-	private static final int SWAY_FACE_BUDGET = 150_000;
+	private static final int SWAY_FACE_BUDGET = 50_000;
 	// Where everyone is standing, for the plants they brush: x, ground height and z each.
 	private static final float BRUSH_RADIUS = 80f;
 	private static final int MAX_WALKERS = 96;
@@ -178,6 +177,7 @@ final class Foliage
 		float dirZ = (float) Math.cos(to);
 		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
 		int budget = SWAY_FACE_BUDGET;
+		float range = config.foliageWindRange() * Perspective.LOCAL_TILE_SIZE;
 		int walkers = config.footprints() ? collectWalkers() : 0;
 		for (int i = 0; i < built.zones.length; ++i)
 		{
@@ -191,7 +191,7 @@ final class Foliage
 			float centreZ = ((i % built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
 			float dx = centreX - frame.cameraX;
 			float dz = centreZ - frame.cameraZ;
-			if (dx * dx + dz * dz > SWAY_RANGE * SWAY_RANGE)
+			if (dx * dx + dz * dz > range * range)
 			{
 				continue;
 			}
