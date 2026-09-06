@@ -2,100 +2,61 @@ package rltx;
 
 import static org.lwjgl.opengl.GL43C.*;
 
+import com.google.gson.Gson;
 import com.google.inject.Provides;
 import java.awt.Canvas;
-import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.geom.AffineTransform;
-import java.nio.ByteBuffer;
 import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Actor;
 import net.runelite.api.BufferProvider;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.Constants;
+import net.runelite.api.FloatProjection;
 import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
 import net.runelite.api.Model;
+import net.runelite.api.NPC;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
-import net.runelite.api.PlayerComposition;
-import net.runelite.api.coords.LocalPoint;
-import net.runelite.api.coords.WorldPoint;
-import net.runelite.api.events.BeforeRender;
-import net.runelite.api.events.GameTick;
-import net.runelite.api.gameval.ItemID;
-import net.runelite.api.kit.KitType;
-import net.runelite.api.Projectile;
-import net.runelite.api.GraphicsObject;
 import net.runelite.api.Projection;
 import net.runelite.api.Renderable;
 import net.runelite.api.Scene;
 import net.runelite.api.Texture;
-import com.google.gson.Gson;
-import com.google.gson.JsonPrimitive;
-import java.awt.Graphics2D;
-import java.awt.Image;
-import java.awt.event.MouseEvent;
-import java.awt.image.BufferedImage;
-import java.io.File;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ExecutorService;
-import java.util.regex.Pattern;
-import javax.imageio.ImageIO;
-import net.runelite.api.ChatMessageType;
-import net.runelite.client.RuneLite;
-import java.awt.event.KeyEvent;
-import net.runelite.client.input.KeyListener;
-import net.runelite.client.input.KeyManager;
-import net.runelite.client.input.MouseAdapter;
-import net.runelite.client.input.MouseManager;
-import net.runelite.client.ui.DrawManager;
-import net.runelite.client.ui.overlay.OverlayManager;
-import net.runelite.client.game.npcoverlay.HighlightedNpc;
-import net.runelite.client.game.npcoverlay.NpcOverlayService;
-import java.lang.reflect.Field;
-import java.util.HashMap;
-import java.util.Map;
-import net.runelite.client.util.HotkeyListener;
-import net.runelite.api.Actor;
-import net.runelite.api.Constants;
-import net.runelite.api.FloatProjection;
-import net.runelite.api.NPC;
-import net.runelite.api.ObjectComposition;
-import net.runelite.api.Player;
 import net.runelite.api.TextureProvider;
-import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
+import net.runelite.api.coords.LocalPoint;
+import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.BeforeRender;
+import net.runelite.api.events.GameTick;
 import net.runelite.api.hooks.DrawCallbacks;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.RenderCallbackManager;
+import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
-import net.runelite.client.config.ConfigManager;
-import net.runelite.client.config.Keybind;
+import net.runelite.client.game.npcoverlay.NpcOverlayService;
+import net.runelite.client.input.KeyManager;
+import net.runelite.client.input.MouseManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.PluginInstantiationException;
 import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.ClientUI;
+import net.runelite.client.ui.DrawManager;
+import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.util.HotkeyListener;
 import net.runelite.rlawt.AWTContext;
 import okhttp3.OkHttpClient;
 import org.lwjgl.opengl.GL;
@@ -113,21 +74,7 @@ import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.scene.TextureCutouts;
 import rltx.scene.WaterSim;
-import rltx.scene.WaterType;
-import rltx.scene.lights.LightDefinition;
-import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
-import rltx.sky.Skybox;
-import rltx.sky.SkyboxLoader;
-import rltx.sky.Atmosphere;
-import rltx.sky.LunarPosition;
-import rltx.sky.Season;
-import rltx.sky.Sidereal;
-import rltx.sky.SolarPosition;
-import rltx.sky.StarMap;
-import rltx.sky.GeoLocation;
-import rltx.sky.WeatherService;
-import rltx.sky.WeatherState;
 import rltx.vk.FrameParams;
 import rltx.vk.RtRenderer;
 import rltx.vk.VkContext;
@@ -177,298 +124,24 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Inject
 	private NpcOverlayService npcOverlayService;
 
-	// Photo mode: the interface layer is left out of the composite, and two corners of the view
-	// act as invisible buttons, top-left to restore it and bottom-right to save a photo.
-	private static final int PHOTO_BUTTON = 96;
-	private volatile boolean chromeHidden;
-	private final HotkeyListener photoModeKey = new HotkeyListener(() -> config.photoModeKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			chromeHidden = !chromeHidden;
-			if (chromeHidden && !photoHintShown)
-			{
-				// Read once the interface comes back, since the corners give no other hint.
-				photoHintShown = true;
-				say("Photo mode: the interface was hidden. Click the top-left corner to bring it back, the bottom-right to take a photo, or press the photo mode key again.");
-			}
-		}
-	};
-	private boolean photoHintShown;
-	private final MouseAdapter photoButtons = new MouseAdapter()
-	{
-		@Override
-		public MouseEvent mousePressed(MouseEvent e)
-		{
-			if (!chromeHidden)
-			{
-				return e;
-			}
-			int w = client.getCanvasWidth();
-			int h = client.getCanvasHeight();
-			if (e.getX() < PHOTO_BUTTON && e.getY() < PHOTO_BUTTON)
-			{
-				chromeHidden = false;
-				e.consume();
-			}
-			else if (e.getX() > w - PHOTO_BUTTON && e.getY() > h - PHOTO_BUTTON)
-			{
-				takePhoto();
-				e.consume();
-			}
-			else if (config.clickToFocus() && e.getButton() == MouseEvent.BUTTON1 && e.isControlDown())
-			{
-				focusProbeX = e.getX() - client.getViewportXOffset();
-				focusProbeY = e.getY() - client.getViewportYOffset();
-				focusProbePending = true;
-				e.consume();
-			}
-			return e;
-		}
-	};
+	@Inject
+	private OkHttpClient okHttpClient;
 
-	// Click to focus: the depth under the pointer, read back from the last frame, becomes the
-	// fixed focus distance.
-	private volatile boolean focusProbePending;
-	private volatile int focusProbeX, focusProbeY;
+	@Inject
+	private Gson gson;
 
-	private void probeFocus()
-	{
-		focusProbePending = false;
-		float depth = renderer.readbackDepth(focusProbeX, focusProbeY);
-		if (depth <= 0f)
-		{
-			say("Focus: nothing there but sky");
-			return;
-		}
-		int tiles = Math.max(1, Math.min(60, Math.round(depth / Perspective.LOCAL_TILE_SIZE)));
-		configManager.setConfiguration(RltxConfig.GROUP, "focusMode", RltxConfig.FocusMode.MANUAL);
-		configManager.setConfiguration(RltxConfig.GROUP, "focusDistance", tiles);
-		say("Focus: " + tiles + " tiles");
-	}
-
-	// Free camera: detached from the client's, flown with the keyboard and turned by middle-drag.
-	private volatile boolean freeCamera;
-	private float freeX, freeY, freeZ, freePitch, freeYaw;
-	private float clientCamX, clientCamY, clientCamZ, clientPitch, clientYaw;
-	private long freeCameraNanos;
-	private final Set<Integer> heldKeys = ConcurrentHashMap.newKeySet();
-	private int lookX, lookY;
-	private boolean looking;
-	private static final Set<Integer> FLIGHT_KEYS = Set.of(KeyEvent.VK_W, KeyEvent.VK_A, KeyEvent.VK_S, KeyEvent.VK_D, KeyEvent.VK_Q, KeyEvent.VK_E, KeyEvent.VK_SHIFT);
-	private final HotkeyListener freeCameraKey = new HotkeyListener(() -> config.freeCameraKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			freeCamera = !freeCamera;
-			if (freeCamera)
-			{
-				freeX = clientCamX;
-				freeY = clientCamY;
-				freeZ = clientCamZ;
-				freePitch = clientPitch;
-				freeYaw = clientYaw;
-				freeCameraNanos = 0;
-			}
-			heldKeys.clear();
-		}
-	};
-	private final KeyListener flightKeys = new KeyListener()
-	{
-		@Override
-		public void keyTyped(KeyEvent e)
-		{
-			if (freeCamera && "wasdqeWASDQE".indexOf(e.getKeyChar()) >= 0)
-			{
-				e.consume();
-			}
-		}
-
-		@Override
-		public void keyPressed(KeyEvent e)
-		{
-			if (freeCamera && FLIGHT_KEYS.contains(e.getKeyCode()))
-			{
-				heldKeys.add(e.getKeyCode());
-				e.consume();
-			}
-		}
-
-		@Override
-		public void keyReleased(KeyEvent e)
-		{
-			if (heldKeys.remove(e.getKeyCode()) && freeCamera)
-			{
-				e.consume();
-			}
-		}
-	};
-	private final MouseAdapter freeLook = new MouseAdapter()
-	{
-		@Override
-		public MouseEvent mousePressed(MouseEvent e)
-		{
-			if (freeCamera && e.getButton() == MouseEvent.BUTTON2)
-			{
-				looking = true;
-				lookX = e.getX();
-				lookY = e.getY();
-				e.consume();
-			}
-			return e;
-		}
-
-		@Override
-		public MouseEvent mouseDragged(MouseEvent e)
-		{
-			if (looking)
-			{
-				// Dragging pulls the world with the mouse, as the client's own camera drag does.
-				freeYaw -= (e.getX() - lookX) * 0.004f;
-				freePitch = Math.max(-1.45f, Math.min(1.45f, freePitch - (e.getY() - lookY) * 0.004f));
-				lookX = e.getX();
-				lookY = e.getY();
-				e.consume();
-			}
-			return e;
-		}
-
-		@Override
-		public MouseEvent mouseReleased(MouseEvent e)
-		{
-			if (looking && e.getButton() == MouseEvent.BUTTON2)
-			{
-				looking = false;
-				e.consume();
-			}
-			return e;
-		}
-	};
-
-	// Advances the detached camera by the held keys since the last frame.
-	private void flyFreeCamera()
-	{
-		long now = System.nanoTime();
-		float dt = freeCameraNanos == 0 ? 0f : Math.min((now - freeCameraNanos) / 1e9f, 0.1f);
-		freeCameraNanos = now;
-		float speed = 6f * Perspective.LOCAL_TILE_SIZE * config.freeCameraSpeed() / 100f * (heldKeys.contains(KeyEvent.VK_SHIFT) ? 3f : 1f) * dt;
-		float[] inv = new float[9];
-		CameraMath.inverseRotation(freePitch, freeYaw, inv);
-		float forward = (heldKeys.contains(KeyEvent.VK_W) ? 1f : 0f) - (heldKeys.contains(KeyEvent.VK_S) ? 1f : 0f);
-		float right = (heldKeys.contains(KeyEvent.VK_D) ? 1f : 0f) - (heldKeys.contains(KeyEvent.VK_A) ? 1f : 0f);
-		float up = (heldKeys.contains(KeyEvent.VK_E) ? 1f : 0f) - (heldKeys.contains(KeyEvent.VK_Q) ? 1f : 0f);
-		freeX += (inv[2] * forward + inv[0] * right) * speed;
-		freeY += (inv[5] * forward + inv[3] * right) * speed - up * speed;
-		freeZ += (inv[8] * forward + inv[6] * right) * speed;
-		tetherFreeCamera();
-	}
-
-	// The free camera stays within a sphere about the character, so it frames shots around them
-	// rather than roaming the loaded area.
-	private void tetherFreeCamera()
-	{
-		Player local = client.getLocalPlayer();
-		LocalPoint lp = local == null ? null : local.getLocalLocation();
-		if (lp == null)
-		{
-			return;
-		}
-		float centreX = lp.getX();
-		float centreY = Perspective.getTileHeight(client, lp, local.getWorldLocation().getPlane()) - 120f;
-		float centreZ = lp.getY();
-		float range = config.freeCameraRange() * Perspective.LOCAL_TILE_SIZE;
-		float dx = freeX - centreX, dy = freeY - centreY, dz = freeZ - centreZ;
-		float d2 = dx * dx + dy * dy + dz * dz;
-		if (d2 > range * range)
-		{
-			float k = range / (float) Math.sqrt(d2);
-			freeX = centreX + dx * k;
-			freeY = centreY + dy * k;
-			freeZ = centreZ + dz * k;
-		}
-	}
-
-	private volatile boolean burstPending;
-	private volatile boolean quadPending;
-
-	private final HotkeyListener quadPhotoKey = new HotkeyListener(() -> config.quadPhotoKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			quadPending = true;
-		}
-	};
-
-	// A photo at twice the width and height of the view: the renderer's images are resized for the
-	// burst, the field of view held by doubling the zoom, the result read straight back, and the
-	// view-sized images restored and handed back to OpenGL for the frame that follows.
-	private void quadPhoto(int width, int height)
-	{
-		float zoom = frame.zoom;
-		float diffusionRadius = frame.diffusionRadius;
-		frame.zoom = zoom * 2f;
-		frame.diffusionRadius = diffusionRadius * 2f;
-		renderer.ensureOutput(width * 2, height * 2);
-		burst(config.photoBurst(), false);
-		glSignalPending = false;
-		int[] argb = renderer.readbackOutput();
-		float[] linear = config.linearExport() ? renderer.readbackColor() : null;
-		float exposure = frame.exposure;
-		frame.zoom = zoom;
-		frame.diffusionRadius = diffusionRadius;
-		renderer.ensureOutput(width, height);
-		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
-		int w = width * 2;
-		int h = height * 2;
-		Thread saver = new Thread(() ->
-		{
-			BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-			image.setRGB(0, 0, w, h, argb, 0, w);
-			savePhoto(image, linear, w, h, exposure);
-		}, "rltx-photo");
-		saver.setDaemon(true);
-		saver.start();
-	}
-
-	private void takePhoto()
-	{
-		if (config.photoBurst() > 0)
-		{
-			burstPending = true;
-		}
-		else
-		{
-			drawManager.requestNextFrameListener(this::savePhotoAsync);
-		}
-	}
-
-	private void savePhotoAsync(Image image)
-	{
-		savePhotoAsync(image, null, 0, 0, 1f);
-	}
-
-	private void savePhotoAsync(Image image, float[] linear, int width, int height, float exposure)
-	{
-		Thread saver = new Thread(() -> savePhoto(image, linear, width, height, exposure), "rltx-photo");
-		saver.setDaemon(true);
-		saver.start();
-	}
-
-	// Cinema mode: camera poses recorded from the free camera, rendered as a smooth path through
-	// them at photo quality, one image per output frame, for assembling into a video.
-	private final List<double[]> cinemaKeys = new ArrayList<>();
-	private volatile int cinemaFrame = -1;
-	// The clock and manual sun the path is at while rendering, when it follows the keyframes' own.
-	private volatile long cinemaNow = -1;
-	private double cinemaAzimuth, cinemaElevation;
-	private volatile boolean cinemaStop;
-	private int cinemaTotal;
-	private File cinemaDir;
-	private boolean cinemaChromeWasHidden;
-	private ExecutorService cinemaWriter;
+	// The features, each in its own class, wired together here; built at start once the
+	// injected services exist.
+	private PhotoMode photo;
+	private FreeCamera freeCamera;
+	private Cinema cinema;
+	private Environment environment;
+	private LocalLights lights;
+	private Foliage foliage;
+	private Waves waves;
+	private PluginGlow glow;
+	private Footprints footprints;
+	private final Cells cells = new Cells();
 
 	private ControlPanel controlPanel;
 	private Presets presets;
@@ -484,511 +157,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	};
 
-	// The cinema keys mean nothing outside the free camera, and must not swallow letters typed
-	// into the chat when it is not flying.
-	private abstract class FlightHotkey extends HotkeyListener
-	{
-		FlightHotkey(java.util.function.Supplier<Keybind> keybind)
-		{
-			super(keybind);
-		}
-
-		@Override
-		public void keyPressed(KeyEvent e)
-		{
-			if (freeCamera)
-			{
-				super.keyPressed(e);
-			}
-		}
-	}
-
-	private final HotkeyListener cinemaKeyframeKey = new FlightHotkey(() -> config.cinemaKeyframeKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (cinemaFrame >= 0)
-			{
-				return;
-			}
-			if (!freeCamera)
-			{
-				say("Cinema: keyframes are recorded from the free camera");
-				return;
-			}
-			cinemaKeys.add(new double[]{freeX, freeY, freeZ, freePitch, freeYaw, sunClock(), config.sunAzimuth(), config.sunElevation()});
-			say("Cinema: keyframe " + cinemaKeys.size() + " recorded");
-		}
-	};
-
-	private final HotkeyListener cinemaClearKey = new FlightHotkey(() -> config.cinemaClearKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (cinemaFrame < 0)
-			{
-				cinemaKeys.clear();
-				say("Cinema: keyframes cleared");
-			}
-		}
-	};
-
-	private final HotkeyListener cinemaRenderKey = new FlightHotkey(() -> config.cinemaRenderKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (cinemaFrame >= 0)
-			{
-				cinemaStop = true;
-			}
-			else if (cinemaKeys.size() < 2)
-			{
-				say("Cinema: record at least two keyframes first");
-			}
-			else
-			{
-				startCinema(false);
-			}
-		}
-	};
-
-	private final HotkeyListener cinemaPreviewKey = new FlightHotkey(() -> config.cinemaPreviewKey())
-	{
-		@Override
-		public void hotkeyPressed()
-		{
-			if (cinemaFrame >= 0)
-			{
-				cinemaStop = true;
-			}
-			else if (cinemaKeys.size() < 2)
-			{
-				say("Cinema: record at least two keyframes first");
-			}
-			else
-			{
-				startCinema(true);
-			}
-		}
-	};
-
-	// Playing the path live rather than rendering it, and the encoder the frames are piped to.
-	private volatile boolean cinemaPreview;
-	private Process cinemaEncoder;
-	private java.io.OutputStream cinemaPipe;
-	private CinemaPaths cinemaPaths;
-
-	// The panel's handle on the cinema: the same actions as the keys, plus the saved paths.
-	private final ControlPanel.Cinema cinemaControl = new ControlPanel.Cinema()
-	{
-		@Override
-		public int keyframes()
-		{
-			return cinemaKeys.size();
-		}
-
-		@Override
-		public String state()
-		{
-			if (cinemaFrame >= 0)
-			{
-				return (cinemaPreview ? "Previewing frame " : "Rendering frame ") + cinemaFrame + " of " + cinemaTotal;
-			}
-			return freeCamera ? "Free camera on; " + cinemaKeys.size() + " keyframes" : "Turn the free camera on to record keyframes";
-		}
-
-		@Override
-		public void record()
-		{
-			cinemaKeyframeKey.hotkeyPressed();
-		}
-
-		@Override
-		public void clear()
-		{
-			cinemaClearKey.hotkeyPressed();
-		}
-
-		@Override
-		public void render()
-		{
-			if (cinemaFrame < 0 && cinemaKeys.size() >= 2)
-			{
-				startCinema(false);
-			}
-		}
-
-		@Override
-		public void preview()
-		{
-			if (cinemaFrame < 0 && cinemaKeys.size() >= 2)
-			{
-				startCinema(true);
-			}
-		}
-
-		@Override
-		public void stop()
-		{
-			cinemaStop = true;
-		}
-
-		@Override
-		public List<double[]> export()
-		{
-			return new ArrayList<>(cinemaKeys);
-		}
-
-		@Override
-		public void load(List<double[]> keys)
-		{
-			if (cinemaFrame < 0)
-			{
-				cinemaKeys.clear();
-				cinemaKeys.addAll(keys);
-			}
-		}
-	};
-
 	private void say(String message)
 	{
 		clientThread.invoke(() -> client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null));
 	}
 
-	private void startCinema(boolean preview)
-	{
-		cinemaTotal = (cinemaKeys.size() - 1) * config.cinemaSeconds() * config.cinemaFps();
-		cinemaPreview = preview;
-		cinemaChromeWasHidden = chromeHidden;
-		if (!preview)
-		{
-			File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX/cinema-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()));
-			if (!dir.mkdirs())
-			{
-				say("Cinema: could not create " + dir);
-				return;
-			}
-			cinemaDir = dir;
-			cinemaWriter = Executors.newSingleThreadExecutor(r ->
-			{
-				Thread t = new Thread(r, "rltx-cinema");
-				t.setDaemon(true);
-				return t;
-			});
-			cinemaPipe = config.cinemaEncode() ? startEncoder(dir) : null;
-			chromeHidden = true;
-		}
-		freeCamera = true;
-		cinemaStop = false;
-		cinemaFrame = 0;
-		say(preview ? "Cinema: previewing " + cinemaTotal + " frames" : "Cinema: rendering " + cinemaTotal + " frames to " + cinemaDir.getName()
-			+ (cinemaPipe != null ? " through ffmpeg" : ""));
-	}
-
-	// ffmpeg, when it is on the path, takes the PNG frames on its standard input and writes the
-	// video; its own output goes to a log beside it so it can never block on a full pipe.
-	private java.io.OutputStream startEncoder(File dir)
-	{
-		try
-		{
-			Process probe = new ProcessBuilder("ffmpeg", "-version").redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
-			if (!probe.waitFor(5, TimeUnit.SECONDS) || probe.exitValue() != 0)
-			{
-				return null;
-			}
-			cinemaEncoder = new ProcessBuilder("ffmpeg", "-y", "-f", "image2pipe", "-framerate", Integer.toString(config.cinemaFps()), "-i", "-",
-				"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", new File(dir, "cinema.mp4").getPath())
-				.redirectErrorStream(true).redirectOutput(new File(dir, "ffmpeg.log")).start();
-			return new java.io.BufferedOutputStream(cinemaEncoder.getOutputStream(), 1 << 20);
-		}
-		catch (IOException e)
-		{
-			log.warn("ffmpeg not usable; writing PNG frames instead", e);
-			return null;
-		}
-		catch (InterruptedException e)
-		{
-			Thread.currentThread().interrupt();
-			return null;
-		}
-	}
-
-	private void finishCinema()
-	{
-		int rendered = cinemaFrame;
-		cinemaFrame = -1;
-		cinemaNow = -1;
-		chromeHidden = cinemaChromeWasHidden;
-		if (cinemaPreview)
-		{
-			say("Cinema: preview finished");
-			return;
-		}
-		java.io.OutputStream pipe = cinemaPipe;
-		Process encoder = cinemaEncoder;
-		cinemaPipe = null;
-		cinemaEncoder = null;
-		File dir = cinemaDir;
-		int fps = config.cinemaFps();
-		if (pipe != null)
-		{
-			cinemaWriter.execute(() ->
-			{
-				try
-				{
-					pipe.close();
-					encoder.waitFor();
-					say("Cinema: " + rendered + " frames encoded to " + new File(dir, "cinema.mp4"));
-				}
-				catch (IOException e)
-				{
-					log.warn("Closing the ffmpeg pipe failed", e);
-				}
-				catch (InterruptedException e)
-				{
-					Thread.currentThread().interrupt();
-				}
-			});
-		}
-		else
-		{
-			say("Cinema: " + rendered + " frames in " + dir + ". Assemble with: ffmpeg -framerate " + fps
-				+ " -i frame-%05d.png -c:v libx264 -pix_fmt yuv420p cinema.mp4");
-		}
-		cinemaWriter.shutdown();
-	}
-
-	// The camera at a frame of the path: a Catmull-Rom spline through the keyframes, one segment
-	// per keyframe interval with the ends clamped, and yaw unwrapped so the camera turns the short way.
-	private void cinemaPose(int frameIndex)
-	{
-		int perSegment = config.cinemaSeconds() * config.cinemaFps();
-		float s = Math.min(frameIndex / (float) perSegment, cinemaKeys.size() - 1 - 1e-4f);
-		int k = (int) s;
-		float t = s - k;
-		if (config.cinemaEasing() == RltxConfig.CinemaEasing.EASE)
-		{
-			// Slowing into and out of each keyframe, the way a dolly is driven.
-			t = t * t * (3f - 2f * t);
-		}
-		double[] a = cinemaKeys.get(Math.max(k - 1, 0));
-		double[] b = cinemaKeys.get(k);
-		double[] c = cinemaKeys.get(k + 1);
-		double[] d = cinemaKeys.get(Math.min(k + 2, cinemaKeys.size() - 1));
-		freeX = (float) catmullRom(a[0], b[0], c[0], d[0], t);
-		freeY = (float) catmullRom(a[1], b[1], c[1], d[1], t);
-		freeZ = (float) catmullRom(a[2], b[2], c[2], d[2], t);
-		freePitch = (float) catmullRom(a[3], b[3], c[3], d[3], t);
-		double yawA = unwrap(a[4], b[4], 2 * Math.PI);
-		double yawC = unwrap(c[4], b[4], 2 * Math.PI);
-		double yawD = unwrap(d[4], yawC, 2 * Math.PI);
-		freeYaw = (float) catmullRom(yawA, b[4], yawC, yawD, t);
-		if (config.cinemaClock())
-		{
-			// Time runs evenly between keyframes, so the sun and stars travel with the camera.
-			cinemaNow = Math.round(b[5] + (c[5] - b[5]) * t);
-			cinemaAzimuth = b[6] + (unwrap(c[6], b[6], 360.0) - b[6]) * t;
-			cinemaElevation = b[7] + (c[7] - b[7]) * t;
-		}
-	}
-
-	private static double catmullRom(double a, double b, double c, double d, double t)
-	{
-		return 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (3 * b - a - 3 * c + d) * t * t * t);
-	}
-
-	private static double unwrap(double angle, double near, double turn)
-	{
-		while (angle - near > turn / 2)
-		{
-			angle -= turn;
-		}
-		while (angle - near < -turn / 2)
-		{
-			angle += turn;
-		}
-		return angle;
-	}
-
-	// The moment the sun is computed for: the real clock with the chosen offset, or the cinema path's own.
-	private long sunClock()
-	{
-		return System.currentTimeMillis() + (config.sunMode() == RltxConfig.SunMode.REAL_TIME_SET ? config.timeOffset() * 3_600_000L : 0L);
-	}
-
-	private void writeCinemaFrame(int index, Image image)
-	{
-		java.io.OutputStream pipe = cinemaPipe;
-		File file = new File(cinemaDir, String.format("frame-%05d.png", index));
-		cinemaWriter.execute(() ->
-		{
-			try
-			{
-				if (pipe != null)
-				{
-					ImageIO.write(toBuffered(image), "png", pipe);
-				}
-				else
-				{
-					ImageIO.write(toBuffered(image), "png", file);
-				}
-			}
-			catch (IOException e)
-			{
-				log.warn("Cinema frame not written ({})", file.getName(), e);
-			}
-		});
-	}
-
-	private static BufferedImage toBuffered(Image image)
-	{
-		if (image instanceof BufferedImage)
-		{
-			return (BufferedImage) image;
-		}
-		BufferedImage buffered = new BufferedImage(image.getWidth(null), image.getHeight(null), BufferedImage.TYPE_INT_ARGB);
-		Graphics2D g = buffered.createGraphics();
-		g.drawImage(image, 0, 0, null);
-		g.dispose();
-		return buffered;
-	}
-
-	// Holds this frame's scene still and accumulates many more samples of it before it is shown,
-	// so the photo taken of it has neither noise nor denoiser blur. The client waits meanwhile.
-	private void burst(int frames)
-	{
-		burst(frames, true);
-	}
-
-	// A burst that is not presented leaves OpenGL's semaphore alone, since nothing will wait on it.
-	private void burst(int frames, boolean present)
-	{
-		frame.historyFrames = frames + 1;
-		frame.dynamicHistoryFrames = frames + 1;
-		frame.denoisePasses = 1;
-		frame.shutter = 0f;
-		// The lens becomes real for the burst, its samples averaging into true bokeh. Held frames
-		// accumulate in different units from live ones, so the history is dropped on either side.
-		frame.still = true;
-		frame.thinLens = frame.aperture > 0f;
-		renderer.resetHistory();
-		for (int i = 0; i <= frames; ++i)
-		{
-			if (i > 0)
-			{
-				renderer.beginFrame();
-			}
-			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, i == 0 && glSignalPending, present && i == frames);
-		}
-		frame.still = false;
-		frame.thinLens = false;
-		renderer.resetHistory();
-	}
-
-	private void savePhoto(Image image, float[] linear, int width, int height, float exposure)
-	{
-		File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX");
-		if (!dir.exists() && !dir.mkdirs())
-		{
-			log.warn("Could not create {}", dir);
-			return;
-		}
-		String stem = "photo-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
-		File file = new File(dir, stem + ".png");
-		try
-		{
-			ImageIO.write(toBuffered(image), "png", file);
-			if (linear != null)
-			{
-				// Scaled by the exposure so that 1.0 is display white before the tone curve.
-				for (int i = 0; i < linear.length; ++i)
-				{
-					linear[i] *= exposure;
-				}
-				HdrWriter.write(new File(dir, stem + ".hdr"), width, height, linear);
-			}
-		}
-		catch (IOException e)
-		{
-			log.warn("Photo not saved to {}", file, e);
-			return;
-		}
-		log.info("Photo saved to {}", file);
-		clientThread.invoke(() -> client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Photo saved to " + file.getName(), null));
-	}
-
-	// The finished frame as the interface sees it, read back from the framebuffer the client is
-	// about to present; the viewport holds its size in device pixels.
-	private Image screenshot()
-	{
-		int[] viewport = new int[4];
-		org.lwjgl.opengl.GL11.glGetIntegerv(org.lwjgl.opengl.GL11.GL_VIEWPORT, viewport);
-		int width = viewport[2];
-		int height = viewport[3];
-		ByteBuffer pixels = MemoryUtil.memAlloc(width * height * 4);
-		try
-		{
-			org.lwjgl.opengl.GL11.glReadPixels(0, 0, width, height, org.lwjgl.opengl.GL11.GL_RGBA, org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE, pixels);
-			BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-			int[] row = new int[width];
-			for (int y = 0; y < height; ++y)
-			{
-				int base = (height - 1 - y) * width * 4;
-				for (int x = 0; x < width; ++x)
-				{
-					int o = base + x * 4;
-					row[x] = 0xff000000 | (pixels.get(o) & 0xff) << 16 | (pixels.get(o + 1) & 0xff) << 8 | (pixels.get(o + 2) & 0xff);
-				}
-				image.setRGB(0, y, width, 1, row, 0, width);
-			}
-			return image;
-		}
-		finally
-		{
-			MemoryUtil.memFree(pixels);
-		}
-	}
-
-	@Inject
-	private OkHttpClient okHttpClient;
-
-	@Inject
-	private Gson gson;
-
-	private WeatherService weatherService;
-	private GeoLocation geoLocation;
-
-	// Real time and place takes the machine's own location; the other modes take the settings.
-	private double latitude()
-	{
-		if (config.sunMode() != RltxConfig.SunMode.REAL_TIME)
-		{
-			return config.latitude();
-		}
-		if (geoLocation == null)
-		{
-			geoLocation = new GeoLocation(okHttpClient, gson, config.latitude());
-		}
-		geoLocation.poll();
-		return geoLocation.latitude();
-	}
-
-	private double longitude()
-	{
-		if (config.sunMode() != RltxConfig.SunMode.REAL_TIME)
-		{
-			return config.longitude();
-		}
-		if (geoLocation == null)
-		{
-			geoLocation = new GeoLocation(okHttpClient, gson, config.latitude());
-		}
-		geoLocation.poll();
-		return geoLocation.longitude();
-	}
 	private boolean runoffUploaded;
 
 	// Steps the runoff simulation and uploads it while any water lies on the ground, plus one
@@ -1001,461 +174,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			return;
 		}
-		boolean wet = top.water.step(weatherDt, weatherNow.rain);
+		boolean wet = top.water.step(environment.weatherDt, environment.weatherNow.rain);
 		if (wet || !runoffUploaded)
 		{
 			renderer.setRunoff(top.water.packed());
 			runoffUploaded = !wet;
 		}
 	}
-	private volatile LightLibrary lightLibrary;
-
-	private synchronized LightLibrary lightLibrary()
-	{
-		if (lightLibrary == null)
-		{
-			lightLibrary = LightLibrary.load(gson);
-		}
-		return lightLibrary;
-	}
-
-	// Objects that carry a light in 117 HD's data: their hot-coloured faces are flames.
-	private boolean hasLight(int objectId)
-	{
-		return lightLibrary().byObject.containsKey(objectId);
-	}
-
-	private static final String[] TREE_WORDS = {"tree", "oak", "willow", "yew", "maple", "palm", "mahogany", "teak", "redwood"};
-	private static final String[] FOLIAGE_WORDS = {"bush", "shrub", "fern", "leaves", "plant", "flower", "grass", "reed", "vine", "hedge"};
-	private static final String[] GRAVE_WORDS = {"grave", "tomb", "coffin", "headstone", "crypt", "sarcophag", "mausoleum"};
-	private static final Pattern FIRE_WORDS = Pattern.compile("\\b(fire|campfire|bonfire|brazier|forge|furnace|range|pyre|hearth|fireplace|stove|oven)\\b", Pattern.CASE_INSENSITIVE);
-	/** 0 rigid, 1 foliage that sways, 2 a tree that sways and scales, 3 a grave that gathers mist, 4 a chimney or fire that smokes. */
-	private final Map<Integer, Integer> foliageIds = new ConcurrentHashMap<>();
-	private static final float SWAY_RANGE = 24 * Perspective.LOCAL_TILE_SIZE;
-	private static final int SWAY_FACE_BUDGET = 150_000;
-	private float[] swayScratch = new float[0];
-
-	private int foliageKind(int objectId)
-	{
-		return foliageIds.getOrDefault(objectId, 0);
-	}
-
-	private boolean isMisty(int objectId)
-	{
-		return foliageKind(objectId) == 3;
-	}
-
-	// Whether 117 HD describes the object's light as a fire of some kind, so smoke rises from it.
-	private boolean smokes(int objectId)
-	{
-		List<LightDefinition> defs = lightLibrary().byObject.get(objectId);
-		if (defs == null)
-		{
-			return false;
-		}
-		for (LightDefinition def : defs)
-		{
-			if (def.description != null && FIRE_WORDS.matcher(def.description).find())
-			{
-				return true;
-			}
-		}
-		return false;
-	}
-
-	// Object names live in the client's cache, which the scene loader thread must not touch, so
-	// unknown ids are resolved on the client thread first, as the GPU plugin does for its uploads.
-	private void classifyFoliage(Set<Integer> ids)
-	{
-		List<Integer> unknown = new ArrayList<>();
-		for (Integer id : ids)
-		{
-			if (!foliageIds.containsKey(id))
-			{
-				unknown.add(id);
-			}
-		}
-		if (unknown.isEmpty())
-		{
-			return;
-		}
-		CountDownLatch latch = new CountDownLatch(1);
-		clientThread.invoke(() ->
-		{
-			for (Integer id : unknown)
-			{
-				ObjectComposition def = client.getObjectDefinition(id);
-				String name = def == null || def.getName() == null ? "" : def.getName().toLowerCase(Locale.ROOT);
-				int kind = 0;
-				if (!name.contains("stump"))
-				{
-					for (String word : TREE_WORDS)
-					{
-						if (name.contains(word))
-						{
-							kind = 2;
-							break;
-						}
-					}
-					for (int i = 0; kind == 0 && i < FOLIAGE_WORDS.length; ++i)
-					{
-						if (name.contains(FOLIAGE_WORDS[i]))
-						{
-							kind = 1;
-						}
-					}
-					for (int i = 0; kind == 0 && i < GRAVE_WORDS.length; ++i)
-					{
-						if (name.contains(GRAVE_WORDS[i]))
-						{
-							kind = 3;
-						}
-					}
-					if (kind == 0 && (name.contains("chimney") || smokes(id)))
-					{
-						kind = 4;
-					}
-				}
-				foliageIds.put(id, kind);
-			}
-			latch.countDown();
-		});
-		try
-		{
-			latch.await(5, TimeUnit.SECONDS);
-		}
-		catch (InterruptedException e)
-		{
-			Thread.currentThread().interrupt();
-		}
-	}
-
-	// Foliage near the camera is drawn as swayed copies through the dynamic path each frame,
-	// its static group skipped; the wind is a slow gust field with the weather's wind on top.
-	private void pushFoliage()
-	{
-		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
-		if (!config.foliageWind() || top == null)
-		{
-			renderer.setSwayedZones(WorldView.TOPLEVEL, null);
-			return;
-		}
-		StaticScene built = top.built;
-		if (top.swayed == null || top.swayed.length != built.zones.length)
-		{
-			top.swayed = new boolean[built.zones.length];
-		}
-		float t = frame.timeSeconds;
-		float amplitude = (4f + 10f * weatherNow.wind) * config.foliageWindStrength() / 100f;
-		double to = Math.toRadians(weatherNow.windFromDegrees + 180.0);
-		float dirX = (float) Math.sin(to);
-		float dirZ = (float) Math.cos(to);
-		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
-		int budget = SWAY_FACE_BUDGET;
-		int walkers = config.footprints() ? collectWalkers() : 0;
-		for (int i = 0; i < built.zones.length; ++i)
-		{
-			StaticScene.Zone zone = built.zones[i];
-			top.swayed[i] = false;
-			if (zone == null || zone.sway.faces() == 0 || budget < zone.sway.faces())
-			{
-				continue;
-			}
-			float centreX = ((i / built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
-			float centreZ = ((i % built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
-			float dx = centreX - frame.cameraX;
-			float dz = centreZ - frame.cameraZ;
-			if (dx * dx + dz * dz > SWAY_RANGE * SWAY_RANGE)
-			{
-				continue;
-			}
-			top.swayed[i] = true;
-			budget -= zone.sway.faces();
-			int faces = zone.sway.faces();
-			float[] pos = zone.sway.positions();
-			float[] weights = zone.swayWeights;
-			int[] colors = zone.sway.colors();
-			int[] textures = zone.sway.textures();
-			float[] uvs = zone.sway.uvs();
-			if (swayScratch.length < faces * 9)
-			{
-				swayScratch = new float[faces * 9];
-			}
-			// Only walkers in or beside this zone can be brushing its plants.
-			int near = 0;
-			for (int a = 0; a < walkers; ++a)
-			{
-				if (Math.abs(walkerPos[a * 3] - centreX) < 4.5f * Perspective.LOCAL_TILE_SIZE && Math.abs(walkerPos[a * 3 + 2] - centreZ) < 4.5f * Perspective.LOCAL_TILE_SIZE)
-				{
-					System.arraycopy(walkerPos, a * 3, nearPos, near * 3, 3);
-					++near;
-				}
-			}
-			int start = dynamic.faces();
-			for (int f = 0; f < faces; ++f)
-			{
-				int o = f * 9;
-				float px = pos[o];
-				float pz = pos[o + 2];
-				// A tall tree is stiffer and slower than a shrub: its crown moves less, in longer gusts.
-				float height = (float) Math.floor(weights[f * 3]);
-				float stiff = Math.min(1f, 260f / Math.max(height, 1f));
-				float pace = 0.55f + 0.45f * stiff;
-				float gust = amplitude * stiff * ((float) Math.sin(t * 1.1 * pace + px * 0.006 + pz * 0.004) + 0.5f * (float) Math.sin(t * 2.3 * pace + pz * 0.011));
-				float ox = gust * (0.6f * dirX + 0.4f * (float) Math.sin(t * 0.7 * pace + px * 0.01));
-				float oz = gust * (0.6f * dirZ + 0.4f * (float) Math.cos(t * 0.9 * pace + pz * 0.008));
-				// Low plants lean away from anyone standing in them; trees are above the reach.
-				for (int a = 0; a < near; ++a)
-				{
-					float ax = px - nearPos[a * 3];
-					float az = pz - nearPos[a * 3 + 2];
-					float d2 = ax * ax + az * az;
-					if (d2 < BRUSH_RADIUS * BRUSH_RADIUS && d2 > 1f && nearPos[a * 3 + 1] - pos[o + 1] < 90f)
-					{
-						float d = (float) Math.sqrt(d2);
-						float push = (1f - d / BRUSH_RADIUS) * 36f / d;
-						ox += ax * push;
-						oz += az * push;
-					}
-				}
-				float rustle = 0.3f * amplitude;
-				for (int v = 0; v < 3; ++v)
-				{
-					float w = weights[f * 3 + v] - height;
-					float py = pos[o + v * 3 + 1];
-					// Leaves shiver on their own on top of the whole plant's sway.
-					float rx = rustle * (float) Math.sin(t * 3.7 + pos[o + v * 3] * 0.05 + py * 0.03);
-					float rz = rustle * (float) Math.cos(t * 4.1 + pos[o + v * 3 + 2] * 0.05 - py * 0.04);
-					swayScratch[o + v * 3] = pos[o + v * 3] + (ox + rx) * w;
-					swayScratch[o + v * 3 + 1] = py;
-					swayScratch[o + v * 3 + 2] = pos[o + v * 3 + 2] + (oz + rz) * w;
-				}
-				int uo = f * 6;
-				dynamic.face(swayScratch[o], swayScratch[o + 1], swayScratch[o + 2], swayScratch[o + 3], swayScratch[o + 4], swayScratch[o + 5],
-					swayScratch[o + 6], swayScratch[o + 7], swayScratch[o + 8], colors[f], textures[f],
-					uvs[uo], uvs[uo + 1], uvs[uo + 2], uvs[uo + 3], uvs[uo + 4], uvs[uo + 5]);
-			}
-			dynamic.setPreviousPositions(start, swayScratch, faces);
-		}
-		renderer.setSwayedZones(WorldView.TOPLEVEL, top.swayed);
-	}
-
-	// Water near the camera as real geometry: the eight longest waves of the shader's spectrum lift
-	// and lower the surface each frame, so silhouettes, shorelines and pillars meet moving water.
-	// The chop stays in the shading normals, which the shader still works out for all the waves.
-	private static final float WATER_RANGE = 14 * Perspective.LOCAL_TILE_SIZE;
-	private static final int WATER_FACE_BUDGET = 60_000;
-	private static final int GEOMETRY_WAVES = 8;
-	private final double[] waveK = new double[GEOMETRY_WAVES];
-	private final double[] waveDx = new double[GEOMETRY_WAVES];
-	private final double[] waveDz = new double[GEOMETRY_WAVES];
-	private final double[] waveOmega = new double[GEOMETRY_WAVES];
-	private final double[] waveAmplitude = new double[GEOMETRY_WAVES];
-	private final double[] wavePhase = new double[GEOMETRY_WAVES];
-	private float[] waterScratch = new float[0];
-
-	// The same wave table the shader builds, for its eight longest waves: indices 16 to 23.
-	private void prepareWaves(double windAngle)
-	{
-		for (int w = 0; w < GEOMETRY_WAVES; ++w)
-		{
-			double fi = 24 - GEOMETRY_WAVES + w;
-			double h1 = fract(Math.sin(fi * 12.9898) * 43758.5453);
-			double h2 = fract(Math.sin(fi * 78.233 + 1.0) * 43758.5453);
-			double h3 = fract(Math.sin(fi * 37.719 + 2.0) * 43758.5453);
-			double wavelength = 15.0 * Math.pow(400.0 / 15.0, (fi + h1) / 24.0);
-			double k = 2.0 * Math.PI / wavelength;
-			double spread = 0.35 + (1.2 - 0.35) * (1.0 - fi / 24.0);
-			double a = windAngle + (h2 - 0.5) * 2.0 * spread;
-			waveK[w] = k;
-			waveDx[w] = Math.cos(a);
-			waveDz[w] = Math.sin(a);
-			waveOmega[w] = Math.sqrt(9.8 * 128.0 * k);
-			// The shader's slope amplitude over k gives the height amplitude of the same wave.
-			waveAmplitude[w] = 2.0 * 0.22 * Math.pow(wavelength / 400.0, 0.25) / k;
-			wavePhase[w] = h3 * 2.0 * Math.PI;
-		}
-	}
-
-	private static double fract(double v)
-	{
-		return v - Math.floor(v);
-	}
-
-	// Height of the surface above rest at a point, in world units, for a wave time t.
-	private float waveHeight(float x, float z, double t)
-	{
-		double h = 0.0;
-		for (int w = 0; w < GEOMETRY_WAVES; ++w)
-		{
-			double phase = (waveDx[w] * x + waveDz[w] * z) * waveK[w] - waveOmega[w] * t + wavePhase[w];
-			double s = 0.5 + 0.5 * Math.sin(phase);
-			h += waveAmplitude[w] * (s * Math.sqrt(s) - 0.42);
-		}
-		return (float) h;
-	}
-
-	private void pushWater()
-	{
-		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
-		if (!config.waveGeometry() || !frame.water || top == null)
-		{
-			renderer.setDisplacedZones(WorldView.TOPLEVEL, null);
-			return;
-		}
-		StaticScene built = top.built;
-		if (top.displaced == null || top.displaced.length != built.zones.length)
-		{
-			top.displaced = new boolean[built.zones.length];
-		}
-		double windAngle = frame.windVelocityX * frame.windVelocityX + frame.windVelocityZ * frame.windVelocityZ > 1f
-			? Math.atan2(frame.windVelocityZ, frame.windVelocityX) : Math.atan2(0.78, 0.62);
-		prepareWaves(windAngle);
-		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
-		int budget = WATER_FACE_BUDGET;
-		WaterType[] types = WaterType.values();
-		for (int i = 0; i < built.zones.length; ++i)
-		{
-			StaticScene.Zone zone = built.zones[i];
-			top.displaced[i] = false;
-			if (zone == null)
-			{
-				continue;
-			}
-			int waterFaces = 0;
-			for (int g = 0; g < zone.groupWater.length; ++g)
-			{
-				waterFaces += zone.groupWater[g] ? zone.groupFaceCount[g] : 0;
-			}
-			if (waterFaces == 0 || budget < waterFaces)
-			{
-				continue;
-			}
-			float centreX = ((i / built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
-			float centreZ = ((i % built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
-			float dx = centreX - frame.cameraX;
-			float dz = centreZ - frame.cameraZ;
-			if (dx * dx + dz * dz > WATER_RANGE * WATER_RANGE)
-			{
-				continue;
-			}
-			top.displaced[i] = true;
-			budget -= waterFaces;
-			float[] pos = zone.geometry.positions();
-			int[] colors = zone.geometry.colors();
-			int[] textures = zone.geometry.textures();
-			float[] uvs = zone.geometry.uvs();
-			for (int g = 0; g < zone.groupWater.length; ++g)
-			{
-				if (!zone.groupWater[g])
-				{
-					continue;
-				}
-				int start = dynamicWater.faces();
-				int first = zone.groupFaceBase[g];
-				int count = zone.groupFaceCount[g];
-				if (waterScratch.length < count * 9)
-				{
-					waterScratch = new float[count * 9];
-				}
-				for (int f = 0; f < count; ++f)
-				{
-					int face = first + f;
-					int o = face * 9;
-					int tex = textures[face];
-					int typeIndex = (tex >> 16) & 0xFF;
-					WaterType type = typeIndex > 0 && typeIndex <= types.length ? types[typeIndex - 1] : null;
-					float strength = type == null || type.flat ? 0f : type.normalStrength * frame.waveStrength;
-					double t = frame.timeSeconds * 0.9 / Math.max(type == null ? 1f : type.duration, 0.05f);
-					int so = f * 9;
-					for (int v = 0; v < 3; ++v)
-					{
-						float x = pos[o + v * 3];
-						float z = pos[o + v * 3 + 2];
-						waterScratch[so + v * 3] = x;
-						waterScratch[so + v * 3 + 1] = pos[o + v * 3 + 1] - (strength > 0f ? waveHeight(x, z, t) * strength : 0f);
-						waterScratch[so + v * 3 + 2] = z;
-					}
-					int uo = face * 6;
-					dynamicWater.face(waterScratch[so], waterScratch[so + 1], waterScratch[so + 2], waterScratch[so + 3], waterScratch[so + 4], waterScratch[so + 5],
-						waterScratch[so + 6], waterScratch[so + 7], waterScratch[so + 8], colors[face], tex,
-						uvs[uo], uvs[uo + 1], uvs[uo + 2], uvs[uo + 3], uvs[uo + 4], uvs[uo + 5]);
-				}
-				dynamicWater.setPreviousPositions(start, waterScratch, count);
-			}
-		}
-		renderer.setDisplacedZones(WorldView.TOPLEVEL, top.displaced);
-	}
-
-	// Where everyone is standing, for the plants they brush: x, ground height and z each.
-	private static final float BRUSH_RADIUS = 80f;
-	private static final int MAX_WALKERS = 96;
-	private final float[] walkerPos = new float[MAX_WALKERS * 3];
-	private final float[] nearPos = new float[MAX_WALKERS * 3];
-
-	private int collectWalkers()
-	{
-		WorldView wv = client.getTopLevelWorldView();
-		if (wv == null)
-		{
-			return 0;
-		}
-		int plane = client.getPlane();
-		int n = 0;
-		for (Player player : wv.players())
-		{
-			n = walker(player, plane, n);
-		}
-		for (NPC npc : wv.npcs())
-		{
-			n = walker(npc, plane, n);
-		}
-		return n;
-	}
-
-	private int walker(Actor actor, int plane, int n)
-	{
-		LocalPoint lp = actor.getLocalLocation();
-		if (n >= MAX_WALKERS || lp == null || actor.getWorldLocation().getPlane() != plane)
-		{
-			return n;
-		}
-		walkerPos[n * 3] = lp.getX();
-		walkerPos[n * 3 + 1] = Perspective.getTileHeight(client, lp, plane);
-		walkerPos[n * 3 + 2] = lp.getY();
-		return n + 1;
-	}
-
-	// Occupancy of the scene by routes, markers and footprints, a bit per 512-unit cell, so the
-	// shaders' per-pixel loops over them run only where they can matter. Cells start at -6144.
-	private final int[] cellBits = new int[RtRenderer.CELL_LAYERS * RtRenderer.CELL_WORDS];
-
-	private void clearCells(int layer)
-	{
-		java.util.Arrays.fill(cellBits, layer * RtRenderer.CELL_WORDS, (layer + 1) * RtRenderer.CELL_WORDS, 0);
-	}
-
-	private void markCells(int layer, float minX, float minZ, float maxX, float maxZ)
-	{
-		int x0 = Math.max(0, (int) Math.floor((minX + 6144f) / 512f));
-		int x1 = Math.min(63, (int) Math.floor((maxX + 6144f) / 512f));
-		int z0 = Math.max(0, (int) Math.floor((minZ + 6144f) / 512f));
-		int z1 = Math.min(63, (int) Math.floor((maxZ + 6144f) / 512f));
-		for (int x = x0; x <= x1; ++x)
-		{
-			for (int z = z0; z <= z1; ++z)
-			{
-				int bit = x * 64 + z;
-				cellBits[layer * RtRenderer.CELL_WORDS + (bit >> 5)] |= 1 << (bit & 31);
-			}
-		}
-	}
-
-	// The Shortest Path plugin's route, refreshed each game tick and drawn as a ribbon of light in
-	// the composite pass instead of the plugin's own tile outlines.
-	private ShortestPath shortestPath;
-	private WorldPoint[] route;
-	private final float[] guidePacked = new float[(RtRenderer.MAX_GUIDE_POINTS + 1 + RtRenderer.MAX_WISPS) * 4];
 
 	@Subscribe
 	public void onGameTick(GameTick event)
@@ -1467,330 +192,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", area, null);
 		}
-		if (config.pathGlow() && shortestPath.bind())
-		{
-			shortestPath.hideTileOverlay();
-			route = shortestPath.route();
-		}
-		else
-		{
-			route = null;
-		}
-		// Actors gone from the world drop out of the footprint tracking.
-		if (!lastStep.isEmpty())
-		{
-			WorldView view = client.getTopLevelWorldView();
-			Set<Actor> present = new HashSet<>();
-			if (view != null)
-			{
-				for (Player player : view.players())
-				{
-					present.add(player);
-				}
-				for (NPC npc : view.npcs())
-				{
-					present.add(npc);
-				}
-			}
-			lastStep.keySet().retainAll(present);
-		}
+		glow.tick();
+		footprints.retainPresent(client.getTopLevelWorldView());
 		// The date moving the season along recolours the static scene.
 		Palette current = palette;
-		if (current != null && (current.season != seasonKind() || current.seasonProgress != seasonProgress()))
+		if (current != null && (current.season != environment.seasonKind() || current.seasonProgress != environment.seasonProgress()))
 		{
 			staticDirty = true;
 		}
-		WorldView wv = client.getTopLevelWorldView();
-		if (config.markerGlow() && wv != null && groundMarkers.bind())
-		{
-			groundMarkers.hideOverlay();
-			List<WorldPoint> tiles = new ArrayList<>();
-			List<Color> marks = new ArrayList<>();
-			groundMarkers.markers(wv, tiles, marks);
-			int[] colours = new int[marks.size()];
-			for (int i = 0; i < colours.length; ++i)
-			{
-				colours[i] = marks.get(i).getRGB();
-			}
-			markerColours = colours;
-			markerTiles = tiles.toArray(new WorldPoint[0]);
-		}
-		else
-		{
-			markerTiles = null;
-		}
-	}
-
-	// Ground Markers' tiles, refreshed each game tick, drawn as pools of light in the composite pass.
-	private GroundMarkers groundMarkers;
-	private WorldPoint[] markerTiles;
-	private int[] markerColours;
-	private final float[] markerPacked = new float[(RtRenderer.MAX_MARKERS + 1) * 4];
-
-	// The polygons the Areas tab is showing, drawn on the ground as a line of white pools.
-	private volatile List<int[]> previewPolygons;
-	private int markerFill;
-	private float markerMinX, markerMinZ, markerMaxX, markerMaxZ;
-
-	// Packs the markers on this plane: a bounding box, then tile centres with the colour's bits in
-	// w, followed by the tiles along the edges of any area polygon being edited.
-	private void fillMarkers()
-	{
-		WorldView wv = client.getTopLevelWorldView();
-		WorldPoint[] tiles = markerTiles;
-		int[] colours = markerColours;
-		List<int[]> outlines = previewPolygons;
-		if (wv == null || (tiles == null && outlines == null))
-		{
-			frame.markerCount = 0;
-			return;
-		}
-		int plane = client.getPlane();
-		markerFill = 0;
-		clearCells(1);
-		markerMinX = Float.MAX_VALUE;
-		markerMinZ = Float.MAX_VALUE;
-		markerMaxX = -Float.MAX_VALUE;
-		markerMaxZ = -Float.MAX_VALUE;
-		if (tiles != null)
-		{
-			for (int i = 0; i < tiles.length; ++i)
-			{
-				addMarker(wv, plane, tiles[i], colours[i]);
-			}
-		}
-		if (outlines != null)
-		{
-			for (int[] polygon : outlines)
-			{
-				int corners = (polygon.length - 1) / 2;
-				for (int i = 0; i < corners; ++i)
-				{
-					int ax = polygon[1 + i * 2], ay = polygon[2 + i * 2];
-					int bx = polygon[1 + ((i + 1) % corners) * 2], by = polygon[2 + ((i + 1) % corners) * 2];
-					int steps = Math.max(Math.abs(bx - ax), Math.abs(by - ay));
-					for (int s = 0; s <= steps; ++s)
-					{
-						int x = ax + Math.round((bx - ax) * (s / (float) Math.max(steps, 1)));
-						int y = ay + Math.round((by - ay) * (s / (float) Math.max(steps, 1)));
-						addMarker(wv, plane, new WorldPoint(x, y, plane), 0xffffff);
-					}
-				}
-			}
-		}
-		if (markerFill == 0)
-		{
-			frame.markerCount = 0;
-			return;
-		}
-		markerPacked[0] = markerMinX;
-		markerPacked[1] = markerMinZ;
-		markerPacked[2] = markerMaxX;
-		markerPacked[3] = markerMaxZ;
-		renderer.setMarkers(markerPacked, (markerFill + 1) * 4);
-		frame.markerCount = markerFill;
-		float strength = 1.5f * config.markerGlowStrength() / 100f;
-		frame.markerStrength = outlines != null ? Math.max(strength, 1.5f) : strength;
-	}
-
-	private void addMarker(WorldView wv, int plane, WorldPoint tile, int rgb)
-	{
-		if (markerFill >= RtRenderer.MAX_MARKERS || tile.getPlane() != plane)
-		{
-			return;
-		}
-		LocalPoint lp = LocalPoint.fromWorld(wv, tile);
-		if (lp == null)
-		{
-			return;
-		}
-		int o = (markerFill + 1) * 4;
-		markerPacked[o] = lp.getX();
-		markerPacked[o + 1] = Perspective.getTileHeight(client, lp, plane);
-		markerPacked[o + 2] = lp.getY();
-		markerPacked[o + 3] = Float.intBitsToFloat(rgb & 0xffffff);
-		++markerFill;
-		markCells(1, lp.getX() - 80f, lp.getY() - 80f, lp.getX() + 80f, lp.getY() + 80f);
-		markerMinX = Math.min(markerMinX, lp.getX());
-		markerMinZ = Math.min(markerMinZ, lp.getY());
-		markerMaxX = Math.max(markerMaxX, lp.getX());
-		markerMaxZ = Math.max(markerMaxZ, lp.getY());
-	}
-
-	// Wisps drift along the route at a walking pace, evenly spaced, each placed by walking the
-	// packed polyline to its distance along; entries follow the route points in the same buffer.
-	private int placeWisps(int points, float length)
-	{
-		if (length <= 0f)
-		{
-			return 0;
-		}
-		int wisps = Math.max(1, Math.min(RtRenderer.MAX_WISPS, (int) (length / 384f)));
-		float spacing = length / wisps;
-		float travelled = frame.timeSeconds * 220f;
-		for (int k = 0; k < wisps; ++k)
-		{
-			float target = (travelled + k * spacing) % length;
-			int o = (points + 1 + k) * 4;
-			guidePacked[o + 3] = k;
-			for (int i = 1; i < points; ++i)
-			{
-				int a = (i) * 4;
-				int b = (i + 1) * 4;
-				if (guidePacked[a + 3] < 0f || guidePacked[b + 3] < 0f || guidePacked[b + 3] < target)
-				{
-					continue;
-				}
-				float span = guidePacked[b + 3] - guidePacked[a + 3];
-				float t = span > 0f ? Math.max(0f, Math.min(1f, (target - guidePacked[a + 3]) / span)) : 0f;
-				guidePacked[o] = guidePacked[a] + (guidePacked[b] - guidePacked[a]) * t;
-				guidePacked[o + 1] = guidePacked[a + 1] + (guidePacked[b + 1] - guidePacked[a + 1]) * t;
-				guidePacked[o + 2] = guidePacked[a + 2] + (guidePacked[b + 2] - guidePacked[a + 2]) * t;
-				break;
-			}
-		}
-		return wisps;
-	}
-
-	// Which highlight colour each NPC wears this frame, as an index into the frame's palette; the
-	// colours come from every plugin that highlights NPCs through the client's overlay service.
-	private Field highlightedNpcsField;
-	private final Map<NPC, Integer> npcHighlight = new HashMap<>();
-
-	@SuppressWarnings("unchecked")
-	private void fillHighlights()
-	{
-		npcHighlight.clear();
-		frame.rimStrength = config.npcGlow() / 100f;
-		if (frame.rimStrength <= 0f)
-		{
-			return;
-		}
-		Map<NPC, HighlightedNpc> highlighted;
-		try
-		{
-			if (highlightedNpcsField == null)
-			{
-				highlightedNpcsField = NpcOverlayService.class.getDeclaredField("highlightedNpcs");
-				highlightedNpcsField.setAccessible(true);
-			}
-			highlighted = (Map<NPC, HighlightedNpc>) highlightedNpcsField.get(npcOverlayService);
-		}
-		catch (ReflectiveOperationException e)
-		{
-			throw new IllegalStateException("NPC highlights unreadable", e);
-		}
-		Map<Integer, Integer> slots = new HashMap<>();
-		for (Map.Entry<NPC, HighlightedNpc> entry : highlighted.entrySet())
-		{
-			Color colour = entry.getValue().getHighlightColor();
-			if (colour == null)
-			{
-				continue;
-			}
-			int rgb = colour.getRGB() & 0xffffff;
-			Integer slot = slots.get(rgb);
-			if (slot == null)
-			{
-				if (slots.size() >= 15)
-				{
-					continue;
-				}
-				slot = slots.size() + 1;
-				slots.put(rgb, slot);
-				int o = slot * 4;
-				frame.highlightColours[o] = (float) Math.pow(colour.getRed() / 255.0, 2.2);
-				frame.highlightColours[o + 1] = (float) Math.pow(colour.getGreen() / 255.0, 2.2);
-				frame.highlightColours[o + 2] = (float) Math.pow(colour.getBlue() / 255.0, 2.2);
-				frame.highlightColours[o + 3] = 1f;
-			}
-			npcHighlight.put(entry.getKey(), slot);
-		}
-	}
-
-	// Packs the route for the composite pass: a bounding box, then tile centres with their distance
-	// along the route in w. Tiles off this plane or outside the scene break the ribbon, marked by an
-	// entry with a negative w; the pulses run on across the break as if the route were unbroken.
-	private void fillGuide()
-	{
-		WorldView wv = client.getTopLevelWorldView();
-		WorldPoint[] tiles = route;
-		clearCells(0);
-		if (tiles == null || tiles.length < 2 || wv == null)
-		{
-			frame.guideCount = 0;
-			return;
-		}
-		int plane = client.getPlane();
-		float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-		float along = 0f, lastX = 0f, lastY = 0f, lastZ = 0f;
-		boolean gap = true;
-		int n = 0;
-		for (WorldPoint tile : tiles)
-		{
-			LocalPoint lp = tile.getPlane() == plane ? LocalPoint.fromWorld(wv, tile) : null;
-			if (lp == null)
-			{
-				gap = true;
-				continue;
-			}
-			if (gap && n > 0)
-			{
-				if (n >= RtRenderer.MAX_GUIDE_POINTS)
-				{
-					break;
-				}
-				guidePacked[(n + 1) * 4 + 3] = -1f;
-				++n;
-			}
-			if (n >= RtRenderer.MAX_GUIDE_POINTS)
-			{
-				break;
-			}
-			float x = lp.getX();
-			float y = Perspective.getTileHeight(client, lp, plane);
-			float z = lp.getY();
-			if (!gap)
-			{
-				along += (float) Math.sqrt((x - lastX) * (x - lastX) + (y - lastY) * (y - lastY) + (z - lastZ) * (z - lastZ));
-				markCells(0, Math.min(x, lastX) - 64f, Math.min(z, lastZ) - 64f, Math.max(x, lastX) + 64f, Math.max(z, lastZ) + 64f);
-			}
-			int o = (n + 1) * 4;
-			guidePacked[o] = x;
-			guidePacked[o + 1] = y;
-			guidePacked[o + 2] = z;
-			guidePacked[o + 3] = along;
-			++n;
-			minX = Math.min(minX, x);
-			minZ = Math.min(minZ, z);
-			maxX = Math.max(maxX, x);
-			maxZ = Math.max(maxZ, z);
-			lastX = x;
-			lastY = y;
-			lastZ = z;
-			gap = false;
-		}
-		if (n < 2)
-		{
-			frame.guideCount = 0;
-			return;
-		}
-		guidePacked[0] = minX;
-		guidePacked[1] = minZ;
-		guidePacked[2] = maxX;
-		guidePacked[3] = maxZ;
-		RltxConfig.PathStyle style = config.pathStyle();
-		int wisps = style == RltxConfig.PathStyle.WISPS || style == RltxConfig.PathStyle.TRAIL_WISPS ? placeWisps(n, along) : 0;
-		renderer.setGuide(guidePacked, (n + 1 + wisps) * 4);
-		frame.guideCount = n;
-		frame.guideStyle = style.ordinal();
-		frame.guideWisps = wisps;
-		frame.dirtLayer = GroundTextures.Kind.DIRT.layer();
-		Color colour = config.pathGlowColour();
-		float strength = 2f * config.pathGlowStrength() / 100f;
-		frame.guideR = (float) Math.pow(colour.getRed() / 255.0, 2.2) * strength;
-		frame.guideG = (float) Math.pow(colour.getGreen() / 255.0, 2.2) * strength;
-		frame.guideB = (float) Math.pow(colour.getBlue() / 255.0, 2.2) * strength;
 	}
 
 	// Whether the ground under a world position lies in the mist grid's coverage.
@@ -1844,87 +253,6 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			frame.underwater = true;
 			frame.waterSurfaceY = surface;
 		}
-	}
-
-	// Footprints: the last steps of everyone in view, alternating feet, kept in a ring.
-	private final float[] printPacked = new float[RtRenderer.MAX_PRINTS * 8];
-	private int printCount, printNext;
-	private final Map<Actor, float[]> lastStep = new HashMap<>();
-
-	private void trackFootprints()
-	{
-		WorldView wv = client.getTopLevelWorldView();
-		if (!config.footprints() || wv == null)
-		{
-			printCount = 0;
-			printNext = 0;
-			lastStep.clear();
-			frame.printCount = 0;
-			clearCells(2);
-			renderer.setCells(cellBits);
-			return;
-		}
-		int plane = client.getPlane();
-		for (Player player : wv.players())
-		{
-			step(player, plane);
-		}
-		for (NPC npc : wv.npcs())
-		{
-			step(npc, plane);
-		}
-		clearCells(2);
-		for (int i = 0; i < printCount; ++i)
-		{
-			float px = printPacked[i * 8], pz = printPacked[i * 8 + 2];
-			markCells(2, px - 24f, pz - 24f, px + 24f, pz + 24f);
-		}
-		renderer.setPrints(printPacked, printCount * 8);
-		renderer.setCells(cellBits);
-		frame.printCount = printCount;
-		frame.footprintStrength = 1f;
-		frame.textureDisplacement = config.textureDisplacement();
-	}
-
-	// A print lands each time an actor has moved about a third of a tile, a little to one side of
-	// its path, the side alternating.
-	private void step(Actor actor, int plane)
-	{
-		LocalPoint lp = actor.getLocalLocation();
-		if (lp == null || actor.getWorldLocation().getPlane() != plane)
-		{
-			return;
-		}
-		float[] last = lastStep.get(actor);
-		if (last == null)
-		{
-			lastStep.put(actor, new float[]{lp.getX(), lp.getY(), 0f});
-			return;
-		}
-		float dx = lp.getX() - last[0];
-		float dz = lp.getY() - last[1];
-		float d2 = dx * dx + dz * dz;
-		if (d2 < 48f * 48f)
-		{
-			return;
-		}
-		float len = (float) Math.sqrt(d2);
-		float hx = dx / len, hz = dz / len;
-		float side = last[2] <= 0f ? 1f : -1f;
-		int o = printNext * 8;
-		printPacked[o] = lp.getX() - hz * side * 9f;
-		printPacked[o + 1] = Perspective.getTileHeight(client, lp, plane);
-		printPacked[o + 2] = lp.getY() + hx * side * 9f;
-		printPacked[o + 3] = frame.timeSeconds;
-		printPacked[o + 4] = hx;
-		printPacked[o + 5] = hz;
-		printPacked[o + 6] = side;
-		printPacked[o + 7] = 0f;
-		printNext = (printNext + 1) % RtRenderer.MAX_PRINTS;
-		printCount = Math.min(printCount + 1, RtRenderer.MAX_PRINTS);
-		last[0] = lp.getX();
-		last[1] = lp.getY();
-		last[2] = side;
 	}
 
 	// Smoke sources: the fires drawn this frame, joined by the scene's chimneys at upload.
@@ -2020,125 +348,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.plumeCount = keep;
 	}
 
-	// The torch the character can be shown carrying: the lit torch item in the weapon slot, with
-	// 117 HD's wall torch light following the flame of its model.
-	private static final int HELD_TORCH = ItemID.TORCH_LIT + PlayerComposition.ITEM_OFFSET;
-	private static final LightDefinition HELD_TORCH_LIGHT = heldTorchLight();
-	private Integer heldTorchOriginal;
-	private boolean torchCarried;
-	private int torchFlameFaces;
-	private float torchX, torchTop, torchZ;
-
-	private static LightDefinition heldTorchLight()
-	{
-		LightDefinition def = new LightDefinition();
-		def.description = "Torch in hand";
-		def.radius = 300f;
-		def.strength = 10f;
-		def.color = new JsonPrimitive("#fc9403");
-		def.type = LightDefinition.Type.FLICKER;
-		def.range = 20f;
-		return def;
-	}
-
-	// The server's appearance updates put the real weapon back, so the swap is redone each frame.
 	@Subscribe
 	public void onBeforeRender(BeforeRender event)
 	{
-		torchCarried = config.heldTorch();
-		torchFlameFaces = 0;
-		fillHighlights();
-		if (torchCarried)
-		{
-			applyHeldTorch();
-		}
+		lights.beforeRender();
+		glow.fillHighlights();
 	}
-
-	private void applyHeldTorch()
-	{
-		Player local = client.getLocalPlayer();
-		PlayerComposition composition = local == null ? null : local.getPlayerComposition();
-		if (composition == null)
-		{
-			return;
-		}
-		int[] ids = composition.getEquipmentIds();
-		int slot = KitType.WEAPON.getIndex();
-		if (ids[slot] != HELD_TORCH)
-		{
-			heldTorchOriginal = ids[slot];
-			ids[slot] = HELD_TORCH;
-			composition.setHash();
-		}
-	}
-
-	private void restoreWeapon()
-	{
-		Player local = client.getLocalPlayer();
-		PlayerComposition composition = local == null ? null : local.getPlayerComposition();
-		if (composition != null && heldTorchOriginal != null)
-		{
-			int[] ids = composition.getEquipmentIds();
-			int slot = KitType.WEAPON.getIndex();
-			if (ids[slot] == HELD_TORCH)
-			{
-				ids[slot] = heldTorchOriginal;
-				composition.setHash();
-			}
-		}
-		heldTorchOriginal = null;
-	}
-
-	// The torch's light sits just above its flame so the flame's own faces do not shade the
-	// ground; when the character was not drawn this frame it hangs at hand height over them.
-	private void carryTorch(SceneLights lights)
-	{
-		Player local = client.getLocalPlayer();
-		LocalPoint lp = torchCarried && local != null ? local.getLocalLocation() : null;
-		if (lp == null)
-		{
-			lights.carry(null, 0f, 0f, 0f);
-			return;
-		}
-		if (torchFlameFaces > 0)
-		{
-			lights.carry(HELD_TORCH_LIGHT, torchX, torchTop - 24f, torchZ);
-			return;
-		}
-		float ground = Perspective.getTileHeight(client, lp, local.getWorldLocation().getPlane());
-		lights.carry(HELD_TORCH_LIGHT, lp.getX(), ground - 180f, lp.getY());
-	}
-
-	// Uploads this frame's local lights: the scene's fixed and object lights plus those
-	// following NPCs and the carried torch, nearest first.
-	private void fillLights()
-	{
-		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
-		WorldView wv = client.getTopLevelWorldView();
-		if (!config.localLights() || top == null || top.lights == null || wv == null)
-		{
-			frame.lightCount = 0;
-			return;
-		}
-		carryTorch(top.lights);
-		int count = top.lights.pack(wv.npcs(), client.getProjectiles(), wv.getGraphicsObjects(), client.getGameCycle(), lightLibrary(),
-			(lp, plane) -> Perspective.getTileHeight(client, lp, plane),
-			frame.cameraX, frame.cameraY, frame.cameraZ, frame.timeSeconds, config.lightRange() / 100f);
-		renderer.setLights(top.lights.packed(), count);
-		frame.lightCount = count;
-		// 117 HD's strengths are tuned for its light units, which run brighter than ours.
-		frame.lightStrength = config.lightStrength() / 100f * 0.35f;
-		frame.sampledLights = config.sampledLights();
-	}
-	private static final WeatherState NO_WEATHER = new WeatherState();
-	private final WeatherState weatherNow = new WeatherState();
-	private WeatherState weatherTarget = NO_WEATHER;
-	private float wetness, snowCover, flash;
-	private float weatherDt;
-	private long lastWeatherNanos;
-	private final Random lightningRandom = new Random();
-	private volatile float[] skyHorizon;
-	private volatile float[] skyHorizonRing;
 
 	private Canvas canvas;
 	private AWTContext awtContext;
@@ -2148,39 +363,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private RtRenderer renderer;
 
 	private volatile Palette palette;
-	private volatile boolean skyboxLoaded;
-	private volatile Skybox requestedSkybox;
 	private boolean gameTexturesUploaded;
-	private double sunAzimuthNow, sunElevationNow;
-	private Skybox.Phase phaseNow;
-	private volatile double skyboxSunAzimuth = Double.NaN;
-	private volatile double skyboxSunElevation = Double.NaN;
-	private static final class LoadedScene
-	{
-		final Scene scene;
-		final StaticScene built;
-		final StaticSceneBuilder.WaterBed waterBed;
-		/** Lights placed in the scene; null for nested world views. */
-		final SceneLights lights;
-		/** Zones whose foliage was drawn swayed last frame. */
-		boolean[] swayed;
-		/** Zones whose water was drawn displaced last frame. */
-		boolean[] displaced;
-		/** Rain runoff over the ground; null for nested world views. */
-		WaterSim water;
-		/** The mist grid as uploaded, for asking whether ground is misty. */
-		float[] mist;
-		int[][][] terrainLight;
-
-		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed, SceneLights lights)
-		{
-			this.scene = scene;
-			this.built = built;
-			this.terrainLight = terrainLight;
-			this.waterBed = waterBed;
-			this.lights = lights;
-		}
-	}
 
 	// Scenes are keyed by world view id; nested world views (boats, the top-level scene's
 	// moving sub-scenes) each carry their placement matrix for the frame.
@@ -2218,8 +401,6 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Override
 	protected void startUp()
 	{
-		shortestPath = new ShortestPath(pluginManager, overlayManager);
-		groundMarkers = new GroundMarkers(pluginManager, overlayManager);
 		presets = new Presets(configManager, config, gson);
 		areaRules = new AreaRules(presets, gson);
 		try
@@ -2230,19 +411,20 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			log.warn("Area settings not loaded from {}", AreaRules.FILE, e);
 		}
-		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, polygons -> previewPolygons = polygons, cinemaControl, cinemaPaths);
+		photo = new PhotoMode(client, config, configManager, drawManager, this::say);
+		freeCamera = new FreeCamera(client, config);
+		cinema = new Cinema(config, freeCamera, photo, drawManager, gson, this::say);
+		environment = new Environment(client, clientThread, config, configManager, okHttpClient, gson, cinema, frame);
+		lights = new LocalLights(client, config, gson, frame);
+		foliage = new Foliage(client, clientThread, config, lights, frame);
+		waves = new Waves(config, frame);
+		glow = new PluginGlow(client, clientThread, config, pluginManager, overlayManager, npcOverlayService, frame);
+		footprints = new Footprints(client, config, frame);
+		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
 		keyManager.registerKeyListener(controlPanelKey);
-		keyManager.registerKeyListener(quadPhotoKey);
-		keyManager.registerKeyListener(photoModeKey);
-		keyManager.registerKeyListener(freeCameraKey);
-		keyManager.registerKeyListener(cinemaKeyframeKey);
-		keyManager.registerKeyListener(cinemaClearKey);
-		keyManager.registerKeyListener(cinemaRenderKey);
-		keyManager.registerKeyListener(cinemaPreviewKey);
-		cinemaPaths = new CinemaPaths(gson);
-		keyManager.registerKeyListener(flightKeys);
-		mouseManager.registerMouseListener(photoButtons);
-		mouseManager.registerMouseListener(freeLook);
+		photo.register(keyManager, mouseManager);
+		freeCamera.register(keyManager, mouseManager);
+		cinema.register(keyManager);
 		clientThread.invoke(() ->
 		{
 			try
@@ -2270,7 +452,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				compositor = new GlCompositor(caps);
 				vk = VkContext.create(compositor.deviceUuid());
 				renderer = new RtRenderer(vk);
-				loadStarMap();
+				environment.attach(renderer);
 				float[] materials = Materials.table(gson);
 				GroundTextures.applyMaterials(materials);
 				renderer.setMaterials(materials);
@@ -2315,45 +497,19 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Override
 	protected void shutDown()
 	{
-		keyManager.unregisterKeyListener(photoModeKey);
-		keyManager.unregisterKeyListener(freeCameraKey);
 		keyManager.unregisterKeyListener(controlPanelKey);
-		keyManager.unregisterKeyListener(quadPhotoKey);
 		controlPanel.dispose();
 		areaRules.reset();
-		keyManager.unregisterKeyListener(cinemaKeyframeKey);
-		keyManager.unregisterKeyListener(cinemaClearKey);
-		keyManager.unregisterKeyListener(cinemaRenderKey);
-		keyManager.unregisterKeyListener(cinemaPreviewKey);
-		if (cinemaFrame >= 0)
-		{
-			cinemaFrame = -1;
-			cinemaNow = -1;
-			if (cinemaWriter != null)
-			{
-				cinemaWriter.shutdown();
-			}
-			if (cinemaEncoder != null)
-			{
-				cinemaEncoder.destroy();
-				cinemaEncoder = null;
-				cinemaPipe = null;
-			}
-		}
-		keyManager.unregisterKeyListener(flightKeys);
-		mouseManager.unregisterMouseListener(photoButtons);
-		mouseManager.unregisterMouseListener(freeLook);
-		chromeHidden = false;
-		freeCamera = false;
-		torchCarried = false;
-		route = null;
-		markerTiles = null;
-		heldKeys.clear();
+		cinema.shutDown();
+		cinema.unregister(keyManager);
+		photo.unregister(keyManager, mouseManager);
+		freeCamera.unregister(keyManager, mouseManager);
+		lights.reset();
+		glow.clear();
 		clientThread.invoke(() ->
 		{
-			restoreWeapon();
-			shortestPath.restoreTileOverlay();
-			groundMarkers.restoreOverlay();
+			lights.restoreWeapon();
+			glow.restoreOverlays();
 			client.setGpuFlags(0);
 			client.setDrawCallbacks(null);
 
@@ -2392,25 +548,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			sceneFramePending = false;
 			glSignalPending = false;
 			// Everything the new renderer must be given again on the next start.
+			environment.detach();
 			gameTexturesUploaded = false;
-			skyboxLoaded = false;
-			starMapLoaded = false;
-			atmosphereLoaded = false;
-			atmosphereMap = null;
-			atmosphereIntensity = -1f;
-			requestedSkybox = null;
-			skyHorizon = null;
-			skyHorizonRing = null;
-			skyboxSunAzimuth = Double.NaN;
-			skyboxSunElevation = Double.NaN;
 			patternSampled = false;
 			runoffUploaded = false;
 			palette = null;
-			lastWeatherNanos = 0;
-			autoExposureLevel = 1f;
-			wetness = 0f;
-			snowCover = 0f;
-			flash = 0f;
 
 			// Restores the interface buffer without an alpha channel.
 			client.resizeCanvas();
@@ -2430,17 +572,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
 		{
-			clientThread.invoke(this::restoreWeapon);
+			clientThread.invoke(lights::restoreWeapon);
 		}
 		if ("pathGlow".equals(event.getKey()) && !config.pathGlow())
 		{
-			route = null;
-			clientThread.invoke(shortestPath::restoreTileOverlay);
+			glow.disablePath();
 		}
 		if ("markerGlow".equals(event.getKey()) && !config.markerGlow())
 		{
-			markerTiles = null;
-			clientThread.invoke(groundMarkers::restoreOverlay);
+			glow.disableMarkers();
 		}
 		if (renderer == null)
 		{
@@ -2448,172 +588,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		if ("skybox".equals(event.getKey()) || "skyboxDirectory".equals(event.getKey()))
 		{
-			// The next frame resolves the choice against the time of day and reloads.
-			requestedSkybox = null;
+			environment.reloadSkybox();
 		}
 		if ("unlitColours".equals(event.getKey()) || "treeScale".equals(event.getKey()) || "seasonMode".equals(event.getKey()))
 		{
 			staticDirty = true;
 		}
-	}
-
-	private volatile boolean starMapLoaded;
-
-	// The scattered-light sky is recomputed off the client thread whenever the light has moved
-	// or the haze has changed enough to show, and uploaded when ready.
-	private volatile boolean atmosphereLoaded;
-	private volatile float[] atmosphereMap;
-	private boolean atmosphereBusy;
-	private float atmosphereX, atmosphereY, atmosphereZ, atmosphereIntensity = -1f, atmosphereHaze;
-
-	private void updateAtmosphere(float intensity)
-	{
-		if (!config.physicalSky() || !frame.proceduralSky || atmosphereBusy)
-		{
-			return;
-		}
-		float dx = frame.sunX - atmosphereX, dy = frame.sunY - atmosphereY, dz = frame.sunZ - atmosphereZ;
-		boolean moved = dx * dx + dy * dy + dz * dz > 0.003f * 0.003f;
-		if (!moved && Math.abs(intensity - atmosphereIntensity) < 0.02f && Math.abs(frame.fogAmount - atmosphereHaze) < 0.03f)
-		{
-			return;
-		}
-		float lx = frame.sunX, ly = frame.sunY, lz = frame.sunZ, haze = frame.fogAmount;
-		atmosphereX = lx;
-		atmosphereY = ly;
-		atmosphereZ = lz;
-		atmosphereIntensity = intensity;
-		atmosphereHaze = haze;
-		atmosphereBusy = true;
-		Thread worker = new Thread(() ->
-		{
-			float[] map = Atmosphere.render(lx, ly, lz, intensity, haze);
-			clientThread.invoke(() ->
-			{
-				atmosphereBusy = false;
-				if (renderer == null)
-				{
-					return;
-				}
-				ByteBuffer pixels = MemoryUtil.memAlloc(map.length * Float.BYTES);
-				try
-				{
-					pixels.asFloatBuffer().put(map);
-					renderer.setAtmosphere(Atmosphere.WIDTH, Atmosphere.HEIGHT, pixels);
-				}
-				finally
-				{
-					MemoryUtil.memFree(pixels);
-				}
-				atmosphereMap = map;
-				atmosphereLoaded = true;
-			});
-		}, "rltx-atmosphere");
-		worker.setDaemon(true);
-		worker.start();
-	}
-
-	// Rendering the catalogue takes a moment, so it happens off the client thread; the upload
-	// then joins the client thread where all Vulkan work happens.
-	private void loadStarMap()
-	{
-		Thread loader = new Thread(() ->
-		{
-			ByteBuffer pixels = StarMap.render();
-			clientThread.invoke(() ->
-			{
-				try
-				{
-					if (renderer != null)
-					{
-						renderer.setStarMap(StarMap.WIDTH, StarMap.HEIGHT, pixels);
-						starMapLoaded = true;
-					}
-				}
-				finally
-				{
-					MemoryUtil.memFree(pixels);
-				}
-			});
-		}, "rltx-stars");
-		loader.setDaemon(true);
-		loader.start();
-	}
-
-	// Decodes on a worker thread, then uploads on the client thread where all Vulkan work happens.
-	private void loadSkybox(Skybox choice)
-	{
-		requestedSkybox = choice;
-		if (choice == Skybox.NONE)
-		{
-			skyboxLoaded = false;
-			return;
-		}
-		Path file = Paths.get(config.skyboxDirectory(), choice.getFolder(), choice.getFile());
-		Skybox twin = choice.twin();
-		Path twinFile = twin == null ? null : Paths.get(config.skyboxDirectory(), twin.getFolder(), twin.getFile());
-		Thread loader = new Thread(() ->
-		{
-			SkyboxLoader.Decoded decoded;
-			double sunAzimuth;
-			double sunElevation;
-			try
-			{
-				decoded = SkyboxLoader.load(file);
-				if (choice.isBodyless())
-				{
-					sunAzimuth = Double.NaN;
-					sunElevation = Double.NaN;
-				}
-				else if (twinFile != null)
-				{
-					SkyboxLoader.Decoded unlit = SkyboxLoader.load(twinFile);
-					try
-					{
-						double[] body = SkyboxLoader.sunByDifference(decoded, unlit);
-						sunAzimuth = body[0];
-						sunElevation = body[1];
-					}
-					finally
-					{
-						MemoryUtil.memFree(unlit.pixels);
-					}
-				}
-				else
-				{
-					sunAzimuth = decoded.sunAzimuthDegrees;
-					sunElevation = decoded.sunElevationDegrees;
-				}
-			}
-			catch (IOException e)
-			{
-				log.warn("Skybox {} could not be loaded; using the flat sky colour", file, e);
-				skyboxLoaded = false;
-				return;
-			}
-			clientThread.invoke(() ->
-			{
-				try
-				{
-					if (renderer != null && requestedSkybox == choice)
-					{
-						renderer.setSkybox(decoded.width, decoded.height, decoded.pixels);
-						skyHorizon = decoded.horizon;
-						skyHorizonRing = decoded.horizonRing;
-						skyboxSunAzimuth = sunAzimuth;
-						skyboxSunElevation = sunElevation;
-						skyboxLoaded = true;
-						log.info("Skybox {} loaded ({}x{}), sun in image at {}", choice, decoded.width, decoded.height,
-							Double.isNaN(sunAzimuth) ? "none" : String.format("%.0f°", sunAzimuth));
-					}
-				}
-				finally
-				{
-					MemoryUtil.memFree(decoded.pixels);
-				}
-			});
-		}, "rltx-skybox-load");
-		loader.start();
 	}
 
 	// Depth along the camera axis to keep sharp: the local player's chest height, or a fixed distance.
@@ -2637,127 +617,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return config.focusDistance() * Perspective.LOCAL_TILE_SIZE;
 	}
 
-	// Sun direction from the clock and place, or from the manual settings. Direct light fades
-	// through twilight and warms near the horizon; at night a dim moon stands opposite the sun.
-	private void fillSun()
-	{
-		double azimuth;
-		double elevation;
-		boolean pathTime = cinemaFrame >= 0 && cinemaNow >= 0;
-		long now = pathTime ? cinemaNow : sunClock();
-		boolean realTime = config.sunMode() != RltxConfig.SunMode.MANUAL;
-		if (realTime)
-		{
-			SolarPosition sun = SolarPosition.compute(now, latitude(), longitude());
-			azimuth = sun.azimuthDegrees;
-			elevation = sun.elevationDegrees;
-		}
-		else
-		{
-			azimuth = pathTime ? cinemaAzimuth : config.sunAzimuth();
-			elevation = pathTime ? cinemaElevation : config.sunElevation();
-		}
-		// The fixed stars turn with the real clock whatever the sun setting.
-		Sidereal.rotation(now, latitude(), longitude(), frame.starRotation);
-		frame.starBrightness = config.stars() && starMapLoaded ? config.starBrightness() / 100f : 0f;
-		frame.moonFraction = -1f;
-
-		double daylight = Math.max(0.0, Math.min(1.0, (elevation + 2.0) / 8.0));
-		double lightAzimuth;
-		double lightElevation;
-		if (daylight > 0.0)
-		{
-			lightAzimuth = azimuth;
-			lightElevation = elevation;
-			frame.sunIntensity = (float) (config.sunIntensity() / 100.0 * daylight);
-			float warmth = (float) Math.max(0.0, Math.min(1.0, elevation / 20.0));
-			frame.sunR = 1.0f;
-			frame.sunG = 0.55f + 0.45f * warmth;
-			frame.sunB = 0.30f + 0.70f * warmth;
-		}
-		else if (realTime && config.stars())
-		{
-			// Moonlight from where the moon really is, as bright as its phase allows, and none
-			// once it has set; the sun's direction below the horizon shades the disc.
-			LunarPosition moon = LunarPosition.compute(now);
-			float[] toMoon = Sidereal.worldDirection(now, latitude(), longitude(), moon.raDegrees, moon.decDegrees);
-			lightElevation = Math.toDegrees(Math.asin(Math.max(-1.0, Math.min(1.0, -toMoon[1]))));
-			lightAzimuth = Math.toDegrees(Math.atan2(toMoon[0], toMoon[2]));
-			frame.sunIntensity = lightElevation > 0.0 ? (float) (config.sunIntensity() / 100.0 * config.moonlight() / 100.0 * (0.03 + 0.97 * moon.illuminatedFraction)) : 0f;
-			frame.sunR = 0.60f;
-			frame.sunG = 0.72f;
-			frame.sunB = 1.00f;
-			frame.moonFraction = (float) moon.illuminatedFraction;
-			double sunAz = Math.toRadians(azimuth);
-			double sunEl = Math.toRadians(elevation);
-			frame.moonSunX = (float) (Math.sin(sunAz) * Math.cos(sunEl));
-			frame.moonSunY = (float) -Math.sin(sunEl);
-			frame.moonSunZ = (float) (Math.cos(sunAz) * Math.cos(sunEl));
-		}
-		else
-		{
-			lightAzimuth = azimuth + 180.0;
-			lightElevation = -elevation;
-			frame.sunIntensity = (float) (config.sunIntensity() / 100.0 * config.moonlight() / 100.0);
-			frame.sunR = 0.60f;
-			frame.sunG = 0.72f;
-			frame.sunB = 1.00f;
-		}
-		// In manual mode a sky showing its own sun or moon puts the light where that body is
-		// painted so shadows match what is seen. Real time and place is authoritative: the light
-		// takes the computed height and the sky is only turned to follow its azimuth.
-		if (config.sunMode() == RltxConfig.SunMode.MANUAL && skyboxLoaded && !Double.isNaN(skyboxSunElevation))
-		{
-			lightElevation = skyboxSunElevation;
-		}
-		double az = Math.toRadians(lightAzimuth);
-		double el = Math.toRadians(lightElevation);
-		// Scene space has north along +z, east along +x and up along -y.
-		frame.sunX = (float) (Math.sin(az) * Math.cos(el));
-		frame.sunY = (float) -Math.sin(el);
-		frame.sunZ = (float) (Math.cos(az) * Math.cos(el));
-		updateAtmosphere(daylight > 0.0 ? frame.sunIntensity : frame.sunIntensity * 0.1f);
-		frame.physicalSky = config.physicalSky() && atmosphereLoaded;
-
-		Skybox.Phase phase = elevation > 8.0 ? Skybox.Phase.DAY
-			: elevation > -4.0 ? (azimuth < 180.0 ? Skybox.Phase.SUNRISE : Skybox.Phase.SUNSET)
-			: Skybox.Phase.NIGHT;
-		sunAzimuthNow = azimuth;
-		sunElevationNow = elevation;
-		// The real-time modes keep the manual sliders in step with the computed sun, so the panel
-		// shows where it is and switching to Manual freezes it there.
-		if (config.sunMode() != RltxConfig.SunMode.MANUAL)
-		{
-			int shownAzimuth = (((int) Math.round(azimuth)) % 360 + 360) % 360;
-			int shownElevation = (int) Math.round(Math.max(-90.0, Math.min(90.0, elevation)));
-			if (shownAzimuth != config.sunAzimuth())
-			{
-				configManager.setConfiguration(RltxConfig.GROUP, "sunAzimuth", shownAzimuth);
-			}
-			if (shownElevation != config.sunElevation())
-			{
-				configManager.setConfiguration(RltxConfig.GROUP, "sunElevation", shownElevation);
-			}
-		}
-		phaseNow = phase;
-		Skybox desired = config.proceduralSky() ? Skybox.NONE : config.skybox().resolve(phase);
-		if (desired != requestedSkybox)
-		{
-			loadSkybox(desired);
-		}
-		frame.sunUp = (float) Math.sin(Math.toRadians(elevation));
-
-		// Turn the sky so its painted sun or moon sits where the light comes from.
-		double alignment = Double.isNaN(skyboxSunAzimuth) ? 0.0 : skyboxSunAzimuth - lightAzimuth;
-		frame.skyboxRotation = (float) Math.toRadians(config.skyboxRotation() + alignment);
-	}
-
 	private Palette palette()
 	{
 		Palette p = palette;
 		boolean undo = config.unlitColours();
-		int season = seasonKind();
-		float progress = seasonProgress();
+		int season = environment.seasonKind();
+		float progress = environment.seasonProgress();
 		if (p == null || p.brightness() != client.getTextureProvider().getBrightness() || p.undoShading != undo || p.season != season || p.seasonProgress != progress)
 		{
 			p = new Palette(client.getTextureProvider(), undo, season, progress);
@@ -2766,44 +631,21 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return p;
 	}
 
-	// The season the scene is coloured for: 0 none, 1 spring to 4 winter, by the setting or the
-	// real date for the machine's hemisphere. Progress is held to twentieths so the static scene
-	// is only rebuilt every few days as the season advances.
-	private int seasonKind()
-	{
-		RltxConfig.SeasonMode mode = config.seasonMode();
-		switch (mode)
-		{
-			case OFF:
-				return 0;
-			case REAL_DATE:
-				return Season.at(System.currentTimeMillis(), latitude()).kind.ordinal() + 1;
-			default:
-				return mode.ordinal();
-		}
-	}
-
-	private float seasonProgress()
-	{
-		float progress = config.seasonMode() == RltxConfig.SeasonMode.REAL_DATE ? Season.at(System.currentTimeMillis(), latitude()).progress : 0.5f;
-		return Math.round(progress * 20f) / 20f;
-	}
-
 	@Override
 	public void loadScene(WorldView worldView, Scene scene)
 	{
 		long start = System.nanoTime();
 		Palette p = palette();
-		classifyFoliage(StaticSceneBuilder.gameObjectIds(scene));
-		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f, this::hasLight);
+		foliage.classify(StaticSceneBuilder.gameObjectIds(scene));
+		StaticScene built = StaticSceneBuilder.build(scene, renderCallbackManager, p, foliage::kind, config.treeScale() / 100f, lights::hasLight);
 		log.debug("Built static scene {}: {} faces in {} ms", scene.getWorldViewId(), built.totalFaces(), (System.nanoTime() - start) / 1_000_000);
-		SceneLights lights = null;
+		SceneLights sceneLights = null;
 		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
 		{
-			lights = new SceneLights(RtRenderer.MAX_LIGHTS);
-			lights.collect(scene, lightLibrary());
+			sceneLights = new SceneLights(RtRenderer.MAX_LIGHTS);
+			sceneLights.collect(scene, lights.library());
 		}
-		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterBed(scene), lights));
+		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterBed(scene), sceneLights));
 	}
 
 	@Override
@@ -2818,7 +660,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setStaticSet(id, loaded.built, subTransforms.get(id));
 		if (id == WorldView.TOPLEVEL)
 		{
-			loaded.mist = StaticSceneBuilder.mistGrid(scene, this::isMisty);
+			loaded.mist = StaticSceneBuilder.mistGrid(scene, foliage::isMisty);
 			renderer.setMistGrid(loaded.mist);
 			int[][][] heights = scene.getTileHeights();
 			int side = heights[0].length;
@@ -2875,7 +717,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				LoadedScene loaded = e.getValue();
 				loaded.terrainLight = StaticSceneBuilder.terrainLight(loaded.scene, p);
-				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, this::foliageKind, config.treeScale() / 100f, this::hasLight), subTransforms.get(e.getKey()));
+				renderer.setStaticSet(e.getKey(), StaticSceneBuilder.build(loaded.scene, renderCallbackManager, p, foliage::kind, config.treeScale() / 100f, lights::hasLight), subTransforms.get(e.getKey()));
 			}
 			return;
 		}
@@ -2889,10 +731,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				continue;
 			}
-			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, this::foliageKind, config.treeScale() / 100f, this::hasLight);
+			StaticScene.Zone zone = StaticSceneBuilder.buildZone(loaded.scene, zx, zz, renderCallbackManager, palette(), loaded.terrainLight, loaded.waterBed, foliage::kind, config.treeScale() / 100f, lights::hasLight);
 			if (!renderer.updateZone(id, zx, zz, zone))
 			{
-				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), this::foliageKind, config.treeScale() / 100f, this::hasLight), subTransforms.get(id));
+				renderer.setStaticSet(id, StaticSceneBuilder.build(loaded.scene, renderCallbackManager, palette(), foliage::kind, config.treeScale() / 100f, lights::hasLight), subTransforms.get(id));
 			}
 			else
 			{
@@ -2935,26 +777,22 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		dynamicTranslucent.clear();
 		dynamicWater.clear();
 
-		clientCamX = cameraX;
-		clientCamY = cameraY;
-		clientCamZ = cameraZ;
-		clientPitch = cameraPitch;
-		clientYaw = cameraYaw;
-		if (freeCamera)
+		freeCamera.setClientCamera(cameraX, cameraY, cameraZ, cameraPitch, cameraYaw);
+		if (freeCamera.on)
 		{
-			if (cinemaFrame >= 0)
+			if (cinema.active())
 			{
-				cinemaPose(cinemaFrame);
+				cinema.pose();
 			}
 			else
 			{
-				flyFreeCamera();
+				freeCamera.fly();
 			}
-			cameraX = freeX;
-			cameraY = freeY;
-			cameraZ = freeZ;
-			cameraPitch = freePitch;
-			cameraYaw = freeYaw;
+			cameraX = freeCamera.x;
+			cameraY = freeCamera.y;
+			cameraZ = freeCamera.z;
+			cameraPitch = freeCamera.pitch;
+			cameraYaw = freeCamera.yaw;
 		}
 		frame.cameraX = cameraX;
 		frame.cameraY = cameraY;
@@ -2962,7 +800,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.zoom = client.getScale();
 		CameraMath.inverseRotation(cameraPitch, cameraYaw, frame.inverseRotation);
 		CameraMath.forwardRotation(cameraPitch, cameraYaw, frame.forwardRotation);
-		if (config.photoTiltEnabled() && config.photoTilt() != 0 && !freeCamera)
+		if (config.photoTiltEnabled() && config.photoTilt() != 0 && !freeCamera.on)
 		{
 			// The rendered camera swings about the focus point to a lower pitch than the client
 			// allows; the client's own camera, and so its picking, is untouched.
@@ -3011,22 +849,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		++statDynamicCalls;
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
-		boolean torch = torchCarried && renderable == client.getLocalPlayer();
-		framePusher.flames = torch || tileObject != null && hasLight(tileObject.getId())
-			|| renderable instanceof Projectile && lightLibrary().byProjectile.containsKey(((Projectile) renderable).getId())
-			|| renderable instanceof GraphicsObject && lightLibrary().byGraphicsObject.containsKey(((GraphicsObject) renderable).getId());
-		framePusher.highlight = renderable instanceof NPC ? npcHighlight.getOrDefault((NPC) renderable, 0) : 0;
+		boolean torch = lights.torchCarried && renderable == client.getLocalPlayer();
+		framePusher.flames = torch || lights.lit(tileObject, renderable);
+		framePusher.highlight = renderable instanceof NPC ? glow.highlight((NPC) renderable) : 0;
 		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		framePusher.flames = false;
 		framePusher.highlight = 0;
 		if (torch)
 		{
-			torchFlameFaces = framePusher.flameFaces;
-			torchX = framePusher.flameX;
-			torchTop = framePusher.flameTop;
-			torchZ = framePusher.flameZ;
+			lights.torchDrawn(framePusher);
 		}
-		if (tileObject != null && framePusher.flameFaces > 0 && plumeSourceCount < MAX_PLUME_SOURCES && foliageKind(tileObject.getId()) == 4)
+		if (tileObject != null && framePusher.flameFaces > 0 && plumeSourceCount < MAX_PLUME_SOURCES && foliage.kind(tileObject.getId()) == 4)
 		{
 			int o = plumeSourceCount++ * 4;
 			plumeSources[o] = framePusher.flameX;
@@ -3135,57 +968,51 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		}
 
-		if (focusProbePending)
+		if (photo.focusProbePending())
 		{
-			probeFocus();
+			photo.probeFocus(renderer);
 		}
-		fillLighting();
-		if (cinemaFrame >= 0)
+		environment.fill();
+		frame.aperture = config.aperture();
+		frame.focusDistance = focusDistance();
+		if (cinema.active())
 		{
-			// The path's own clock, so water, rain and flames run at the sequence's rate.
-			frame.timeSeconds = cinemaFrame / (float) config.cinemaFps();
+			frame.timeSeconds = cinema.seconds();
 		}
 		frame.pattern = false;
 		long start = System.nanoTime();
 		addOffscreenActors();
-		pushFoliage();
-		pushWater();
-		fillLights();
-		fillGuide();
-		fillMarkers();
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		foliage.push(top, dynamic, renderer, environment.weatherNow);
+		waves.push(top, dynamicWater, renderer);
+		lights.fill(renderer, top == null ? null : top.lights);
+		glow.fillGuide(renderer, cells);
+		glow.fillMarkers(renderer, cells);
 		fillPlumes();
 		fillTrees();
-		trackFootprints();
+		footprints.track(renderer, cells);
+		renderer.setCells(cells.bits);
+		frame.textureDisplacement = config.textureDisplacement();
 		fillUnderwater();
 		fillRunoff();
-		if (quadPending)
+		if (photo.takeQuad())
 		{
-			quadPending = false;
 			quadPhoto(width, height);
 			renderer.beginFrame();
 		}
-		if (cinemaFrame >= 0 && !cinemaPreview)
+		if (cinema.active() && !cinema.preview())
 		{
 			burst(config.cinemaBurst());
-			int index = cinemaFrame;
-			drawManager.requestNextFrameListener(image -> writeCinemaFrame(index, image));
-			if (++cinemaFrame >= cinemaTotal || cinemaStop)
-			{
-				finishCinema();
-			}
+			cinema.frameRendered();
 		}
-		else if (cinemaFrame >= 0)
+		else if (cinema.active())
 		{
 			// A preview plays the path at the live frame rate with nothing saved.
 			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, glSignalPending, true);
-			if (++cinemaFrame >= cinemaTotal || cinemaStop)
-			{
-				finishCinema();
-			}
+			cinema.framePreviewed();
 		}
-		else if (burstPending)
+		else if (photo.takeBurst())
 		{
-			burstPending = false;
 			burst(config.photoBurst());
 			if (config.linearExport())
 			{
@@ -3193,11 +1020,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				int w = renderer.outputWidth();
 				int h = renderer.outputHeight();
 				float exposure = frame.exposure;
-				drawManager.requestNextFrameListener(image -> savePhotoAsync(image, linear, w, h, exposure));
+				drawManager.requestNextFrameListener(image -> photo.savePhotoAsync(image, linear, w, h, exposure));
 			}
 			else
 			{
-				drawManager.requestNextFrameListener(this::savePhotoAsync);
+				drawManager.requestNextFrameListener(photo::savePhotoAsync);
 			}
 		}
 		else
@@ -3224,9 +1051,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				statFrames, statDynamicCalls, statTempCalls, statInactive, statSubScene, dynamic.faces() + dynamicTranslucent.faces(),
 				String.format("%.2f", statSubmitNanos / 1_000_000.0 / Math.max(statFrames, 1)), String.format("%.2f", renderer.lastGpuMillis()),
 				statOffscreen);
-			log.debug("sun: mode={} azimuth={} elevation={} phase={} intensity={} skybox={}",
-				config.sunMode(), Math.round(sunAzimuthNow), Math.round(sunElevationNow), phaseNow,
-				String.format("%.2f", frame.sunIntensity), requestedSkybox);
+			environment.logSun();
 			Player local = client.getLocalPlayer();
 			if (local != null)
 			{
@@ -3250,337 +1075,58 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	}
 
-	private void updateWeather()
+	// A photo at twice the width and height of the view: the renderer's images are resized for the
+	// burst, the field of view held by doubling the zoom, the result read straight back, and the
+	// view-sized images restored and handed back to OpenGL for the frame that follows.
+	private void quadPhoto(int width, int height)
 	{
-		long now = System.nanoTime();
-		float dt = lastWeatherNanos == 0 ? 0f : Math.min((now - lastWeatherNanos) / 1e9f, 0.25f);
-		lastWeatherNanos = now;
-		weatherDt = dt;
-		switch (config.weatherMode())
+		float zoom = frame.zoom;
+		float diffusionRadius = frame.diffusionRadius;
+		frame.zoom = zoom * 2f;
+		frame.diffusionRadius = diffusionRadius * 2f;
+		renderer.ensureOutput(width * 2, height * 2);
+		burst(config.photoBurst(), false);
+		glSignalPending = false;
+		int[] argb = renderer.readbackOutput();
+		float[] linear = config.linearExport() ? renderer.readbackColor() : null;
+		float exposure = frame.exposure;
+		frame.zoom = zoom;
+		frame.diffusionRadius = diffusionRadius;
+		renderer.ensureOutput(width, height);
+		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
+		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
+	}
+
+	// Holds this frame's scene still and accumulates many more samples of it before it is shown,
+	// so the photo taken of it has neither noise nor denoiser blur. The client waits meanwhile.
+	private void burst(int frames)
+	{
+		burst(frames, true);
+	}
+
+	// A burst that is not presented leaves OpenGL's semaphore alone, since nothing will wait on it.
+	private void burst(int frames, boolean present)
+	{
+		frame.historyFrames = frames + 1;
+		frame.dynamicHistoryFrames = frames + 1;
+		frame.denoisePasses = 1;
+		frame.shutter = 0f;
+		// The lens becomes real for the burst, its samples averaging into true bokeh. Held frames
+		// accumulate in different units from live ones, so the history is dropped on either side.
+		frame.still = true;
+		frame.thinLens = frame.aperture > 0f;
+		renderer.resetHistory();
+		for (int i = 0; i <= frames; ++i)
 		{
-			case REAL_TIME:
-				if (weatherService == null)
-				{
-					weatherService = new WeatherService(okHttpClient, gson);
-				}
-				weatherService.poll(latitude(), longitude());
-				WeatherState latest = weatherService.latest();
-				if (latest != null)
-				{
-					weatherTarget = latest;
-				}
-				break;
-			case MANUAL:
-				weatherTarget = WeatherState.preset(config.weatherPreset()).seasonal(seasonKind(), seasonProgress());
-				break;
-			default:
-				weatherTarget = NO_WEATHER;
-				break;
-		}
-		// Conditions fade over a few seconds rather than snapping when a report or preset changes.
-		weatherNow.approach(weatherTarget, Math.min(1f, dt / 4f));
-		// Ground soaks quickly and dries slowly; snow settles and melts likewise.
-		float rainTarget = weatherNow.rain > 0.05f ? 1f : 0f;
-		wetness += (rainTarget - wetness) * Math.min(1f, dt / (rainTarget > wetness ? 15f : 90f));
-		float snowTarget = weatherNow.snow > 0.05f ? 1f : 0f;
-		snowCover += (snowTarget - snowCover) * Math.min(1f, dt / (snowTarget > snowCover ? 30f : 180f));
-		// A flash every several seconds on average, gone within a few frames.
-		if (weatherNow.storm && config.lightning() && lightningRandom.nextFloat() < dt / 5f)
-		{
-			flash = 1f;
-		}
-		else
-		{
-			flash *= Math.max(0f, 1f - dt * 12f);
-			if (flash < 0.01f)
+			if (i > 0)
 			{
-				flash = 0f;
+				renderer.beginFrame();
 			}
+			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, i == 0 && glSignalPending, present && i == frames);
 		}
-	}
-
-	private void fillWeather(float[] horizon)
-	{
-		WeatherState w = weatherNow;
-		float precipitation = config.precipitation() / 100f;
-		frame.cloud = w.cloud;
-		frame.rain = w.rain * precipitation;
-		frame.snow = w.snow * precipitation;
-		frame.fogAmount = Math.max(w.fog, 0.2f * w.rain + 0.3f * w.snow) * config.fogAmount() / 100f;
-		frame.wetness = wetness;
-		frame.snowCover = snowCover;
-		frame.flash = flash;
-		frame.mist = config.mist() / 100f;
-		frame.mistEverywhere = config.mistEverywhere();
-		frame.fireflies = config.fireflies();
-		frame.dustMotes = config.dustMotes();
-		frame.wildlife = config.wildlife();
-		frame.rainbows = config.rainbows();
-		frame.focusPeaking = config.focusPeaking();
-		frame.roofOcclusion = config.roofOcclusion();
-		frame.heatShimmer = config.heatShimmer();
-		frame.latitude = (float) latitude();
-		RltxConfig.AuroraMode auroraMode = config.aurora();
-		frame.auroraWeight = auroraMode == RltxConfig.AuroraMode.ALWAYS ? 1f
-			: auroraMode == RltxConfig.AuroraMode.REAL ? smoothstep(50f, 65f, (float) Math.abs(latitude())) : 0f;
-		frame.season = seasonKind();
-		frame.seasonProgress = seasonProgress();
-		// Leaves fall only in autumn, once the trees have begun to turn, most thickly late; petals
-		// drift around the middle of spring.
-		frame.leafFall = frame.season == 3 ? Math.max(0f, Math.min(1f, (frame.seasonProgress - 0.2f) / 0.5f)) : 0f;
-		frame.petals = frame.season == 1 ? Math.max(0f, 1f - Math.abs(frame.seasonProgress - 0.45f) * 2.5f) : 0f;
-		frame.lightShafts = config.lightShafts() / 100f;
-		frame.timeSeconds = (float) ((System.nanoTime() / 1_000_000L % 3_600_000L) / 1000.0);
-		// Wind blows away from its meteorological direction; full strength carries particles
-		// about two tiles a second. The shader gets the accumulated displacement, not the
-		// velocity, so a change of wind moves the air from where it is instead of jumping it.
-		double to = Math.toRadians(w.windFromDegrees + 180.0);
-		float speed = w.wind * 300f;
-		frame.windVelocityX = (float) Math.sin(to) * speed;
-		frame.windVelocityZ = (float) Math.cos(to) * speed;
-		frame.windOffsetX = (frame.windOffsetX + (float) Math.sin(to) * speed * weatherDt) % 1048576f;
-		frame.windOffsetZ = (frame.windOffsetZ + (float) Math.cos(to) * speed * weatherDt) % 1048576f;
-		// Fog fades to the sky's horizon colour, greyed and dimmed by cloud the same way the
-		// shader greys the sky, so fogged scenery meets the sky seamlessly.
-		float lum = 0.2126f * horizon[0] + 0.7152f * horizon[1] + 0.0722f * horizon[2];
-		float grey = 0.85f * w.cloud;
-		float dim = 1f - 0.45f * w.cloud;
-		frame.fogR = (horizon[0] + (lum - horizon[0]) * grey) * dim;
-		frame.fogG = (horizon[1] + (lum - horizon[1]) * grey) * dim;
-		frame.fogB = (horizon[2] + (lum - horizon[2]) * grey) * dim;
-		// The same by compass eighth, so the fade meets the sky's own colour behind it.
-		float[] ring = horizonRing(horizon);
-		for (int s = 0; s < 8; ++s)
-		{
-			float l = 0.2126f * ring[s * 3] + 0.7152f * ring[s * 3 + 1] + 0.0722f * ring[s * 3 + 2];
-			for (int c = 0; c < 3; ++c)
-			{
-				frame.fogRing[s * 4 + c] = (ring[s * 3 + c] + (l - ring[s * 3 + c]) * grey) * dim;
-			}
-			frame.fogRing[s * 4 + 3] = 1f;
-		}
-		// Sky light in linear radiance for things the final pass lights itself: the sky's own
-		// horizon colour under its intensity and the cloud's dimming, or the flat sky colour.
-		boolean pictured = skyboxLoaded || frame.proceduralSky;
-		frame.skyAmbientR = (pictured ? horizon[0] * frame.skyR : frame.skyR) * dim * 0.6f;
-		frame.skyAmbientG = (pictured ? horizon[1] * frame.skyG : frame.skyG) * dim * 0.6f;
-		frame.skyAmbientB = (pictured ? horizon[2] * frame.skyB : frame.skyB) * dim * 0.6f;
-		// Mist scatters nearly all the sun and sky light that reaches it, so it sits brighter than
-		// the ground beneath, which reflects only its albedo's share. The final pass composites in
-		// display space, so the colour goes through the same tone map as the scene.
-		frame.mistR = tonemap(frame.sunR * frame.sunIntensity * 0.9f + horizon[0] * frame.skyR * 1.3f + frame.ambient);
-		frame.mistG = tonemap(frame.sunG * frame.sunIntensity * 0.9f + horizon[1] * frame.skyG * 1.3f + frame.ambient);
-		frame.mistB = tonemap(frame.sunB * frame.sunIntensity * 0.9f + horizon[2] * frame.skyB * 1.3f + frame.ambient);
-	}
-
-	// The analytic sky's colour at the horizon, matching proceduralSky() in trace.comp, for the
-	// fog and distance fade to meet.
-	// Horizon colour by eighth of the compass: the skybox's own ring, the scattered-light map's
-	// horizon row, or the single colour repeated.
-	private float[] horizonRing(float[] uniform)
-	{
-		float[] map = atmosphereMap;
-		if (frame.physicalSky && map != null)
-		{
-			int row = (int) ((0.5 - 2.0 / 180.0) * Atmosphere.HEIGHT);
-			float[] ring = new float[8 * 3];
-			for (int i = 0; i < Atmosphere.WIDTH; ++i)
-			{
-				// Map columns and the shaders' sectors share one azimuth mapping.
-				int sector = (int) Math.floor((i + 0.5) / Atmosphere.WIDTH * 8.0) & 7;
-				int o = (row * Atmosphere.WIDTH + i) * 4;
-				for (int c = 0; c < 3; ++c)
-				{
-					ring[sector * 3 + c] += map[o + c] * 8f / Atmosphere.WIDTH;
-				}
-			}
-			return ring;
-		}
-		float[] skyRing = skyHorizonRing;
-		if (!frame.proceduralSky && skyboxLoaded && skyRing != null)
-		{
-			return skyRing;
-		}
-		float[] ring = new float[8 * 3];
-		for (int s = 0; s < 8; ++s)
-		{
-			System.arraycopy(uniform, 0, ring, s * 3, 3);
-		}
-		return ring;
-	}
-
-	private float[] proceduralHorizon()
-	{
-		float[] map = atmosphereMap;
-		if (frame.physicalSky && map != null)
-		{
-			// The scattered-light map's row just above the horizon, averaged around the compass.
-			int row = (int) ((0.5 - 2.0 / 180.0) * Atmosphere.HEIGHT);
-			float[] h = new float[3];
-			for (int i = 0; i < Atmosphere.WIDTH; ++i)
-			{
-				int o = (row * Atmosphere.WIDTH + i) * 4;
-				h[0] += map[o];
-				h[1] += map[o + 1];
-				h[2] += map[o + 2];
-			}
-			for (int c = 0; c < 3; ++c)
-			{
-				h[c] /= Atmosphere.WIDTH;
-			}
-			return h;
-		}
-		float day = smoothstep(-0.12f, 0.15f, frame.sunUp);
-		float low = (1f - smoothstep(0f, 0.35f, Math.abs(frame.sunUp))) * day;
-		float[] h = new float[3];
-		float[] night = {0.012f, 0.014f, 0.024f};
-		float[] dayColor = {0.62f, 0.74f, 0.90f};
-		float[] dusk = {0.95f, 0.45f, 0.2f};
-		for (int i = 0; i < 3; ++i)
-		{
-			float base = night[i] + (dayColor[i] - night[i]) * day;
-			h[i] = base + (dusk[i] - base) * low * 0.5f;
-		}
-		return h;
-	}
-
-	private static float smoothstep(float a, float b, float x)
-	{
-		float t = Math.max(0f, Math.min(1f, (x - a) / (b - a)));
-		return t * t * (3f - 2f * t);
-	}
-
-	private float autoExposureLevel = 1f;
-
-	// The meter reports the last frame's mean log luminance before exposure; the level chases
-	// the exposure that would put that mean at middle grey, faster when darkening.
-	private void fillExposure()
-	{
-		frame.autoExposure = config.autoExposure();
-		if (!frame.autoExposure)
-		{
-			frame.exposure = config.exposure() / 100f;
-			return;
-		}
-		double meanLog = renderer.averageLogLuminance();
-		if (!Double.isNaN(meanLog))
-		{
-			float target = (float) (0.18 / Math.max(Math.exp(meanLog), 1e-4));
-			target = Math.max(0.3f, Math.min(5f, target));
-			float tau = target > autoExposureLevel ? 1.2f : 0.5f;
-			autoExposureLevel += (target - autoExposureLevel) * (1f - (float) Math.exp(-weatherDt / tau));
-		}
-		frame.exposure = autoExposureLevel * config.exposure() / 100f;
-	}
-
-	// The character's eyes, a little above the head, for the line of sight test.
-	private void fillEyes()
-	{
-		Player player = client.getLocalPlayer();
-		LocalPoint lp = player == null ? null : player.getLocalLocation();
-		if (!config.lineOfSight() || lp == null)
-		{
-			frame.unseenDarkness = 0f;
-			return;
-		}
-		frame.eyeX = lp.getX();
-		frame.eyeZ = lp.getY();
-		frame.eyeY = Perspective.getTileHeight(client, lp, player.getWorldLocation().getPlane()) - 230f;
-		frame.unseenDarkness = config.lineOfSightDarkness() / 100f;
-	}
-
-	// Same filmic curve as atrous.comp, so CPU-derived display colours match the scene.
-	private float tonemap(float c)
-	{
-		c *= frame.exposure;
-		return Math.max(0f, Math.min(1f, (c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f)));
-	}
-
-	private void fillLighting()
-	{
-		updateWeather();
-		fillSun();
-		// Cloud cover dims the sun and spreads it into soft shadows.
-		frame.sunIntensity *= 1f - 0.92f * weatherNow.cloud;
-		// A sky painted without its sun or moon has no body to cast shadows or glow, and the
-		// light can be switched off outright for places the sky never reaches.
-		if (!config.sunEnabled() || (skyboxLoaded && requestedSkybox != null && requestedSkybox.isBodyless()))
-		{
-			frame.sunIntensity = 0f;
-		}
-		frame.sunAngularRadius = (float) Math.toRadians(config.sunSize() / 2.0 * (1.0 + 6.0 * weatherNow.cloud));
-		frame.sunDiscRadius = (float) Math.toRadians(config.sunDiscSize() / 10.0 / 2.0);
-		frame.shadows = config.shadows();
-		frame.bounces = config.bounces();
-		frame.ambient = config.ambient() / 100f;
-		frame.exposure = config.exposure() / 100f;
-		frame.historyFrames = config.temporal() ? config.historyFrames() : 1;
-		frame.dynamicHistoryFrames = config.temporal() ? config.dynamicHistoryFrames() : 1;
-		frame.denoisePasses = config.denoiserPasses();
-		frame.denoiseLuminance = config.denoiserStrength();
-		frame.cullBackfaces = config.cullBackfaces();
-		frame.textures = config.textures();
-		frame.bumpStrength = config.bumpStrength() / 100f;
-		frame.glossyReflections = config.glossyReflections();
-		frame.surfaceGloss = config.surfaceGloss() / 100f * 0.3f;
-		// Low roughness is a tight, glassy highlight; high spreads it wide.
-		frame.surfaceGlossExponent = 300f - 288f * config.surfaceRoughness() / 100f;
-		frame.emissiveStrength = config.emissiveStrength() / 100f;
-		frame.caustics = config.caustics();
-		frame.terrainTextures = config.terrainTextures();
-		frame.terrainSmoothing = config.terrainSmoothing();
-		frame.terrainBump = config.terrainBump() / 100f;
-		frame.rainRipples = config.rainRipples();
-		frame.rainSpeed = config.rainSpeed() / 100f;
-		fillEyes();
-		frame.rainLength = config.rainLength() / 100f;
-		frame.puddles = config.puddles();
-		frame.contrast = config.contrast() / 100f;
-		frame.saturation = config.saturation() / 100f;
-		frame.temperature = config.temperature() / 100f;
-		frame.diffusion = config.softGlow() ? config.diffusion() / 100f : 0f;
-		frame.diffusionRadius = config.diffusionRadius();
-		frame.antialias = config.antialias();
-		frame.water = config.water();
-		// Wrapped where every integer scroll speed lands on a whole texture repeat.
-		frame.gameCycle = client.getGameCycle() & 0x3FFF;
-		// Scales each water type's own wave strength; 1 keeps 117 HD's values.
-		frame.waveStrength = config.waveStrength() / 100f * 1.5f;
-		frame.aperture = config.aperture();
-		frame.focusDistance = focusDistance();
-		frame.shutter = config.motionBlur() / 100f;
-		frame.vignette = config.vignette() / 100f;
-		frame.bloom = config.bloom() / 100f;
-		frame.lensFlare = config.lensFlare() / 100f;
-		frame.renderDistance = config.drawDistance() * Perspective.LOCAL_TILE_SIZE;
-		frame.distanceFade = config.distanceFade() / 100f;
-		frame.filmGrain = config.filmGrain() / 100f;
-		frame.chromaticAberration = config.chromaticAberration() / 100f;
-		frame.skybox = skyboxLoaded;
-		// An overcast sky is greyed in the shader; it lights the scene more diffusely.
-		float skyIntensity = config.skyIntensity() / 100f * (1f + 0.5f * weatherNow.cloud);
-		Color sky = config.skyColor();
-		frame.backgroundR = sky.getRed() / 255f;
-		frame.backgroundG = sky.getGreen() / 255f;
-		frame.backgroundB = sky.getBlue() / 255f;
-		frame.proceduralSky = config.proceduralSky();
-		frame.clouds = true;
-		frame.cloudShadows = config.cloudShadows();
-		frame.aerialPerspective = config.aerialPerspective() / 100f;
-		if (skyboxLoaded || frame.proceduralSky)
-		{
-			frame.skyR = frame.skyG = frame.skyB = skyIntensity;
-		}
-		else
-		{
-			frame.skyR = frame.backgroundR * skyIntensity;
-			frame.skyG = frame.backgroundG * skyIntensity;
-			frame.skyB = frame.backgroundB * skyIntensity;
-		}
-		float[] horizon = frame.proceduralSky ? proceduralHorizon()
-			: skyboxLoaded && skyHorizon != null ? skyHorizon : new float[]{frame.backgroundR, frame.backgroundG, frame.backgroundB};
-		fillWeather(horizon);
-		fillExposure();
+		frame.still = false;
+		frame.thinLens = false;
+		renderer.resetHistory();
 	}
 
 	// The client decodes its textures lazily; once every one is available they are packed into
@@ -3745,11 +1291,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			}
 		}
 
-		if (!chromeHidden)
+		if (!photo.chromeHidden)
 		{
 			compositor.drawUi(overlayColor, 0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
 		}
-		drawManager.processDrawComplete(this::screenshot);
+		drawManager.processDrawComplete(PhotoMode::screenshot);
 
 		try
 		{
