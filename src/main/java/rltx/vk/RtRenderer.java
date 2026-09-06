@@ -2449,12 +2449,14 @@ public final class RtRenderer
 				readOnlyForDlss(cmd, output.image);
 				readOnlyForDlss(cmd, motionImage.image);
 				readOnlyForDlss(cmd, depthImage.image);
+				// The shader moves each pixel's sample point by the jitter; DLSS wants the jitter as the
+				// projection's displacement of the image, which is the same shift with the opposite sign.
 				int result = Ngx.evaluate(cmd.address(), dlssFeature,
 					output.image, output.view, OUTPUT_FORMAT, internalWidth, internalHeight,
 					presented.image, presented.view, OUTPUT_FORMAT, outputWidth, outputHeight,
 					depthImage.image, depthImage.view, DEPTH_FORMAT,
 					motionImage.image, motionImage.view, MOTION_FORMAT,
-					jitterX, jitterY, !hasHistory);
+					-jitterX, -jitterY, !hasHistory);
 				if (result != 1 && !warnedDlss)
 				{
 					warnedDlss = true;
