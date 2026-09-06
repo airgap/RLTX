@@ -300,6 +300,30 @@ public final class RtRenderer
 		boolean[] sway = new boolean[0];
 	}
 
+	// A zone rebuilt since the last frame. Its old structures are freed and the new ones uploaded
+	// and built in the next frame's command buffer, once the GPU has finished the frame that may
+	// still be reading the old ones, so no zone change drains the device.
+	private static final class ZoneUpdate
+	{
+		final StaticSet set;
+		final ZoneRes res;
+		/** The zone's new geometry, or null to remove it. */
+		final StaticScene.Zone zone;
+		VkBuf staging;
+		VkBuf scratch;
+
+		ZoneUpdate(StaticSet set, ZoneRes res, StaticScene.Zone zone)
+		{
+			this.set = set;
+			this.res = res;
+			this.zone = zone;
+		}
+	}
+
+	private final Map<Long, ZoneUpdate> pendingZones = new LinkedHashMap<>();
+	/** Buffers the frame in flight may still read; freed once it is known to have finished. */
+	private final List<VkBuf> retired = new ArrayList<>();
+
 	private static final class StaticSet
 	{
 		final int id;
@@ -1147,6 +1171,8 @@ public final class RtRenderer
 	 */
 	public void setStaticSet(int id, StaticScene scene, float[] transform)
 	{
+		StaticSet replaced = staticSets.get(id);
+		pendingZones.values().removeIf(update -> update.set == replaced);
 		idle();
 		removeStaticSet(id);
 		StaticSet set = new StaticSet(id);
@@ -1216,6 +1242,11 @@ public final class RtRenderer
 	 * Replaces one zone of a loaded scene in place. Returns false when the zone no longer fits
 	 * its slot, in which case the caller should rebuild the whole scene.
 	 */
+	/**
+	 * Replaces one zone of a scene, or removes it for a null zone. The change reaches the GPU with
+	 * the next frame. Returns false when the zone no longer fits its slot, in which case the whole
+	 * scene must be set again.
+	 */
 	public boolean updateZone(int id, int zx, int zz, StaticScene.Zone zone)
 	{
 		StaticSet set = staticSets.get(id);
@@ -1229,14 +1260,13 @@ public final class RtRenderer
 			return true;
 		}
 		int index = zx * set.zonesZ + zz;
+		long key = (long) id << 32 | index;
 		ZoneRes res = set.zones[index];
 		if (zone == null)
 		{
 			if (res != null)
 			{
-				idle();
-				destroyZoneAccel(res);
-				refreshRoofFlags(set);
+				pendingZones.put(key, new ZoneUpdate(set, res, null));
 			}
 			return true;
 		}
@@ -1255,24 +1285,69 @@ public final class RtRenderer
 		{
 			return false;
 		}
+		pendingZones.put(key, new ZoneUpdate(set, res, zone));
+		return true;
+	}
 
-		idle();
-		destroyZoneAccel(res);
-		long scratchSize = prepareZoneAccel(res, zone);
-		VkBuf staging = createStaging(zone.geometry.faces());
-		VkBuf scratch = createScratch(Math.max(scratchSize, 1));
-		VkCommandBuffer upload = ctx.beginOneTime();
-		stageZone(upload, staging, 0, zone.geometry, res.faceBase);
-		memoryBarrier(upload,
+	// Frees the structures the pending zone updates replace and creates their new ones, so the
+	// instances written for this frame point at them; called once the previous frame has finished.
+	private void prepareZoneUpdates()
+	{
+		for (ZoneUpdate update : pendingZones.values())
+		{
+			destroyZoneAccel(update.res);
+			if (update.zone != null)
+			{
+				long scratchSize = prepareZoneAccel(update.res, update.zone);
+				update.staging = createStaging(update.zone.geometry.faces());
+				update.scratch = createScratch(Math.max(scratchSize, 1));
+			}
+			refreshRoofFlags(update.set);
+		}
+	}
+
+	// Records the pending zone updates' geometry copies and structure builds into the frame's
+	// command buffer, ahead of the top-level build that references them.
+	private void recordZoneUpdates(VkCommandBuffer cmd)
+	{
+		if (pendingZones.isEmpty())
+		{
+			return;
+		}
+		for (ZoneUpdate update : pendingZones.values())
+		{
+			if (update.zone != null)
+			{
+				stageZone(cmd, update.staging, 0, update.zone.geometry, update.res.faceBase);
+			}
+		}
+		memoryBarrier(cmd,
 			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
-		buildZoneAccel(upload, res, zone, scratch);
-		ctx.endOneTimeAndWait(upload);
-		ctx.destroyBuffer(staging);
-		ctx.destroyBuffer(scratch);
-		refreshRoofFlags(set);
-		return true;
+		for (ZoneUpdate update : pendingZones.values())
+		{
+			if (update.zone != null)
+			{
+				buildZoneAccel(cmd, update.res, update.zone, update.scratch);
+				retired.add(update.staging);
+				retired.add(update.scratch);
+			}
+		}
+		memoryBarrier(cmd,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+		pendingZones.clear();
+	}
+
+	private void freeRetired()
+	{
+		for (VkBuf buffer : retired)
+		{
+			ctx.destroyBuffer(buffer);
+		}
+		retired.clear();
 	}
 
 	public void removeStaticSet(int id)
@@ -1282,6 +1357,7 @@ public final class RtRenderer
 		{
 			return;
 		}
+		pendingZones.values().removeIf(update -> update.set == set);
 		idle();
 		for (ZoneRes res : set.zones)
 		{
@@ -1621,6 +1697,7 @@ public final class RtRenderer
 	private void idle()
 	{
 		vkDeviceWaitIdle(device);
+		freeRetired();
 		if (fencePending)
 		{
 			check(vkResetFences(device, fence), "vkResetFences");
@@ -1642,6 +1719,7 @@ public final class RtRenderer
 		waitNanos += System.nanoTime() - start;
 		check(vkResetFences(device, fence), "vkResetFences");
 		fencePending = false;
+		freeRetired();
 		try (MemoryStack stack = stackPush())
 		{
 			LongBuffer stamps = stack.mallocLong(STAMPS);
@@ -2083,6 +2161,7 @@ public final class RtRenderer
 		}
 		waitPreviousFrame();
 		flushPending();
+		prepareZoneUpdates();
 
 		int opaqueFaces = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		int translucentFaces = Math.min(translucent.faces(), MAX_DYNAMIC_FACES - opaqueFaces);
@@ -2118,6 +2197,7 @@ public final class RtRenderer
 				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
 				VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT);
+			recordZoneUpdates(cmd);
 
 			if (dynamicFaces > 0)
 			{
@@ -2578,7 +2658,9 @@ public final class RtRenderer
 
 	public void destroy()
 	{
+		pendingZones.clear();
 		vkDeviceWaitIdle(device);
+		freeRetired();
 		destroyOutput(true);
 		freeAllStatic();
 		ctx.destroyBuffer(staticPos);
