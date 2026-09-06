@@ -391,6 +391,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	private int statDynamicCalls, statTempCalls, statFrames, statInactive, statSubScene, statOffscreen;
 	private long statSubmitNanos, statLastReport, statInfoReport;
+	// For the 30-second line: frames, our client-thread time per frame, and how much of it was
+	// spent waiting for the GPU to finish the frame before.
+	private int statInfoFrames;
+	private long statCpuNanos, statWaitNanos, frameCpuStart;
 
 	@Provides
 	RltxConfig provideConfig(ConfigManager configManager)
@@ -774,7 +778,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		// picking all depend on it. Our own rendering covers the whole scene regardless.
 		scene.setDrawDistance(config.drawDistance());
 
+		long waitStart = System.nanoTime();
 		renderer.beginFrame();
+		frameCpuStart = System.nanoTime();
+		statWaitNanos += frameCpuStart - waitStart;
 		dynamic.clear();
 		dynamicTranslucent.clear();
 		dynamicWater.clear();
@@ -985,7 +992,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		long start = System.nanoTime();
 		addOffscreenActors();
 		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		int actorFaces = dynamic.faces() + dynamicTranslucent.faces();
 		foliage.push(top, dynamic, renderer, environment.weatherNow);
+		int foliageFaces = dynamic.faces() + dynamicTranslucent.faces() - actorFaces;
 		waves.push(top, dynamicWater, renderer);
 		lights.fill(renderer, top == null ? null : top.lights);
 		glow.fillGuide(renderer, cells);
@@ -1039,13 +1048,22 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		sceneFramePending = true;
 
 		++statFrames;
-		if (start - statInfoReport > 30_000_000_000L)
+		++statInfoFrames;
+		long end = System.nanoTime();
+		statCpuNanos += end - frameCpuStart;
+		if (end - statInfoReport > 30_000_000_000L)
 		{
 			// Frame timing at info level so the launcher's console log shows it without --debug.
-			log.info("GPU {} ms per frame ({}), {} dynamic faces, {} local lights, {} frames in the last {} s",
-				String.format("%.1f", renderer.lastGpuMillis()), renderer.passReport(), dynamic.faces() + dynamicTranslucent.faces(), frame.lightCount,
-				statFrames, (start - statInfoReport) / 1_000_000_000L);
-			statInfoReport = start;
+			double seconds = (end - statInfoReport) / 1e9;
+			log.info("GPU {} ms per frame ({}); CPU {} ms per frame plus {} ms waiting on the GPU; {} dynamic faces (actors {}, foliage {}, water {}); {} local lights; {} fps over {} s",
+				String.format("%.1f", renderer.lastGpuMillis()), renderer.passReport(),
+				String.format("%.1f", statCpuNanos / 1e6 / Math.max(statInfoFrames, 1)), String.format("%.1f", statWaitNanos / 1e6 / Math.max(statInfoFrames, 1)),
+				dynamic.faces() + dynamicTranslucent.faces() + dynamicWater.faces(), actorFaces, foliageFaces, dynamicWater.faces(), frame.lightCount,
+				String.format("%.1f", statInfoFrames / seconds), Math.round(seconds));
+			statInfoReport = end;
+			statInfoFrames = 0;
+			statCpuNanos = 0;
+			statWaitNanos = 0;
 		}
 		if (start - statLastReport > 5_000_000_000L)
 		{
