@@ -1290,6 +1290,19 @@ void main() {
   Hit hit;
   primaryRay = true;
   bool seen = trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_VISIBLE, seed, hit);
+  if (seen && hit.covered && (flags & FLAG_ANTIALIAS) != 0u && (flags & FLAG_STILL) == 0u) {
+    // Cutout foliage is decided texel by texel, so a ray that moves within the pixel each frame
+    // lands on leaf or gap at random, and the history clamp and denoiser turn thin strands to
+    // mush. A pixel under translucent geometry is retraced from its centre, as without
+    // antialiasing; held frames average enough samples to keep the jitter.
+    vec3 centreView = vec3((float(px.x) + 0.5 - float(w) * 0.5) / zoom, (float(px.y) + 0.5 - float(h) * 0.5) / zoom, 1.0);
+    dir = normalize(vec3(dot(row0, centreView), dot(row1, centreView), dot(row2, centreView)));
+    if ((flags & FLAG_UNDERWATER) != 0u) {
+      float t = u.weather3.x;
+      dir = normalize(dir + 0.012 * vec3(sin(t * 1.7 + centreView.y * 6.0), sin(t * 1.3 + centreView.x * 5.0), cos(t * 1.1 + centreView.x * 4.0 + centreView.y * 3.0)));
+    }
+    seen = trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_VISIBLE, seed, hit);
+  }
   primaryRay = false;
   if (!seen) {
     // A ray heading downward ran out of loaded scene. The sky carries on below the horizon for
