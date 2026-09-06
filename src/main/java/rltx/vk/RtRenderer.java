@@ -1291,58 +1291,111 @@ public final class RtRenderer
 	}
 
 	/**
-	 * Local lights for the coming frame: position xyz and radius, then premultiplied colour and
-	 * a spare float, per light. Called between beginFrame and submit, once the previous frame's
-	 * reads of the buffer have finished.
+	 * Local lights for the coming frame, eight floats each: position and radius, then colour and a
+	 * spare. Taken as a copy; uploaded by the next submit once the GPU has finished the frame before.
 	 */
 	public void setLights(float[] packed, int count)
 	{
-		lights.mapped.asFloatBuffer().put(packed, 0, Math.min(count, MAX_LIGHTS) * 8);
+		pendingLights.set(packed, Math.min(count, MAX_LIGHTS) * 8);
 	}
 
-	/**
-	 * The route to glow for the coming frame: its bounding box, then tile centres with their
-	 * distance along the route, four floats each. Written between beginFrame and submit.
-	 */
+	/** The route to glow for the coming frame: its bounding box, then tile centres with their distance along the route, four floats each. */
 	public void setGuide(float[] packed, int floats)
 	{
-		guide.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, (MAX_GUIDE_POINTS + 1 + MAX_WISPS) * 4));
+		pendingGuide.set(packed, Math.min(floats, (MAX_GUIDE_POINTS + 1 + MAX_WISPS) * 4));
 	}
 
-	/** Smoke sources for the coming frame, nearest first: x, y, z and strength each. Written between beginFrame and submit. */
+	/** Smoke sources for the coming frame, nearest first: x, y, z and strength each. */
 	public void setPlumes(float[] packed, int floats)
 	{
-		plumes.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PLUMES * 4));
+		pendingPlumes.set(packed, Math.min(floats, MAX_PLUMES * 4));
 	}
 
-	/** Occupancy bits for the coming frame, CELL_LAYERS by CELL_WORDS words. Written between beginFrame and submit. */
+	/** Occupancy bits for the coming frame, CELL_LAYERS by CELL_WORDS words. */
 	public void setCells(int[] bits)
 	{
-		cells.mapped.asIntBuffer().put(bits, 0, CELL_LAYERS * CELL_WORDS);
+		System.arraycopy(bits, 0, pendingCells, 0, CELL_LAYERS * CELL_WORDS);
+		cellsDirty = true;
 	}
 
-	/** Trees shedding leaves this frame, nearest first: x, crown height, z and crown radius each. Written between beginFrame and submit. */
+	/** Trees shedding leaves this frame, nearest first: x, crown height, z and crown radius each. */
 	public void setTrees(float[] packed, int floats)
 	{
-		trees.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_TREES * 4));
+		pendingTrees.set(packed, Math.min(floats, MAX_TREES * 4));
 	}
 
-	/** Footprints for the coming frame: position and time, then heading, side and a spare, per print. Written between beginFrame and submit. */
+	/** Footprints for the coming frame: position and time, then heading, side and a spare, per print. */
 	public void setPrints(float[] packed, int floats)
 	{
-		prints.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PRINTS * 8));
+		pendingPrints.set(packed, Math.min(floats, MAX_PRINTS * 8));
 	}
 
-	/** Ground marker tiles for the coming frame: a bounding box, then tile centres with the colour's bits in w. Written between beginFrame and submit. */
+	/** Ground marker tiles for the coming frame: a bounding box, then tile centres with the colour's bits in w. */
 	public void setMarkers(float[] packed, int floats)
 	{
-		markers.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, (MAX_MARKERS + 1) * 4));
+		pendingMarkers.set(packed, Math.min(floats, (MAX_MARKERS + 1) * 4));
 	}
 
-	/** Water depth and flow per ground vertex from the runoff simulation; written between beginFrame and submit. */
+	/** Water depth and flow per ground vertex from the runoff simulation. */
 	public void setRunoff(float[] packed)
 	{
-		runoff.mapped.asFloatBuffer().put(packed, 0, Math.min(packed.length, 185 * 185 * 4));
+		pendingRunoff.set(packed, Math.min(packed.length, 185 * 185 * 4));
+	}
+
+	// A host copy of a per-frame buffer's contents, so the plugin can set it while the GPU is still
+	// reading the previous frame's; the next submit copies it across after waiting for that frame.
+	private static final class Pending
+	{
+		final float[] data;
+		int floats;
+		boolean dirty;
+
+		Pending(int capacity)
+		{
+			data = new float[capacity];
+		}
+
+		void set(float[] source, int count)
+		{
+			System.arraycopy(source, 0, data, 0, count);
+			floats = count;
+			dirty = true;
+		}
+
+		void flush(VkBuf target)
+		{
+			if (dirty)
+			{
+				target.mapped.asFloatBuffer().put(data, 0, floats);
+				dirty = false;
+			}
+		}
+	}
+
+	private final Pending pendingLights = new Pending(MAX_LIGHTS * 8);
+	private final Pending pendingGuide = new Pending((MAX_GUIDE_POINTS + 1 + MAX_WISPS) * 4);
+	private final Pending pendingPlumes = new Pending(MAX_PLUMES * 4);
+	private final Pending pendingTrees = new Pending(MAX_TREES * 4);
+	private final Pending pendingPrints = new Pending(MAX_PRINTS * 8);
+	private final Pending pendingMarkers = new Pending((MAX_MARKERS + 1) * 4);
+	private final Pending pendingRunoff = new Pending(185 * 185 * 4);
+	private final int[] pendingCells = new int[CELL_LAYERS * CELL_WORDS];
+	private boolean cellsDirty;
+
+	private void flushPending()
+	{
+		pendingLights.flush(lights);
+		pendingGuide.flush(guide);
+		pendingPlumes.flush(plumes);
+		pendingTrees.flush(trees);
+		pendingPrints.flush(prints);
+		pendingMarkers.flush(markers);
+		pendingRunoff.flush(runoff);
+		if (cellsDirty)
+		{
+			cells.mapped.asIntBuffer().put(pendingCells, 0, CELL_LAYERS * CELL_WORDS);
+			cellsDirty = false;
+		}
 	}
 
 	/** Tile heights of the top-level scene, plane-major then x then y, for smooth terrain normals. */
@@ -1565,28 +1618,41 @@ public final class RtRenderer
 		}
 	}
 
-	/** Waits for the previous frame's GPU work so host-visible buffers can be rewritten. */
-	public void beginFrame()
+	// Waits for the previous frame's GPU work, so the host-visible buffers it read can be rewritten,
+	// and collects its timings. Called by submit, so everything the client does between two submits
+	// overlaps the GPU's work on the frame before.
+	private void waitPreviousFrame()
 	{
-		if (fencePending)
+		if (!fencePending)
 		{
-			check(vkWaitForFences(device, fence, true, Long.MAX_VALUE), "vkWaitForFences");
-			check(vkResetFences(device, fence), "vkResetFences");
-			fencePending = false;
-			try (MemoryStack stack = stackPush())
+			return;
+		}
+		long start = System.nanoTime();
+		check(vkWaitForFences(device, fence, true, Long.MAX_VALUE), "vkWaitForFences");
+		waitNanos += System.nanoTime() - start;
+		check(vkResetFences(device, fence), "vkResetFences");
+		fencePending = false;
+		try (MemoryStack stack = stackPush())
+		{
+			LongBuffer stamps = stack.mallocLong(STAMPS);
+			if (vkGetQueryPoolResults(device, timestampPool, 0, STAMPS, stamps, Long.BYTES, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
 			{
-				LongBuffer stamps = stack.mallocLong(STAMPS);
-				if (vkGetQueryPoolResults(device, timestampPool, 0, STAMPS, stamps, Long.BYTES, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+				lastGpuMillis = (stamps.get(STAMPS - 1) - stamps.get(0)) * ctx.timestampPeriod / 1_000_000.0;
+				for (int i = 0; i < PASS_NAMES.length; ++i)
 				{
-					lastGpuMillis = (stamps.get(STAMPS - 1) - stamps.get(0)) * ctx.timestampPeriod / 1_000_000.0;
-					for (int i = 0; i < PASS_NAMES.length; ++i)
-					{
-						passMillis[i] = (stamps.get(i + 1) - stamps.get(i)) * ctx.timestampPeriod / 1_000_000.0;
-					}
+					passMillis[i] = (stamps.get(i + 1) - stamps.get(i)) * ctx.timestampPeriod / 1_000_000.0;
 				}
 			}
-			averageLogLuminance = exposureReadback.mapped.asFloatBuffer().get(0);
 		}
+		averageLogLuminance = exposureReadback.mapped.asFloatBuffer().get(0);
+	}
+
+	private long waitNanos;
+
+	/** Total time submits have spent waiting for the GPU to finish the frame before, in nanoseconds. */
+	public long waitNanos()
+	{
+		return waitNanos;
 	}
 
 	public int outputWidth()
@@ -1971,10 +2037,8 @@ public final class RtRenderer
 		{
 			throw new IllegalStateException("submit before ensureOutput");
 		}
-		if (fencePending)
-		{
-			throw new IllegalStateException("submit without beginFrame");
-		}
+		waitPreviousFrame();
+		flushPending();
 
 		int opaqueFaces = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		int translucentFaces = Math.min(translucent.faces(), MAX_DYNAMIC_FACES - opaqueFaces);

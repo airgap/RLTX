@@ -394,7 +394,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// For the 30-second line: frames, our client-thread time per frame, and how much of it was
 	// spent waiting for the GPU to finish the frame before.
 	private int statInfoFrames;
-	private long statCpuNanos, statWaitNanos, frameCpuStart;
+	private long statCpuNanos, statWaitBase, frameCpuStart;
 
 	@Provides
 	RltxConfig provideConfig(ConfigManager configManager)
@@ -778,10 +778,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		// picking all depend on it. Our own rendering covers the whole scene regardless.
 		scene.setDrawDistance(config.drawDistance());
 
-		long waitStart = System.nanoTime();
-		renderer.beginFrame();
 		frameCpuStart = System.nanoTime();
-		statWaitNanos += frameCpuStart - waitStart;
 		dynamic.clear();
 		dynamicTranslucent.clear();
 		dynamicWater.clear();
@@ -1009,7 +1006,6 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (photo.takeQuad())
 		{
 			quadPhoto(width, height);
-			renderer.beginFrame();
 		}
 		if (cinema.active() && !cinema.preview())
 		{
@@ -1055,15 +1051,16 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			// Frame timing at info level so the launcher's console log shows it without --debug.
 			double seconds = (end - statInfoReport) / 1e9;
-			log.info("GPU {} ms per frame ({}); CPU {} ms per frame plus {} ms waiting on the GPU; {} dynamic faces (actors {}, foliage {}, water {}); {} local lights; {} fps over {} s",
+			long waited = renderer.waitNanos() - statWaitBase;
+			statWaitBase = renderer.waitNanos();
+			log.info("GPU {} ms per frame ({}); CPU {} ms per frame, {} of it waiting on the GPU; {} dynamic faces (actors {}, foliage {}, water {}); {} local lights; {} fps over {} s",
 				String.format("%.1f", renderer.lastGpuMillis()), renderer.passReport(),
-				String.format("%.1f", statCpuNanos / 1e6 / Math.max(statInfoFrames, 1)), String.format("%.1f", statWaitNanos / 1e6 / Math.max(statInfoFrames, 1)),
+				String.format("%.1f", statCpuNanos / 1e6 / Math.max(statInfoFrames, 1)), String.format("%.1f", waited / 1e6 / Math.max(statInfoFrames, 1)),
 				dynamic.faces() + dynamicTranslucent.faces() + dynamicWater.faces(), actorFaces, foliageFaces, dynamicWater.faces(), frame.lightCount,
 				String.format("%.1f", statInfoFrames / seconds), Math.round(seconds));
 			statInfoReport = end;
 			statInfoFrames = 0;
 			statCpuNanos = 0;
-			statWaitNanos = 0;
 		}
 		if (start - statLastReport > 5_000_000_000L)
 		{
@@ -1138,10 +1135,6 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.resetHistory();
 		for (int i = 0; i <= frames; ++i)
 		{
-			if (i > 0)
-			{
-				renderer.beginFrame();
-			}
 			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, i == 0 && glSignalPending, present && i == frames);
 		}
 		frame.still = false;
@@ -1293,7 +1286,6 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		else if (config.loginPattern() && gameState != GameState.LOGGED_IN && gameState != GameState.LOADING)
 		{
-			renderer.beginFrame();
 			if (renderer.ensureOutput(canvasWidth, canvasHeight))
 			{
 				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
