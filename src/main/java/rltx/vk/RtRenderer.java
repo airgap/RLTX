@@ -243,6 +243,10 @@ public final class RtRenderer
 	private boolean fencePending;
 	private long timestampPool;
 	private double lastGpuMillis;
+	/** GPU time of each stage of the last finished frame, in the order of PASS_NAMES, milliseconds. */
+	private static final String[] PASS_NAMES = {"build", "trace", "shafts", "denoise", "bloom", "post", "meter"};
+	private static final int STAMPS = PASS_NAMES.length + 1;
+	private final double[] passMillis = new double[PASS_NAMES.length];
 	private long semaphoreVkDone;
 	private long semaphoreGlDone;
 	private long handleVkDone;
@@ -571,7 +575,7 @@ public final class RtRenderer
 
 			VkQueryPoolCreateInfo queryInfo = VkQueryPoolCreateInfo.calloc(stack).sType$Default()
 				.queryType(VK_QUERY_TYPE_TIMESTAMP)
-				.queryCount(2);
+				.queryCount(STAMPS);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateQueryPool(device, queryInfo, null, pPool), "vkCreateQueryPool");
 			timestampPool = pPool.get(0);
@@ -1542,10 +1546,14 @@ public final class RtRenderer
 			fencePending = false;
 			try (MemoryStack stack = stackPush())
 			{
-				LongBuffer stamps = stack.mallocLong(2);
-				if (vkGetQueryPoolResults(device, timestampPool, 0, 2, stamps, Long.BYTES, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+				LongBuffer stamps = stack.mallocLong(STAMPS);
+				if (vkGetQueryPoolResults(device, timestampPool, 0, STAMPS, stamps, Long.BYTES, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
 				{
-					lastGpuMillis = (stamps.get(1) - stamps.get(0)) * ctx.timestampPeriod / 1_000_000.0;
+					lastGpuMillis = (stamps.get(STAMPS - 1) - stamps.get(0)) * ctx.timestampPeriod / 1_000_000.0;
+					for (int i = 0; i < PASS_NAMES.length; ++i)
+					{
+						passMillis[i] = (stamps.get(i + 1) - stamps.get(i)) * ctx.timestampPeriod / 1_000_000.0;
+					}
 				}
 			}
 			averageLogLuminance = exposureReadback.mapped.asFloatBuffer().get(0);
@@ -1682,6 +1690,22 @@ public final class RtRenderer
 	public double lastGpuMillis()
 	{
 		return lastGpuMillis;
+	}
+
+	/** The last frame's GPU time by stage, for the log. */
+	public String passReport()
+	{
+		StringBuilder out = new StringBuilder();
+		for (int i = 0; i < PASS_NAMES.length; ++i)
+		{
+			out.append(i == 0 ? "" : ", ").append(PASS_NAMES[i]).append(' ').append(String.format("%.1f", passMillis[i]));
+		}
+		return out.toString();
+	}
+
+	private void stamp(VkCommandBuffer cmd, int index)
+	{
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool, index);
 	}
 
 	/**
@@ -1947,7 +1971,7 @@ public final class RtRenderer
 			VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
 				.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			check(vkBeginCommandBuffer(cmd, begin), "vkBeginCommandBuffer");
-			vkCmdResetQueryPool(cmd, timestampPool, 0, 2);
+			vkCmdResetQueryPool(cmd, timestampPool, 0, STAMPS);
 			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool, 0);
 
 			// Static structures and last frame's history were written by earlier submissions.
@@ -2010,8 +2034,11 @@ public final class RtRenderer
 			int groupsX = (outputWidth + 7) / 8;
 			int groupsY = (outputHeight + 7) / 8;
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
+			// Every stamp is written every frame, run or not, so the readback never waits on one.
+			stamp(cmd, 1);
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tracePipeline);
 			vkCmdDispatch(cmd, groupsX, groupsY, 1);
+			stamp(cmd, 2);
 			if (!params.pattern)
 			{
 				if (params.lightShafts > 0f)
@@ -2020,6 +2047,7 @@ public final class RtRenderer
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shaftsPipeline);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				}
+				stamp(cmd, 3);
 				int passes = Math.min(Math.max(params.denoisePasses, 0), MAX_DENOISE_PASSES);
 				// The post pass gathers over the finished image, so the last denoiser pass leaves
 				// its result in the filter image for it instead of writing the output.
@@ -2035,6 +2063,7 @@ public final class RtRenderer
 					pushPass(cmd, push, pass, 1 << pass, pass == passes - 1 ? 2 : 0, passes);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
 				}
+				stamp(cmd, 4);
 				if (passes > 0)
 				{
 					if (params.bloom > 0f || params.diffusion > 0f)
@@ -2051,10 +2080,12 @@ public final class RtRenderer
 						pushPass(cmd, push, 1, passes, 0, passes);
 						vkCmdDispatch(cmd, quarterX, quarterY, 1);
 					}
+					stamp(cmd, 5);
 					computeBarrier(cmd);
 					pushPass(cmd, push, passes, 1, 0, passes);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postPipeline);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
+					stamp(cmd, 6);
 					if (params.autoExposure)
 					{
 						// Meters the luminance the final denoiser pass recorded; one workgroup suffices.
@@ -2062,12 +2093,24 @@ public final class RtRenderer
 						vkCmdDispatch(cmd, 1, 1, 1);
 					}
 				}
+				else
+				{
+					stamp(cmd, 5);
+					stamp(cmd, 6);
+				}
+			}
+			else
+			{
+				for (int i = 3; i <= 6; ++i)
+				{
+					stamp(cmd, i);
+				}
 			}
 
 			imageBarrier(cmd, output.image, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
-			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool, 1);
+			stamp(cmd, STAMPS - 1);
 
 			check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 

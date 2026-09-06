@@ -2751,8 +2751,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (start - statInfoReport > 30_000_000_000L)
 		{
 			// Frame timing at info level so the launcher's console log shows it without --debug.
-			log.info("GPU {} ms per frame, {} dynamic faces, {} local lights, {} frames in the last {} s",
-				String.format("%.1f", renderer.lastGpuMillis()), dynamic.faces() + dynamicTranslucent.faces(), frame.lightCount,
+			log.info("GPU {} ms per frame ({}), {} dynamic faces, {} local lights, {} frames in the last {} s",
+				String.format("%.1f", renderer.lastGpuMillis()), renderer.passReport(), dynamic.faces() + dynamicTranslucent.faces(), frame.lightCount,
 				statFrames, (start - statInfoReport) / 1_000_000_000L);
 			statInfoReport = start;
 		}
