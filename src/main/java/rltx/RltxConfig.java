@@ -951,6 +951,42 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "cinemaPreviewKey",
+		name = "Cinema preview key",
+		description = "Plays the path live at normal quality without saving anything, to check the keyframes. Press again to stop.",
+		section = cameraSection,
+		position = 30
+	)
+	default Keybind cinemaPreviewKey()
+	{
+		return new Keybind(KeyEvent.VK_P, KeyEvent.CTRL_DOWN_MASK | KeyEvent.ALT_DOWN_MASK);
+	}
+
+	@ConfigItem(
+		keyName = "cinemaEasing",
+		name = "Cinema motion",
+		description = "Whether the camera runs at a constant pace or slows into and out of each keyframe",
+		section = cameraSection,
+		position = 34
+	)
+	default CinemaEasing cinemaEasing()
+	{
+		return CinemaEasing.EASE;
+	}
+
+	@ConfigItem(
+		keyName = "cinemaEncode",
+		name = "Encode cinema with ffmpeg",
+		description = "When ffmpeg is on the path, the frames are piped straight into it and a cinema.mp4 lands in the folder instead of numbered PNGs.",
+		section = cameraSection,
+		position = 34
+	)
+	default boolean cinemaEncode()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "cinemaClock",
 		name = "Cinema follows the clock",
 		description = "Each keyframe also records the time of day, or the manual sun, and the rendered path runs the clock between them, so a path can carry the sun down and the stars out.",
@@ -1289,6 +1325,25 @@ public interface RltxConfig extends Config
 	default boolean loginPattern()
 	{
 		return false;
+	}
+
+	enum CinemaEasing
+	{
+		CONSTANT("Constant speed"),
+		EASE("Ease at each keyframe");
+
+		private final String label;
+
+		CinemaEasing(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
 	}
 
 	enum PathStyle

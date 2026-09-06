@@ -549,7 +549,105 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			}
 			else
 			{
-				startCinema();
+				startCinema(false);
+			}
+		}
+	};
+
+	private final HotkeyListener cinemaPreviewKey = new FlightHotkey(() -> config.cinemaPreviewKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			if (cinemaFrame >= 0)
+			{
+				cinemaStop = true;
+			}
+			else if (cinemaKeys.size() < 2)
+			{
+				say("Cinema: record at least two keyframes first");
+			}
+			else
+			{
+				startCinema(true);
+			}
+		}
+	};
+
+	// Playing the path live rather than rendering it, and the encoder the frames are piped to.
+	private volatile boolean cinemaPreview;
+	private Process cinemaEncoder;
+	private java.io.OutputStream cinemaPipe;
+	private CinemaPaths cinemaPaths;
+
+	// The panel's handle on the cinema: the same actions as the keys, plus the saved paths.
+	private final ControlPanel.Cinema cinemaControl = new ControlPanel.Cinema()
+	{
+		@Override
+		public int keyframes()
+		{
+			return cinemaKeys.size();
+		}
+
+		@Override
+		public String state()
+		{
+			if (cinemaFrame >= 0)
+			{
+				return (cinemaPreview ? "Previewing frame " : "Rendering frame ") + cinemaFrame + " of " + cinemaTotal;
+			}
+			return freeCamera ? "Free camera on; " + cinemaKeys.size() + " keyframes" : "Turn the free camera on to record keyframes";
+		}
+
+		@Override
+		public void record()
+		{
+			cinemaKeyframeKey.hotkeyPressed();
+		}
+
+		@Override
+		public void clear()
+		{
+			cinemaClearKey.hotkeyPressed();
+		}
+
+		@Override
+		public void render()
+		{
+			if (cinemaFrame < 0 && cinemaKeys.size() >= 2)
+			{
+				startCinema(false);
+			}
+		}
+
+		@Override
+		public void preview()
+		{
+			if (cinemaFrame < 0 && cinemaKeys.size() >= 2)
+			{
+				startCinema(true);
+			}
+		}
+
+		@Override
+		public void stop()
+		{
+			cinemaStop = true;
+		}
+
+		@Override
+		public List<double[]> export()
+		{
+			return new ArrayList<>(cinemaKeys);
+		}
+
+		@Override
+		public void load(List<double[]> keys)
+		{
+			if (cinemaFrame < 0)
+			{
+				cinemaKeys.clear();
+				cinemaKeys.addAll(keys);
 			}
 		}
 	};
@@ -559,28 +657,62 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		clientThread.invoke(() -> client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", message, null));
 	}
 
-	private void startCinema()
+	private void startCinema(boolean preview)
 	{
-		File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX/cinema-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()));
-		if (!dir.mkdirs())
-		{
-			say("Cinema: could not create " + dir);
-			return;
-		}
-		cinemaDir = dir;
-		cinemaWriter = Executors.newSingleThreadExecutor(r ->
-		{
-			Thread t = new Thread(r, "rltx-cinema");
-			t.setDaemon(true);
-			return t;
-		});
 		cinemaTotal = (cinemaKeys.size() - 1) * config.cinemaSeconds() * config.cinemaFps();
+		cinemaPreview = preview;
 		cinemaChromeWasHidden = chromeHidden;
-		chromeHidden = true;
+		if (!preview)
+		{
+			File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX/cinema-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()));
+			if (!dir.mkdirs())
+			{
+				say("Cinema: could not create " + dir);
+				return;
+			}
+			cinemaDir = dir;
+			cinemaWriter = Executors.newSingleThreadExecutor(r ->
+			{
+				Thread t = new Thread(r, "rltx-cinema");
+				t.setDaemon(true);
+				return t;
+			});
+			cinemaPipe = config.cinemaEncode() ? startEncoder(dir) : null;
+			chromeHidden = true;
+		}
 		freeCamera = true;
 		cinemaStop = false;
 		cinemaFrame = 0;
-		say("Cinema: rendering " + cinemaTotal + " frames to " + dir.getName());
+		say(preview ? "Cinema: previewing " + cinemaTotal + " frames" : "Cinema: rendering " + cinemaTotal + " frames to " + cinemaDir.getName()
+			+ (cinemaPipe != null ? " through ffmpeg" : ""));
+	}
+
+	// ffmpeg, when it is on the path, takes the PNG frames on its standard input and writes the
+	// video; its own output goes to a log beside it so it can never block on a full pipe.
+	private java.io.OutputStream startEncoder(File dir)
+	{
+		try
+		{
+			Process probe = new ProcessBuilder("ffmpeg", "-version").redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+			if (!probe.waitFor(5, TimeUnit.SECONDS) || probe.exitValue() != 0)
+			{
+				return null;
+			}
+			cinemaEncoder = new ProcessBuilder("ffmpeg", "-y", "-f", "image2pipe", "-framerate", Integer.toString(config.cinemaFps()), "-i", "-",
+				"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", new File(dir, "cinema.mp4").getPath())
+				.redirectErrorStream(true).redirectOutput(new File(dir, "ffmpeg.log")).start();
+			return new java.io.BufferedOutputStream(cinemaEncoder.getOutputStream(), 1 << 20);
+		}
+		catch (IOException e)
+		{
+			log.warn("ffmpeg not usable; writing PNG frames instead", e);
+			return null;
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+			return null;
+		}
 	}
 
 	private void finishCinema()
@@ -589,9 +721,43 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		cinemaFrame = -1;
 		cinemaNow = -1;
 		chromeHidden = cinemaChromeWasHidden;
+		if (cinemaPreview)
+		{
+			say("Cinema: preview finished");
+			return;
+		}
+		java.io.OutputStream pipe = cinemaPipe;
+		Process encoder = cinemaEncoder;
+		cinemaPipe = null;
+		cinemaEncoder = null;
+		File dir = cinemaDir;
+		int fps = config.cinemaFps();
+		if (pipe != null)
+		{
+			cinemaWriter.execute(() ->
+			{
+				try
+				{
+					pipe.close();
+					encoder.waitFor();
+					say("Cinema: " + rendered + " frames encoded to " + new File(dir, "cinema.mp4"));
+				}
+				catch (IOException e)
+				{
+					log.warn("Closing the ffmpeg pipe failed", e);
+				}
+				catch (InterruptedException e)
+				{
+					Thread.currentThread().interrupt();
+				}
+			});
+		}
+		else
+		{
+			say("Cinema: " + rendered + " frames in " + dir + ". Assemble with: ffmpeg -framerate " + fps
+				+ " -i frame-%05d.png -c:v libx264 -pix_fmt yuv420p cinema.mp4");
+		}
 		cinemaWriter.shutdown();
-		say("Cinema: " + rendered + " frames in " + cinemaDir + ". Assemble with: ffmpeg -framerate " + config.cinemaFps()
-			+ " -i frame-%05d.png -c:v libx264 -pix_fmt yuv420p cinema.mp4");
 	}
 
 	// The camera at a frame of the path: a Catmull-Rom spline through the keyframes, one segment
@@ -602,6 +768,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float s = Math.min(frameIndex / (float) perSegment, cinemaKeys.size() - 1 - 1e-4f);
 		int k = (int) s;
 		float t = s - k;
+		if (config.cinemaEasing() == RltxConfig.CinemaEasing.EASE)
+		{
+			// Slowing into and out of each keyframe, the way a dolly is driven.
+			t = t * t * (3f - 2f * t);
+		}
 		double[] a = cinemaKeys.get(Math.max(k - 1, 0));
 		double[] b = cinemaKeys.get(k);
 		double[] c = cinemaKeys.get(k + 1);
@@ -649,16 +820,24 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	private void writeCinemaFrame(int index, Image image)
 	{
+		java.io.OutputStream pipe = cinemaPipe;
 		File file = new File(cinemaDir, String.format("frame-%05d.png", index));
 		cinemaWriter.execute(() ->
 		{
 			try
 			{
-				ImageIO.write(toBuffered(image), "png", file);
+				if (pipe != null)
+				{
+					ImageIO.write(toBuffered(image), "png", pipe);
+				}
+				else
+				{
+					ImageIO.write(toBuffered(image), "png", file);
+				}
 			}
 			catch (IOException e)
 			{
-				log.warn("Cinema frame not saved to {}", file, e);
+				log.warn("Cinema frame not written ({})", file.getName(), e);
 			}
 		});
 	}
@@ -1861,7 +2040,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			log.warn("Area settings not loaded from {}", AreaRules.FILE, e);
 		}
-		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, polygons -> previewPolygons = polygons);
+		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, polygons -> previewPolygons = polygons, cinemaControl, cinemaPaths);
 		keyManager.registerKeyListener(controlPanelKey);
 		keyManager.registerKeyListener(quadPhotoKey);
 		keyManager.registerKeyListener(photoModeKey);
@@ -1869,6 +2048,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		keyManager.registerKeyListener(cinemaKeyframeKey);
 		keyManager.registerKeyListener(cinemaClearKey);
 		keyManager.registerKeyListener(cinemaRenderKey);
+		keyManager.registerKeyListener(cinemaPreviewKey);
+		cinemaPaths = new CinemaPaths(gson);
 		keyManager.registerKeyListener(flightKeys);
 		mouseManager.registerMouseListener(photoButtons);
 		mouseManager.registerMouseListener(freeLook);
@@ -1953,11 +2134,21 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		keyManager.unregisterKeyListener(cinemaKeyframeKey);
 		keyManager.unregisterKeyListener(cinemaClearKey);
 		keyManager.unregisterKeyListener(cinemaRenderKey);
+		keyManager.unregisterKeyListener(cinemaPreviewKey);
 		if (cinemaFrame >= 0)
 		{
 			cinemaFrame = -1;
 			cinemaNow = -1;
-			cinemaWriter.shutdown();
+			if (cinemaWriter != null)
+			{
+				cinemaWriter.shutdown();
+			}
+			if (cinemaEncoder != null)
+			{
+				cinemaEncoder.destroy();
+				cinemaEncoder = null;
+				cinemaPipe = null;
+			}
 		}
 		keyManager.unregisterKeyListener(flightKeys);
 		mouseManager.unregisterMouseListener(photoButtons);
@@ -2781,11 +2972,20 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			quadPhoto(width, height);
 			renderer.beginFrame();
 		}
-		if (cinemaFrame >= 0)
+		if (cinemaFrame >= 0 && !cinemaPreview)
 		{
 			burst(config.cinemaBurst());
 			int index = cinemaFrame;
 			drawManager.requestNextFrameListener(image -> writeCinemaFrame(index, image));
+			if (++cinemaFrame >= cinemaTotal || cinemaStop)
+			{
+				finishCinema();
+			}
+		}
+		else if (cinemaFrame >= 0)
+		{
+			// A preview plays the path at the live frame rate with nothing saved.
+			renderer.submit(frame, dynamic, dynamicTranslucent, glSignalPending, true);
 			if (++cinemaFrame >= cinemaTotal || cinemaStop)
 			{
 				finishCinema();

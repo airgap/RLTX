@@ -53,11 +53,36 @@ final class ControlPanel
 	private final AreaRules areas;
 	private final java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition;
 	private final Consumer<List<int[]>> preview;
+	private final Cinema cinema;
+	private final CinemaPaths paths;
+
+	/** What the cinema tab can do; the plugin implements it over the same actions as the keys. */
+	interface Cinema
+	{
+		int keyframes();
+
+		String state();
+
+		void record();
+
+		void clear();
+
+		void render();
+
+		void preview();
+
+		void stop();
+
+		List<double[]> export();
+
+		void load(List<double[]> keys);
+	}
 	private final Map<String, Consumer<Object>> refreshers = new HashMap<>();
 	private JFrame frame;
 	private boolean updating;
 
-	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition, Consumer<List<int[]>> preview)
+	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition,
+		Consumer<List<int[]>> preview, Cinema cinema, CinemaPaths paths)
 	{
 		this.configManager = configManager;
 		this.config = config;
@@ -65,6 +90,8 @@ final class ControlPanel
 		this.areas = areas;
 		this.currentPosition = currentPosition;
 		this.preview = preview;
+		this.cinema = cinema;
+		this.paths = paths;
 	}
 
 	/** Shows the window, building it on first use; called on any thread. */
@@ -211,6 +238,7 @@ final class ControlPanel
 
 		tabs.addTab("Presets", presetsTab());
 		tabs.addTab("Areas", areasTab());
+		tabs.addTab("Cinema", cinemaTab());
 
 		JFrame window = new JFrame("RLTX");
 		window.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
@@ -683,6 +711,82 @@ final class ControlPanel
 		bundle.setEnabled(repository != null);
 		bundle.setToolTipText(repository == null ? "Only available when running from a source checkout" : repository.getPath());
 		page.add(bundle, c);
+		++c.gridy;
+		page.add(status, c);
+		++c.gridy;
+		c.weighty = 1;
+		page.add(Box.createVerticalGlue(), c);
+		return page;
+	}
+
+	// The cinema's actions as buttons, and its paths saved by name.
+	private JComponent cinemaTab()
+	{
+		JPanel page = new JPanel(new GridBagLayout());
+		page.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+		GridBagConstraints c = new GridBagConstraints();
+		c.gridx = 0;
+		c.gridy = 0;
+		c.weightx = 1;
+		c.fill = GridBagConstraints.HORIZONTAL;
+		c.insets = new Insets(4, 0, 4, 0);
+		JLabel status = new JLabel(" ");
+		JLabel state = new JLabel(cinema.state());
+		new javax.swing.Timer(500, e -> state.setText(cinema.state())).start();
+		page.add(state, c);
+		++c.gridy;
+		JPanel actions = new JPanel(new java.awt.GridLayout(2, 3, 6, 6));
+		actions.add(button("Record keyframe", cinema::record, status));
+		actions.add(button("Clear keyframes", cinema::clear, status));
+		actions.add(button("Stop", cinema::stop, status));
+		actions.add(button("Preview", cinema::preview, status));
+		actions.add(button("Render", cinema::render, status));
+		page.add(actions, c);
+		++c.gridy;
+		JComboBox<String> saved = new JComboBox<>(paths.names().toArray(new String[0]));
+		saved.setEditable(true);
+		Runnable refreshNames = () ->
+		{
+			Object keep = saved.getEditor().getItem();
+			saved.removeAllItems();
+			for (String name : paths.names())
+			{
+				saved.addItem(name);
+			}
+			saved.getEditor().setItem(keep);
+		};
+		page.add(new JLabel("Path name, or pick a saved one:"), c);
+		++c.gridy;
+		page.add(saved, c);
+		++c.gridy;
+		JPanel files = new JPanel(new java.awt.GridLayout(1, 3, 6, 6));
+		files.add(button("Save path", () ->
+		{
+			String name = String.valueOf(saved.getEditor().getItem()).trim();
+			if (name.isEmpty())
+			{
+				status.setText("Give the path a name first.");
+				return;
+			}
+			paths.save(name, cinema.export());
+			refreshNames.run();
+			status.setText("Saved " + name + " with " + cinema.keyframes() + " keyframes.");
+		}, status));
+		files.add(button("Load path", () ->
+		{
+			String name = String.valueOf(saved.getEditor().getItem()).trim();
+			List<double[]> keys = paths.load(name);
+			cinema.load(keys);
+			status.setText("Loaded " + name + ": " + keys.size() + " keyframes.");
+		}, status));
+		files.add(button("Delete path", () ->
+		{
+			String name = String.valueOf(saved.getEditor().getItem()).trim();
+			paths.delete(name);
+			refreshNames.run();
+			status.setText("Deleted " + name);
+		}, status));
+		page.add(files, c);
 		++c.gridy;
 		page.add(status, c);
 		++c.gridy;
