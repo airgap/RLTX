@@ -107,7 +107,8 @@ struct Hit {
   vec3 albedo;
   bool dyn;
   bool translucent; // the accepted surface itself is translucent
-  bool covered;     // translucent geometry lies between the ray origin and the accepted surface
+  bool covered;     // translucent geometry lies between the ray origin and the accepted surface, or is it
+  bool blended;     // a semi-transparent surface lies in front of the accepted one, or it is one itself
   bool water;
   uint waterType;   // index into the water type table, 0 when not water
   vec4 material;    // specular strength, gloss exponent, emissive, brightness or ground normal layer plus one
@@ -525,6 +526,10 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   uint packed = hit.dyn ? dynCol.c[face] : staticCol.c[face];
   hit.albedo = unpack(packed);
   hit.translucent = (packed >> 24) != 0xFFu;
+  // A cutout texel accepted at full opacity is a surface like any other: its colour stays apart
+  // from its lighting so the denoiser leaves the texture alone. Only a blend of two surfaces,
+  // decided by chance each frame, has to be filtered as a whole.
+  hit.blended = nearestTranslucent < hit.t || hit.translucent;
 
   // Textured faces: interpolate the face's UVs with the hit barycentrics and sample the
   // texture; fully transparent texels fall back to the face's flat colour.
@@ -1495,7 +1500,7 @@ void main() {
   Hit stable = hit;
   // Specular radiance is stored divided by the albedo the final pass will multiply back.
   vec3 sample_ = light + specular / max(hit.albedo, vec3(0.05));
-  if (hit.covered && !waterPixel) {
+  if (hit.blended && !waterPixel) {
     if (hit.translucent) {
       Hit solid;
       if (trace(origin, dir, 1.0, u.post.z, primaryFlags, MASK_OPAQUE, seed, solid)) {
