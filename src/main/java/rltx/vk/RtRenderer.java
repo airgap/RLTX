@@ -174,7 +174,8 @@ public final class RtRenderer
 	private static final int BINDING_SKY_LUT = 42;
 	private static final int BINDING_PRINTS = 43;
 	private static final int BINDING_TREES = 44;
-	private static final int BINDING_COUNT = 45;
+	private static final int BINDING_CELLS = 45;
+	private static final int BINDING_COUNT = 46;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -189,6 +190,9 @@ public final class RtRenderer
 	public static final int MAX_PRINTS = 256;
 	/** Trees shedding leaves per frame, four floats each. */
 	public static final int MAX_TREES = 64;
+	/** Occupancy layers of 64 by 64 cells, 128 words each: route, markers, footprints. */
+	public static final int CELL_LAYERS = 3;
+	public static final int CELL_WORDS = 128;
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
@@ -343,6 +347,7 @@ public final class RtRenderer
 	private VkBuf markers;
 	private VkBuf prints;
 	private VkBuf trees;
+	private VkBuf cells;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -412,6 +417,8 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		trees = ctx.createBuffer((long) MAX_TREES * 4 * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		cells = ctx.createBuffer((long) CELL_LAYERS * CELL_WORDS * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -429,6 +436,7 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_MARKERS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, markers);
 			writeBufferDescriptor(set, BINDING_PRINTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, prints);
 			writeBufferDescriptor(set, BINDING_TREES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trees);
+			writeBufferDescriptor(set, BINDING_CELLS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cells);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
@@ -645,6 +653,7 @@ public final class RtRenderer
 			types[BINDING_MARKERS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_PRINTS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_TREES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_CELLS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STARS] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_SKY_LUT] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
@@ -1304,6 +1313,12 @@ public final class RtRenderer
 	public void setPlumes(float[] packed, int floats)
 	{
 		plumes.mapped.asFloatBuffer().put(packed, 0, Math.min(floats, MAX_PLUMES * 4));
+	}
+
+	/** Occupancy bits for the coming frame, CELL_LAYERS by CELL_WORDS words. Written between beginFrame and submit. */
+	public void setCells(int[] bits)
+	{
+		cells.mapped.asIntBuffer().put(bits, 0, CELL_LAYERS * CELL_WORDS);
 	}
 
 	/** Trees shedding leaves this frame, nearest first: x, crown height, z and crown radius each. Written between beginFrame and submit. */
@@ -2475,6 +2490,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(markers);
 		ctx.destroyBuffer(prints);
 		ctx.destroyBuffer(trees);
+		ctx.destroyBuffer(cells);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
 		ctx.destroyBuffer(runoff);

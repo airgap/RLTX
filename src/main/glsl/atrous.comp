@@ -34,6 +34,21 @@ layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plume
 layout(std430, set = 0, binding = 40) readonly buffer Markers { vec4 v[]; } markers;
 layout(std430, set = 0, binding = 43) readonly buffer Prints { vec4 v[]; } prints;
 layout(std430, set = 0, binding = 44) readonly buffer Trees { vec4 v[]; } trees;
+// Coarse occupancy over the scene: 64 by 64 cells of 512 units, a bit per cell per feature, so
+// the per-pixel loops over routes, markers and footprints skip wherever there are none.
+layout(std430, set = 0, binding = 45) readonly buffer Cells { uint v[]; } cells;
+const int CELL_ROUTE = 0;
+const int CELL_MARKERS = 1;
+const int CELL_PRINTS = 2;
+
+bool cellHas(int layer, vec2 xz) {
+  ivec2 c = ivec2(floor((xz + 6144.0) / 512.0));
+  if (c.x < 0 || c.y < 0 || c.x > 63 || c.y > 63) {
+    return false;
+  }
+  int bit = c.x * 64 + c.y;
+  return (cells.v[layer * 128 + (bit >> 5)] & (1u << uint(bit & 31))) != 0u;
+}
 layout(set = 0, binding = 28, rgba16f) uniform writeonly image2D bloomSource;
 
 const float KERNEL[5] = float[5](1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
@@ -214,7 +229,7 @@ vec3 splashes(vec3 c, vec3 p, vec3 n, float depth) {
 // Rings spreading from fresh footsteps on wet ground, gone within a second and a half.
 vec3 footRipples(vec3 c, vec3 p, vec3 n, float depth) {
   int count = int(u.ground.x);
-  if (count <= 0 || u.weather2.x < 0.3 || -n.y < 0.6 || depth > 1600.0) {
+  if (count <= 0 || u.weather2.x < 0.3 || -n.y < 0.6 || depth > 1600.0 || !cellHas(CELL_PRINTS, p.xz)) {
     return c;
   }
   float t = u.weather3.x;
@@ -895,7 +910,7 @@ vec3 pathGlow(vec3 pos, vec3 n) {
     return vec3(0.0);
   }
   vec4 box = guidePath.v[0];
-  if (pos.x < box.x - 64.0 || pos.z < box.y - 64.0 || pos.x > box.z + 64.0 || pos.z > box.w + 64.0) {
+  if (pos.x < box.x - 64.0 || pos.z < box.y - 64.0 || pos.x > box.z + 64.0 || pos.z > box.w + 64.0 || !cellHas(CELL_ROUTE, pos.xz)) {
     return vec3(0.0);
   }
   float best = 1e30;
@@ -934,7 +949,7 @@ vec3 markerGlow(vec3 pos, vec3 n) {
     return vec3(0.0);
   }
   vec4 box = markers.v[0];
-  if (pos.x < box.x - 80.0 || pos.z < box.y - 80.0 || pos.x > box.z + 80.0 || pos.z > box.w + 80.0) {
+  if (pos.x < box.x - 80.0 || pos.z < box.y - 80.0 || pos.x > box.z + 80.0 || pos.z > box.w + 80.0 || !cellHas(CELL_MARKERS, pos.xz)) {
     return vec3(0.0);
   }
   vec3 glow = vec3(0.0);

@@ -1426,6 +1426,31 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return n + 1;
 	}
 
+	// Occupancy of the scene by routes, markers and footprints, a bit per 512-unit cell, so the
+	// shaders' per-pixel loops over them run only where they can matter. Cells start at -6144.
+	private final int[] cellBits = new int[RtRenderer.CELL_LAYERS * RtRenderer.CELL_WORDS];
+
+	private void clearCells(int layer)
+	{
+		java.util.Arrays.fill(cellBits, layer * RtRenderer.CELL_WORDS, (layer + 1) * RtRenderer.CELL_WORDS, 0);
+	}
+
+	private void markCells(int layer, float minX, float minZ, float maxX, float maxZ)
+	{
+		int x0 = Math.max(0, (int) Math.floor((minX + 6144f) / 512f));
+		int x1 = Math.min(63, (int) Math.floor((maxX + 6144f) / 512f));
+		int z0 = Math.max(0, (int) Math.floor((minZ + 6144f) / 512f));
+		int z1 = Math.min(63, (int) Math.floor((maxZ + 6144f) / 512f));
+		for (int x = x0; x <= x1; ++x)
+		{
+			for (int z = z0; z <= z1; ++z)
+			{
+				int bit = x * 64 + z;
+				cellBits[layer * RtRenderer.CELL_WORDS + (bit >> 5)] |= 1 << (bit & 31);
+			}
+		}
+	}
+
 	// The Shortest Path plugin's route, refreshed each game tick and drawn as a ribbon of light in
 	// the composite pass instead of the plugin's own tile outlines.
 	private ShortestPath shortestPath;
@@ -1522,6 +1547,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		int plane = client.getPlane();
 		markerFill = 0;
+		clearCells(1);
 		markerMinX = Float.MAX_VALUE;
 		markerMinZ = Float.MAX_VALUE;
 		markerMaxX = -Float.MAX_VALUE;
@@ -1584,6 +1610,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		markerPacked[o + 2] = lp.getY();
 		markerPacked[o + 3] = Float.intBitsToFloat(rgb & 0xffffff);
 		++markerFill;
+		markCells(1, lp.getX() - 80f, lp.getY() - 80f, lp.getX() + 80f, lp.getY() + 80f);
 		markerMinX = Math.min(markerMinX, lp.getX());
 		markerMinZ = Math.min(markerMinZ, lp.getY());
 		markerMaxX = Math.max(markerMaxX, lp.getX());
@@ -1688,6 +1715,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		WorldPoint[] tiles = route;
+		clearCells(0);
 		if (tiles == null || tiles.length < 2 || wv == null)
 		{
 			frame.guideCount = 0;
@@ -1725,6 +1753,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			if (!gap)
 			{
 				along += (float) Math.sqrt((x - lastX) * (x - lastX) + (y - lastY) * (y - lastY) + (z - lastZ) * (z - lastZ));
+				markCells(0, Math.min(x, lastX) - 64f, Math.min(z, lastZ) - 64f, Math.max(x, lastX) + 64f, Math.max(z, lastZ) + 64f);
 			}
 			int o = (n + 1) * 4;
 			guidePacked[o] = x;
@@ -1831,6 +1860,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			printNext = 0;
 			lastStep.clear();
 			frame.printCount = 0;
+			clearCells(2);
+			renderer.setCells(cellBits);
 			return;
 		}
 		int plane = client.getPlane();
@@ -1842,7 +1873,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			step(npc, plane);
 		}
+		clearCells(2);
+		for (int i = 0; i < printCount; ++i)
+		{
+			float px = printPacked[i * 8], pz = printPacked[i * 8 + 2];
+			markCells(2, px - 24f, pz - 24f, px + 24f, pz + 24f);
+		}
 		renderer.setPrints(printPacked, printCount * 8);
+		renderer.setCells(cellBits);
 		frame.printCount = printCount;
 		frame.footprintStrength = 1f;
 		frame.textureDisplacement = config.textureDisplacement();

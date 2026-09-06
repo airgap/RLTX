@@ -16,6 +16,21 @@ layout(set = 0, binding = 41) uniform sampler2D starMap;
 layout(set = 0, binding = 42) uniform sampler2D skyLut;
 layout(std430, set = 0, binding = 43) readonly buffer Prints { vec4 v[]; } prints;
 layout(std430, set = 0, binding = 38) readonly buffer Guide { vec4 v[]; } guidePath;
+// Coarse occupancy over the scene: 64 by 64 cells of 512 units, a bit per cell per feature, so
+// the per-pixel loops over routes, markers and footprints skip wherever there are none.
+layout(std430, set = 0, binding = 45) readonly buffer Cells { uint v[]; } cells;
+const int CELL_ROUTE = 0;
+const int CELL_MARKERS = 1;
+const int CELL_PRINTS = 2;
+
+bool cellHas(int layer, vec2 xz) {
+  ivec2 c = ivec2(floor((xz + 6144.0) / 512.0));
+  if (c.x < 0 || c.y < 0 || c.x > 63 || c.y > 63) {
+    return false;
+  }
+  int bit = c.x * 64 + c.y;
+  return (cells.v[layer * 128 + (bit >> 5)] & (1u << uint(bit & 31))) != 0u;
+}
 // This pass writes one irradiance sample per pixel plus the albedo, normal and position the
 // resolve and denoise passes need; the albedo is multiplied back in at the very end.
 layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D currPos;
@@ -590,6 +605,9 @@ vec4 runoffAt(vec2 xz) {
 // Footprints pressed into snow and wet ground: each an oval turned along the step, darkening the
 // ground and tilting the normal into a shallow hollow, fading as the minutes pass.
 void footprint(inout Hit hit, float snow) {
+  if (!cellHas(CELL_PRINTS, hit.surface.xz)) {
+    return;
+  }
   int count = int(u.ground.x);
   float t = u.weather3.x;
   float life = snow > 0.05 ? 300.0 : 60.0;
@@ -630,7 +648,7 @@ void trodden(inout Hit hit, uint flags) {
   }
   vec3 pos = hit.surface;
   vec4 box = guidePath.v[0];
-  if (pos.x < box.x - 60.0 || pos.z < box.y - 60.0 || pos.x > box.z + 60.0 || pos.z > box.w + 60.0) {
+  if (pos.x < box.x - 60.0 || pos.z < box.y - 60.0 || pos.x > box.z + 60.0 || pos.z > box.w + 60.0 || !cellHas(CELL_ROUTE, pos.xz)) {
     return;
   }
   float best = 1.0e30;
