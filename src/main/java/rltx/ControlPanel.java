@@ -52,17 +52,19 @@ final class ControlPanel
 	private final Presets presets;
 	private final AreaRules areas;
 	private final java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition;
+	private final Consumer<List<int[]>> preview;
 	private final Map<String, Consumer<Object>> refreshers = new HashMap<>();
 	private JFrame frame;
 	private boolean updating;
 
-	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition)
+	ControlPanel(ConfigManager configManager, RltxConfig config, Presets presets, AreaRules areas, java.util.function.Supplier<net.runelite.api.coords.WorldPoint> currentPosition, Consumer<List<int[]>> preview)
 	{
 		this.configManager = configManager;
 		this.config = config;
 		this.presets = presets;
 		this.areas = areas;
 		this.currentPosition = currentPosition;
+		this.preview = preview;
 	}
 
 	/** Shows the window, building it on first use; called on any thread. */
@@ -77,6 +79,7 @@ final class ControlPanel
 			if (frame.isVisible())
 			{
 				frame.setVisible(false);
+				preview.accept(null);
 			}
 			else
 			{
@@ -467,12 +470,15 @@ final class ControlPanel
 		JTextField name = new JTextField(18);
 		JTextField regions = new JTextField(18);
 		JTextField polygons = new JTextField(18);
+		JCheckBox misty = new JCheckBox("Misty ground: swamps and graveyards, wherever the mist grid reaches");
 		JComboBox<String> base = new JComboBox<>(presets.names().toArray(new String[0]));
 		list.addListSelectionListener(e ->
 		{
 			AreaRules.Rule rule = list.getSelectedValue();
 			if (rule != null)
 			{
+				preview.accept(rule.polygons);
+				misty.setSelected(rule.misty);
 				name.setText(rule.name);
 				StringBuilder text = new StringBuilder();
 				for (Integer region : rule.regions)
@@ -503,6 +509,14 @@ final class ControlPanel
 		enabled.addActionListener(e -> set("areaSettings", enabled.isSelected()));
 		refreshers.put("areaSettings", v -> enabled.setSelected((Boolean) v));
 		page.add(enabled, c);
+		++c.gridy;
+		JLabel where = new JLabel(" ");
+		new javax.swing.Timer(500, e ->
+		{
+			net.runelite.api.coords.WorldPoint here = currentPosition.get();
+			where.setText(here == null ? "Not in the world." : "You are at " + here.getX() + ", " + here.getY() + " on plane " + here.getPlane() + ", region " + here.getRegionID() + ".");
+		}).start();
+		page.add(where, c);
 		++c.gridy;
 		JLabel help = new JLabel("<html>Bound the area with polygons: walk its outline, marking a corner at each turn, and close the shape; or type corners as x,y pairs separated by spaces, an optional @plane at the end, polygons separated by semicolons. Without polygons the map regions are used. Then set the look you want, choose the preset holding your usual settings as the base, and save: only what differs is kept, and it is put back when you leave.</html>");
 		page.add(help, c);
@@ -541,6 +555,22 @@ final class ControlPanel
 			}
 			outline.append(outline.length() == 0 ? "" : " ").append(here.getX()).append(",").append(here.getY());
 			int corners = outline.toString().split(" ").length;
+			if (corners >= 2)
+			{
+				// Shows the outline so far on the ground, closed back to its first corner.
+				String[] marked = outline.toString().split(" ");
+				int[] partial = new int[1 + marked.length * 2];
+				partial[0] = -1;
+				for (int i = 0; i < marked.length; ++i)
+				{
+					String[] xy = marked[i].split(",");
+					partial[1 + i * 2] = Integer.parseInt(xy[0]);
+					partial[2 + i * 2] = Integer.parseInt(xy[1]);
+				}
+				List<int[]> shown = new ArrayList<>();
+				shown.add(partial);
+				preview.accept(shown);
+			}
 			status.setText(corners + (corners == 1 ? " corner marked at " : " corners marked, last at ") + here.getX() + ", " + here.getY() + ". Close the shape when the outline is walked.");
 		}, status));
 		cornerButtons.add(button("Close shape", () ->
@@ -558,6 +588,8 @@ final class ControlPanel
 		shapeRow.add(cornerButtons, BorderLayout.EAST);
 		page.add(labelled("Polygons", shapeRow), c);
 		++c.gridy;
+		page.add(misty, c);
+		++c.gridy;
 		page.add(labelled("Base preset", base), c);
 		++c.gridy;
 		JPanel buttons = new JPanel(new java.awt.GridLayout(1, 2, 6, 6));
@@ -571,6 +603,7 @@ final class ControlPanel
 			}
 			AreaRules.Rule rule = new AreaRules.Rule();
 			rule.name = areaName;
+			rule.misty = misty.isSelected();
 			for (String part : regions.getText().split("[,\\s]+"))
 			{
 				if (!part.isEmpty())
@@ -593,7 +626,7 @@ final class ControlPanel
 					text = text.substring(0, at).trim();
 				}
 				String[] corners = text.split("\\s+");
-				if (corners.length < 3)
+					if (corners.length < 3)
 				{
 					throw new NumberFormatException("A polygon needs at least three corners: " + shape.trim());
 				}

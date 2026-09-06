@@ -1110,7 +1110,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	{
 		Player local = client.getLocalPlayer();
 		currentPosition = local == null ? null : WorldPoint.fromLocalInstance(client, local.getLocalLocation());
-		String area = areaRules.tick(currentPosition, config.areaSettings());
+		String area = areaRules.tick(currentPosition, config.areaSettings(), onMistyGround(currentPosition));
 		if (area != null)
 		{
 			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", area, null);
@@ -1175,50 +1175,92 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private int[] markerColours;
 	private final float[] markerPacked = new float[(RtRenderer.MAX_MARKERS + 1) * 4];
 
-	// Packs the markers on this plane: a bounding box, then tile centres with the colour's bits in w.
+	// The polygons the Areas tab is showing, drawn on the ground as a line of white pools.
+	private volatile List<int[]> previewPolygons;
+	private int markerFill;
+	private float markerMinX, markerMinZ, markerMaxX, markerMaxZ;
+
+	// Packs the markers on this plane: a bounding box, then tile centres with the colour's bits in
+	// w, followed by the tiles along the edges of any area polygon being edited.
 	private void fillMarkers()
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		WorldPoint[] tiles = markerTiles;
 		int[] colours = markerColours;
-		if (tiles == null || tiles.length == 0 || wv == null)
+		List<int[]> outlines = previewPolygons;
+		if (wv == null || (tiles == null && outlines == null))
 		{
 			frame.markerCount = 0;
 			return;
 		}
 		int plane = client.getPlane();
-		float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-		int n = 0;
-		for (int i = 0; i < tiles.length && n < RtRenderer.MAX_MARKERS; ++i)
+		markerFill = 0;
+		markerMinX = Float.MAX_VALUE;
+		markerMinZ = Float.MAX_VALUE;
+		markerMaxX = -Float.MAX_VALUE;
+		markerMaxZ = -Float.MAX_VALUE;
+		if (tiles != null)
 		{
-			LocalPoint lp = tiles[i].getPlane() == plane ? LocalPoint.fromWorld(wv, tiles[i]) : null;
-			if (lp == null)
+			for (int i = 0; i < tiles.length; ++i)
 			{
-				continue;
+				addMarker(wv, plane, tiles[i], colours[i]);
 			}
-			int o = (n + 1) * 4;
-			markerPacked[o] = lp.getX();
-			markerPacked[o + 1] = Perspective.getTileHeight(client, lp, plane);
-			markerPacked[o + 2] = lp.getY();
-			markerPacked[o + 3] = Float.intBitsToFloat(colours[i] & 0xffffff);
-			++n;
-			minX = Math.min(minX, lp.getX());
-			minZ = Math.min(minZ, lp.getY());
-			maxX = Math.max(maxX, lp.getX());
-			maxZ = Math.max(maxZ, lp.getY());
 		}
-		if (n == 0)
+		if (outlines != null)
+		{
+			for (int[] polygon : outlines)
+			{
+				int corners = (polygon.length - 1) / 2;
+				for (int i = 0; i < corners; ++i)
+				{
+					int ax = polygon[1 + i * 2], ay = polygon[2 + i * 2];
+					int bx = polygon[1 + ((i + 1) % corners) * 2], by = polygon[2 + ((i + 1) % corners) * 2];
+					int steps = Math.max(Math.abs(bx - ax), Math.abs(by - ay));
+					for (int s = 0; s <= steps; ++s)
+					{
+						int x = ax + Math.round((bx - ax) * (s / (float) Math.max(steps, 1)));
+						int y = ay + Math.round((by - ay) * (s / (float) Math.max(steps, 1)));
+						addMarker(wv, plane, new WorldPoint(x, y, plane), 0xffffff);
+					}
+				}
+			}
+		}
+		if (markerFill == 0)
 		{
 			frame.markerCount = 0;
 			return;
 		}
-		markerPacked[0] = minX;
-		markerPacked[1] = minZ;
-		markerPacked[2] = maxX;
-		markerPacked[3] = maxZ;
-		renderer.setMarkers(markerPacked, (n + 1) * 4);
-		frame.markerCount = n;
-		frame.markerStrength = 1.5f * config.markerGlowStrength() / 100f;
+		markerPacked[0] = markerMinX;
+		markerPacked[1] = markerMinZ;
+		markerPacked[2] = markerMaxX;
+		markerPacked[3] = markerMaxZ;
+		renderer.setMarkers(markerPacked, (markerFill + 1) * 4);
+		frame.markerCount = markerFill;
+		float strength = 1.5f * config.markerGlowStrength() / 100f;
+		frame.markerStrength = outlines != null ? Math.max(strength, 1.5f) : strength;
+	}
+
+	private void addMarker(WorldView wv, int plane, WorldPoint tile, int rgb)
+	{
+		if (markerFill >= RtRenderer.MAX_MARKERS || tile.getPlane() != plane)
+		{
+			return;
+		}
+		LocalPoint lp = LocalPoint.fromWorld(wv, tile);
+		if (lp == null)
+		{
+			return;
+		}
+		int o = (markerFill + 1) * 4;
+		markerPacked[o] = lp.getX();
+		markerPacked[o + 1] = Perspective.getTileHeight(client, lp, plane);
+		markerPacked[o + 2] = lp.getY();
+		markerPacked[o + 3] = Float.intBitsToFloat(rgb & 0xffffff);
+		++markerFill;
+		markerMinX = Math.min(markerMinX, lp.getX());
+		markerMinZ = Math.min(markerMinZ, lp.getY());
+		markerMaxX = Math.max(markerMaxX, lp.getX());
+		markerMaxZ = Math.max(markerMaxZ, lp.getY());
 	}
 
 	// Wisps drift along the route at a walking pace, evenly spaced, each placed by walking the
@@ -1393,6 +1435,31 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.guideR = (float) Math.pow(colour.getRed() / 255.0, 2.2) * strength;
 		frame.guideG = (float) Math.pow(colour.getGreen() / 255.0, 2.2) * strength;
 		frame.guideB = (float) Math.pow(colour.getBlue() / 255.0, 2.2) * strength;
+	}
+
+	// Whether the ground under a world position lies in the mist grid's coverage.
+	private boolean onMistyGround(WorldPoint p)
+	{
+		LoadedScene top = scenes.get(WorldView.TOPLEVEL);
+		WorldView wv = client.getTopLevelWorldView();
+		if (p == null || top == null || top.mist == null || wv == null)
+		{
+			return false;
+		}
+		LocalPoint lp = LocalPoint.fromWorld(wv, p);
+		if (lp == null)
+		{
+			return false;
+		}
+		int size = top.scene.getExtendedTiles()[0].length;
+		int offset = (size - Constants.SCENE_SIZE) / 2;
+		int vx = lp.getSceneX() + offset;
+		int vy = lp.getSceneY() + offset;
+		if (vx < 0 || vy < 0 || vx > size || vy > size)
+		{
+			return false;
+		}
+		return top.mist[(vx * (size + 1) + vy) * StaticSceneBuilder.MIST_FLOATS + 1] > 0.25f;
 	}
 
 	// Whether the camera has gone below a water surface, and where that surface is.
@@ -1733,6 +1800,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		boolean[] swayed;
 		/** Rain runoff over the ground; null for nested world views. */
 		WaterSim water;
+		/** The mist grid as uploaded, for asking whether ground is misty. */
+		float[] mist;
 		int[][][] terrainLight;
 
 		LoadedScene(Scene scene, StaticScene built, int[][][] terrainLight, StaticSceneBuilder.WaterBed waterBed, SceneLights lights)
@@ -1792,7 +1861,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			log.warn("Area settings not loaded from {}", AreaRules.FILE, e);
 		}
-		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition);
+		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, polygons -> previewPolygons = polygons);
 		keyManager.registerKeyListener(controlPanelKey);
 		keyManager.registerKeyListener(quadPhotoKey);
 		keyManager.registerKeyListener(photoModeKey);
@@ -2368,7 +2437,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.setStaticSet(id, loaded.built, subTransforms.get(id));
 		if (id == WorldView.TOPLEVEL)
 		{
-			renderer.setMistGrid(StaticSceneBuilder.mistGrid(scene, this::isMisty));
+			loaded.mist = StaticSceneBuilder.mistGrid(scene, this::isMisty);
+			renderer.setMistGrid(loaded.mist);
 			int[][][] heights = scene.getTileHeights();
 			int side = heights[0].length;
 			float[] flat = new float[heights.length * side * side];

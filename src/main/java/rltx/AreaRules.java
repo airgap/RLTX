@@ -41,13 +41,19 @@ final class AreaRules
 		/** World polygons: the plane, -1 for any, then the corners' x and y in order. */
 		List<int[]> polygons = new ArrayList<>();
 		List<Integer> regions = new ArrayList<>();
+		/** Matches wherever the mist grid marks the ground misty: swamps and graveyards, by their objects. */
+		boolean misty;
 		Map<String, String> overrides = new LinkedHashMap<>();
 		/** A user rule that only switches a bundled rule of the same name off. */
 		boolean disabled;
 		transient boolean bundled;
 
-		boolean contains(WorldPoint p)
+		boolean contains(WorldPoint p, boolean onMistyGround)
 		{
+			if (misty && onMistyGround)
+			{
+				return true;
+			}
 			for (int[] polygon : polygons)
 			{
 				if ((polygon[0] < 0 || p.getPlane() == polygon[0]) && inside(polygon, p.getX(), p.getY()))
@@ -81,7 +87,7 @@ final class AreaRules
 		@Override
 		public String toString()
 		{
-			return name + (bundled ? "  (bundled)" : "") + (disabled ? "  (off)" : "");
+			return name + (misty ? "  (misty ground)" : "") + (bundled ? "  (bundled)" : "") + (disabled ? "  (off)" : "");
 		}
 	}
 
@@ -166,6 +172,7 @@ final class AreaRules
 		copy.name = rule.name;
 		copy.polygons = rule.polygons;
 		copy.regions = rule.regions;
+		copy.misty = rule.misty;
 		copy.overrides = rule.overrides;
 		try (Writer out = Files.newBufferedWriter(new File(dir, file).toPath(), StandardCharsets.UTF_8))
 		{
@@ -229,14 +236,14 @@ final class AreaRules
 	 * Called with the character's position each game tick. Returns a message when the area in
 	 * force changed, or null.
 	 */
-	synchronized String tick(WorldPoint position, boolean enabled)
+	synchronized String tick(WorldPoint position, boolean enabled, boolean onMistyGround)
 	{
 		Rule match = null;
 		if (enabled && position != null)
 		{
 			for (Rule rule : rules())
 			{
-				if (!rule.disabled && rule.overrides != null && rule.contains(position))
+				if (!rule.disabled && rule.overrides != null && rule.contains(position, onMistyGround))
 				{
 					match = rule;
 					break;
