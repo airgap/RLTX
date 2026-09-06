@@ -186,8 +186,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		public void hotkeyPressed()
 		{
 			chromeHidden = !chromeHidden;
+			if (chromeHidden && !photoHintShown)
+			{
+				// Read once the interface comes back, since the corners give no other hint.
+				photoHintShown = true;
+				say("Photo mode: the interface was hidden. Click the top-left corner to bring it back, the bottom-right to take a photo, or press the photo mode key again.");
+			}
 		}
 	};
+	private boolean photoHintShown;
 	private final MouseAdapter photoButtons = new MouseAdapter()
 	{
 		@Override
@@ -2848,6 +2855,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.wildlife = config.wildlife();
 		frame.rainbows = config.rainbows();
 		frame.focusPeaking = config.focusPeaking();
+		frame.roofOcclusion = config.roofOcclusion();
 		frame.heatShimmer = config.heatShimmer();
 		frame.latitude = (float) latitude();
 		RltxConfig.AuroraMode auroraMode = config.aurora();

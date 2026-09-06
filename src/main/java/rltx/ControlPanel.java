@@ -298,11 +298,41 @@ final class ControlPanel
 		}
 		else if (type == Keybind.class)
 		{
-			// Keys are set from the sidebar; here they are shown so the panel lists every setting.
-			JLabel shown = new JLabel(value.toString());
-			shown.setEnabled(false);
-			refreshers.put(key, v -> shown.setText(v.toString()));
-			control = shown;
+			// Click, then press the key with any modifiers; Escape keeps the old key, Backspace clears it.
+			JButton keyButton = new JButton(value.toString());
+			keyButton.setFocusable(true);
+			keyButton.addActionListener(e ->
+			{
+				keyButton.setText("Press a key…");
+				keyButton.requestFocusInWindow();
+			});
+			keyButton.addKeyListener(new java.awt.event.KeyAdapter()
+			{
+				@Override
+				public void keyPressed(java.awt.event.KeyEvent e)
+				{
+					if (!"Press a key…".equals(keyButton.getText()))
+					{
+						return;
+					}
+					int code = e.getKeyCode();
+					if (code == java.awt.event.KeyEvent.VK_SHIFT || code == java.awt.event.KeyEvent.VK_CONTROL || code == java.awt.event.KeyEvent.VK_ALT || code == java.awt.event.KeyEvent.VK_META)
+					{
+						return;
+					}
+					e.consume();
+					if (code == java.awt.event.KeyEvent.VK_ESCAPE)
+					{
+						keyButton.setText(current(key).toString());
+						return;
+					}
+					Keybind chosen = code == java.awt.event.KeyEvent.VK_BACK_SPACE ? Keybind.NOT_SET : new Keybind(code, e.getModifiersEx());
+					keyButton.setText(chosen.toString());
+					set(key, chosen);
+				}
+			});
+			refreshers.put(key, v -> keyButton.setText(v.toString()));
+			control = keyButton;
 		}
 		else if (type == String.class)
 		{

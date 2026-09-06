@@ -612,9 +612,12 @@ public final class StaticSceneBuilder
 				pushFoliage(go.getRenderable(), go.getModelOrientation(), go.getX(), go.getZ(), go.getY(), kind == 2 ? treeScale : 1f, bucket);
 				if (kind == 2)
 				{
-					// The crown is taken as the upper part of the model, about as wide as it is tall.
-					float height = go.getRenderable().getModelHeight() * treeScale;
-					treeSources.add(new float[]{go.getX(), go.getZ() - height, go.getY(), Math.max(60f, 0.45f * height)});
+					// The crown's top is the model's height; its reach is the model's horizontal extent.
+					Renderable r = go.getRenderable();
+					Model m = r instanceof Model ? (Model) r : r instanceof DynamicObject ? ((DynamicObject) r).getModelZbuf() : null;
+					float height = r.getModelHeight() * treeScale;
+					float reach = m == null ? 0.45f * height : m.getXYZMag() * treeScale;
+					treeSources.add(new float[]{go.getX(), go.getZ() - height, go.getY(), Math.max(60f, Math.min(reach, 400f))});
 				}
 			}
 			else

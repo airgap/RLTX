@@ -278,6 +278,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "roofOcclusion",
+		name = "Hidden roofs shade interiors",
+		description = "Roofs the client hides so you can see inside still keep out the sun and sky, so rooms are lit through their windows, doors and lamps rather than lying open to the sky.",
+		section = sunSection,
+		position = 30
+	)
+	default boolean roofOcclusion()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "skybox",
 		name = "Skybox",
 		description = "Sky image from the Fantasy Skybox pack, used as the background and as the sky light. A fixed sky does not move the sun; the 'follows time of day' entries switch with the sun position. Requires the pack folder below.",
