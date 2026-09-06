@@ -176,7 +176,9 @@ public final class RtRenderer
 	private static final int BINDING_TREES = 44;
 	private static final int BINDING_CELLS = 45;
 	private static final int BINDING_PRESENTED = 46;
-	private static final int BINDING_COUNT = 47;
+	private static final int BINDING_MOTION = 47;
+	private static final int BINDING_DEPTH = 48;
+	private static final int BINDING_COUNT = 49;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -243,6 +245,7 @@ public final class RtRenderer
 	private long exposurePipeline;
 	private long shaftsPipeline;
 	private long upscalePipeline;
+	private long motionPipeline;
 
 	private final VkCommandBuffer cmd;
 	private long fence;
@@ -388,6 +391,17 @@ public final class RtRenderer
 	private int internalHeight;
 	/** The image OpenGL composites, always the size of the view; the same as output at full scale. */
 	private Img presented;
+	// DLSS: what it reads besides the colour, the feature built for the current sizes and quality,
+	// and the jitter the frame was traced with.
+	private static final int MOTION_FORMAT = VK_FORMAT_R16G16_SFLOAT;
+	private static final int DEPTH_FORMAT = VK_FORMAT_R32_SFLOAT;
+	private Img motionImage;
+	private Img depthImage;
+	private long dlssFeature;
+	/** The DLSS quality the images and feature were made for, -1 for none. */
+	private int dlssQuality = -1;
+	private boolean dlssReady;
+	private float jitterX, jitterY;
 	private boolean outputUninitialized;
 	private int parity;
 
@@ -408,6 +422,7 @@ public final class RtRenderer
 
 		createSyncObjects();
 		createPipeline();
+		dlssReady = Ngx.initialise(ctx.instance.address(), ctx.physicalDevice.address(), device.address());
 		frameUbo = ctx.createBuffer(FRAME_UBO_SIZE, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		createDynamicResources();
@@ -645,6 +660,8 @@ public final class RtRenderer
 			types[BINDING_TLAS] = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 			types[BINDING_OUTPUT] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_PRESENTED] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_MOTION] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_DEPTH] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_STATIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_COL] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -702,7 +719,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(40);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(44);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(48);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
@@ -737,6 +754,7 @@ public final class RtRenderer
 		exposurePipeline = createComputePipeline("/rltx/exposure.comp.spv");
 		shaftsPipeline = createComputePipeline("/rltx/shafts.comp.spv");
 		upscalePipeline = createComputePipeline("/rltx/upscale.comp.spv");
+		motionPipeline = createComputePipeline("/rltx/motion.comp.spv");
 	}
 
 	private long createComputePipeline(String resource)
@@ -1898,15 +1916,30 @@ public final class RtRenderer
 	 * @return true when a new output image was created and must be re-imported by OpenGL
 	 */
 	/**
-	 * Sizes the images for a view of the given size, tracing at the given fraction of it. Returns
-	 * whether the presented image was recreated, so OpenGL must import it again.
+	 * Sizes the images for a view of the given size. With a DLSS quality of -1 the frame is traced
+	 * at the given fraction of the view and scaled up by the Catmull-Rom pass; otherwise DLSS
+	 * chooses the traced size for that quality and reconstructs the view from it. Returns whether
+	 * the presented image was recreated, so OpenGL must import it again.
 	 */
-	public boolean ensureOutput(int width, int height, float scale)
+	public boolean ensureOutput(int width, int height, float scale, int dlss)
 	{
-		int traceWidth = Math.max(1, Math.round(width * scale));
-		int traceHeight = Math.max(1, Math.round(height * scale));
+		int quality = dlssReady ? dlss : -1;
+		int[] optimal = quality >= 0 ? Ngx.optimalSettings(width, height, quality) : null;
+		int traceWidth;
+		int traceHeight;
+		if (optimal == null)
+		{
+			quality = -1;
+			traceWidth = Math.max(1, Math.round(width * scale));
+			traceHeight = Math.max(1, Math.round(height * scale));
+		}
+		else
+		{
+			traceWidth = optimal[0];
+			traceHeight = optimal[1];
+		}
 		boolean presentedChanged = presented == null || outputWidth != width || outputHeight != height;
-		if (!presentedChanged && internalWidth == traceWidth && internalHeight == traceHeight)
+		if (!presentedChanged && internalWidth == traceWidth && internalHeight == traceHeight && dlssQuality == quality)
 		{
 			return false;
 		}
@@ -1914,11 +1947,15 @@ public final class RtRenderer
 		destroyOutput(presentedChanged);
 
 		int scratchUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		// DLSS reads its inputs as sampled images.
+		int fedUsage = scratchUsage | VK_IMAGE_USAGE_SAMPLED_BIT;
 		if (presentedChanged)
 		{
 			presented = createImage(width, height, OUTPUT_FORMAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true);
 		}
-		output = traceWidth == width && traceHeight == height ? presented : createImage(traceWidth, traceHeight, OUTPUT_FORMAT, scratchUsage, false);
+		output = quality < 0 && traceWidth == width && traceHeight == height ? presented : createImage(traceWidth, traceHeight, OUTPUT_FORMAT, fedUsage, false);
+		motionImage = createImage(traceWidth, traceHeight, MOTION_FORMAT, fedUsage, false);
+		depthImage = createImage(traceWidth, traceHeight, DEPTH_FORMAT, fedUsage, false);
 		sample = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		albedo = createImage(traceWidth, traceHeight, OUTPUT_FORMAT, scratchUsage, false);
 		normal = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
@@ -1951,6 +1988,8 @@ public final class RtRenderer
 			long handle = descriptorSets[set];
 			writeImageDescriptor(handle, BINDING_OUTPUT, output.view);
 			writeImageDescriptor(handle, BINDING_PRESENTED, presented.view);
+			writeImageDescriptor(handle, BINDING_MOTION, motionImage.view);
+			writeImageDescriptor(handle, BINDING_DEPTH, depthImage.view);
 			writeImageDescriptor(handle, BINDING_SAMPLE, sample.view);
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
@@ -1969,7 +2008,23 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_PREV_POS, historyPos[set].view);
 			writeImageDescriptor(handle, BINDING_CURR_POS, historyPos[1 - set].view);
 		}
-		log.debug("Output image {}x{} traced at {}x{} ({} bytes)", width, height, traceWidth, traceHeight, presented.allocationSize);
+		dlssQuality = quality;
+		if (quality >= 0)
+		{
+			// The feature records its own setup, which must have run before the first evaluate.
+			VkCommandBuffer setup = ctx.beginOneTime();
+			dlssFeature = Ngx.createFeature(device.address(), setup.address(), traceWidth, traceHeight, width, height, quality, Ngx.FLAG_MV_LOW_RES);
+			ctx.endOneTimeAndWait(setup);
+			if (dlssFeature == 0)
+			{
+				// The traced images are the wrong size for the plain upscale as well, so start over without DLSS.
+				log.warn("DLSS feature creation failed with NGX result 0x{}; using the render scale instead", Integer.toHexString(Ngx.lastResult()));
+				dlssReady = false;
+				ensureOutput(width, height, scale, -1);
+				return presentedChanged;
+			}
+		}
+		log.debug("Output image {}x{} traced at {}x{}{} ({} bytes)", width, height, traceWidth, traceHeight, quality >= 0 ? " for DLSS" : "", presented.allocationSize);
 		return presentedChanged;
 	}
 
@@ -2095,6 +2150,15 @@ public final class RtRenderer
 		{
 			return;
 		}
+		if (dlssFeature != 0)
+		{
+			Ngx.releaseFeature(dlssFeature);
+			dlssFeature = 0;
+		}
+		destroyImage(motionImage);
+		destroyImage(depthImage);
+		motionImage = null;
+		depthImage = null;
 		if (output != presented)
 		{
 			destroyImage(output);
@@ -2162,6 +2226,20 @@ public final class RtRenderer
 		waitPreviousFrame();
 		flushPending();
 		prepareZoneUpdates();
+		if (dlssFeature != 0)
+		{
+			// Halton points, cycling through eight phases for every output pixel a traced pixel covers.
+			double ratio = (double) outputWidth / internalWidth;
+			int phases = (int) Math.ceil(8.0 * ratio * ratio);
+			int index = frameIndex % phases + 1;
+			jitterX = (float) (Ngx.halton(index, 2) - 0.5);
+			jitterY = (float) (Ngx.halton(index, 3) - 0.5);
+		}
+		else
+		{
+			jitterX = 0f;
+			jitterY = 0f;
+		}
 
 		int opaqueFaces = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		int translucentFaces = Math.min(translucent.faces(), MAX_DYNAMIC_FACES - opaqueFaces);
@@ -2270,6 +2348,17 @@ public final class RtRenderer
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
 			}
+			if (dlssFeature != 0)
+			{
+				imageBarrier(cmd, motionImage.image,
+					outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+				imageBarrier(cmd, depthImage.image,
+					outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+			}
 			outputUninitialized = false;
 
 			int groupsX = (internalWidth + 7) / 8;
@@ -2349,7 +2438,33 @@ public final class RtRenderer
 			}
 
 			stamp(cmd, 9);
-			if (presented != output)
+			if (dlssFeature != 0)
+			{
+				computeBarrier(cmd);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, motionPipeline);
+				vkCmdDispatch(cmd, groupsX, groupsY, 1);
+				// DLSS reads its inputs in the shader-read-only layout and leaves them there; the
+				// presented image it writes stays general. It also disturbs the bound pipeline and
+				// descriptors, so nothing but barriers follows it.
+				readOnlyForDlss(cmd, output.image);
+				readOnlyForDlss(cmd, motionImage.image);
+				readOnlyForDlss(cmd, depthImage.image);
+				int result = Ngx.evaluate(cmd.address(), dlssFeature,
+					output.image, output.view, OUTPUT_FORMAT, internalWidth, internalHeight,
+					presented.image, presented.view, OUTPUT_FORMAT, outputWidth, outputHeight,
+					depthImage.image, depthImage.view, DEPTH_FORMAT,
+					motionImage.image, motionImage.view, MOTION_FORMAT,
+					jitterX, jitterY, !hasHistory);
+				if (result != 1 && !warnedDlss)
+				{
+					warnedDlss = true;
+					log.warn("DLSS evaluate failed with NGX result 0x{}", Integer.toHexString(result));
+				}
+				generalAfterDlss(cmd, output.image);
+				generalAfterDlss(cmd, motionImage.image);
+				generalAfterDlss(cmd, depthImage.image);
+			}
+			else if (presented != output)
 			{
 				computeBarrier(cmd);
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upscalePipeline);
@@ -2405,6 +2520,38 @@ public final class RtRenderer
 		push.clear();
 		push.putInt(pass).putInt(step).putInt(last).putInt(passes).flip();
 		vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+	}
+
+	private boolean warnedDlss;
+
+	private void readOnlyForDlss(VkCommandBuffer commandBuffer, long image)
+	{
+		imageLayout(commandBuffer, image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+	}
+
+	private void generalAfterDlss(VkCommandBuffer commandBuffer, long image)
+	{
+		imageLayout(commandBuffer, image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+	}
+
+	private void imageLayout(VkCommandBuffer commandBuffer, long image, int oldLayout, int newLayout, int srcStage, int srcAccess, int dstStage, int dstAccess)
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
+			barrier.get(0).sType$Default()
+				.srcAccessMask(srcAccess)
+				.dstAccessMask(dstAccess)
+				.oldLayout(oldLayout)
+				.newLayout(newLayout)
+				.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+				.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+				.image(image);
+			fillColorRange(barrier.get(0).subresourceRange());
+			vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, null, null, barrier);
+		}
 	}
 
 	private void imageBarrier(VkCommandBuffer commandBuffer, long image, int oldLayout, int srcStage, int srcAccess, int dstStage, int dstAccess)
@@ -2649,6 +2796,7 @@ public final class RtRenderer
 		}
 		int flags2 = p.sampledLights ? 1 : 0;
 		b.putInt(flags2).putInt(0).putInt(0).putInt(0);
+		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(0f);
 		if (b.position() > FRAME_UBO_SIZE)
 		{
 			throw new IllegalStateException("Frame uniforms exceed the buffer: " + b.position() + " of " + FRAME_UBO_SIZE + " bytes");
@@ -2669,6 +2817,11 @@ public final class RtRenderer
 		vkDeviceWaitIdle(device);
 		freeRetired();
 		destroyOutput(true);
+		if (dlssReady)
+		{
+			Ngx.shutdown(device.address());
+			dlssReady = false;
+		}
 		freeAllStatic();
 		ctx.destroyBuffer(staticPos);
 		ctx.destroyBuffer(staticCol);
@@ -2728,6 +2881,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, exposurePipeline, null);
 		vkDestroyPipeline(device, shaftsPipeline, null);
 		vkDestroyPipeline(device, upscalePipeline, null);
+		vkDestroyPipeline(device, motionPipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);
 		vkDestroyDescriptorSetLayout(device, descriptorLayout, null);

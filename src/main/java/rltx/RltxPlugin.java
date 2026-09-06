@@ -7,6 +7,7 @@ import com.google.inject.Provides;
 import java.awt.Canvas;
 import java.awt.Dimension;
 import java.awt.geom.AffineTransform;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
@@ -41,6 +42,7 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.BeforeRender;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.hooks.DrawCallbacks;
+import net.runelite.client.RuneLite;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.config.ConfigManager;
@@ -76,6 +78,7 @@ import rltx.scene.TextureCutouts;
 import rltx.scene.WaterSim;
 import rltx.scene.lights.SceneLights;
 import rltx.vk.FrameParams;
+import rltx.vk.Ngx;
 import rltx.vk.RtRenderer;
 import rltx.vk.VkContext;
 
@@ -454,6 +457,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				awtContext.setSwapInterval(0);
 
 				compositor = new GlCompositor(caps);
+				Ngx.load(System.getProperty("rltx.nativeDir"), new File(RuneLite.RUNELITE_DIR, "rltx/ngx").getPath());
+				if (!Ngx.loaded())
+				{
+					log.info("DLSS unavailable: {}", Ngx.unavailableReason());
+				}
 				vk = VkContext.create(compositor.deviceUuid());
 				renderer = new RtRenderer(vk);
 				environment.attach(renderer);
@@ -597,6 +605,25 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if ("unlitColours".equals(event.getKey()) || "treeScale".equals(event.getKey()) || "seasonMode".equals(event.getKey()))
 		{
 			staticDirty = true;
+		}
+	}
+
+	private static int dlssQuality(RltxConfig.DlssMode mode)
+	{
+		switch (mode)
+		{
+			case QUALITY:
+				return Ngx.QUALITY_QUALITY;
+			case BALANCED:
+				return Ngx.QUALITY_BALANCED;
+			case PERFORMANCE:
+				return Ngx.QUALITY_PERFORMANCE;
+			case ULTRA_PERFORMANCE:
+				return Ngx.QUALITY_ULTRA_PERFORMANCE;
+			case DLAA:
+				return Ngx.QUALITY_DLAA;
+			default:
+				return -1;
 		}
 	}
 
@@ -969,9 +996,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			return;
 		}
-		// Photos and cinema frames are traced at full size whatever the render scale.
-		float scale = cinema.active() && !cinema.preview() || photo.burstPending() ? 1f : config.renderScale() / 100f;
-		if (renderer.ensureOutput(width, height, scale))
+		// Photos and cinema frames are traced at full size whatever the render scale or DLSS say.
+		boolean held = cinema.active() && !cinema.preview() || photo.burstPending();
+		float scale = held ? 1f : config.renderScale() / 100f;
+		int dlss = held ? -1 : dlssQuality(config.dlss());
+		if (renderer.ensureOutput(width, height, scale, dlss))
 		{
 			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		}
@@ -1103,7 +1132,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float diffusionRadius = frame.diffusionRadius;
 		frame.zoom = zoom * 2f;
 		frame.diffusionRadius = diffusionRadius * 2f;
-		renderer.ensureOutput(width * 2, height * 2, 1f);
+		renderer.ensureOutput(width * 2, height * 2, 1f, -1);
 		burst(config.photoBurst(), false);
 		glSignalPending = false;
 		int[] argb = renderer.readbackOutput();
@@ -1111,7 +1140,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float exposure = frame.exposure;
 		frame.zoom = zoom;
 		frame.diffusionRadius = diffusionRadius;
-		renderer.ensureOutput(width, height, 1f);
+		renderer.ensureOutput(width, height, 1f, -1);
 		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
 	}
@@ -1288,7 +1317,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		else if (config.loginPattern() && gameState != GameState.LOGGED_IN && gameState != GameState.LOADING)
 		{
-			if (renderer.ensureOutput(canvasWidth, canvasHeight, 1f))
+			if (renderer.ensureOutput(canvasWidth, canvasHeight, 1f, -1))
 			{
 				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 			}

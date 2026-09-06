@@ -65,6 +65,9 @@ sends nothing to the game.
 - A JDK, 17 or newer, and `glslangValidator` on the path (`glslang-tools` on Debian and Ubuntu,
   `glslang` on Arch and Fedora, the Vulkan SDK on Windows).
 - RuneLite installed through the Jagex Launcher, to play with a Jagex account.
+- For DLSS, optional: an RTX GPU, `gcc` and `git`. The launch script fetches NVIDIA's DLSS SDK
+  from GitHub and compiles a small bridge to it; without them the DLSS setting says so in the log
+  and does nothing.
 
 ## Building
 

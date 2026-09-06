@@ -484,6 +484,41 @@ public interface RltxConfig extends Config
 		return 180;
 	}
 
+	enum DlssMode
+	{
+		OFF("Off"),
+		QUALITY("Quality"),
+		BALANCED("Balanced"),
+		PERFORMANCE("Performance"),
+		ULTRA_PERFORMANCE("Ultra performance"),
+		DLAA("DLAA, no upscale");
+
+		private final String label;
+
+		DlssMode(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
+	@ConfigItem(
+		keyName = "dlss",
+		name = "DLSS",
+		description = "NVIDIA's DLSS super resolution reconstructs the view from a frame traced at the size its quality mode chooses, taking over antialiasing; it overrides the render scale. Needs an RTX GPU and the client started by the launch script, which builds the bridge to it. When unavailable the log says why and this does nothing.",
+		section = temporalSection,
+		position = -2
+	)
+	default DlssMode dlss()
+	{
+		return DlssMode.OFF;
+	}
+
 	@Range(min = 50, max = 100)
 	@Units(Units.PERCENT)
 	@ConfigItem(

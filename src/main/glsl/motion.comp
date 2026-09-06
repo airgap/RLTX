@@ -1,0 +1,50 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// What DLSS needs besides the colour: per pixel, where the surface seen was on the screen last
+// frame relative to where it is now, in traced pixels, and its depth along the view axis. The
+// reprojection is the one the temporal resolve uses; the sky is treated as a point far along the
+// pixel's ray so it moves with the camera's turn alone.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "frame.glsl"
+layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
+layout(set = 0, binding = 47, rg16f) uniform writeonly image2D motion;
+layout(set = 0, binding = 48, r32f) uniform writeonly image2D viewDepth;
+
+const float SKY_DISTANCE = 1.0e6;
+const float FAR_PLANE = 65536.0;
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  int w = int(u.misc.z);
+  int h = int(u.misc.w);
+  if (p.x >= w || p.y >= h) {
+    return;
+  }
+  vec4 position = imageLoad(currPos, p);
+  vec2 jitter = u.lens.xy;
+  vec3 world;
+  if (position.w < 0.0) {
+    vec3 view = vec3((float(p.x) + 0.5 + jitter.x - float(w) * 0.5) / u.cam.w, (float(p.y) + 0.5 + jitter.y - float(h) * 0.5) / u.cam.w, 1.0);
+    vec3 dir = normalize(vec3(dot(u.r0.xyz, view), dot(u.r1.xyz, view), dot(u.r2.xyz, view)));
+    world = u.cam.xyz + dir * SKY_DISTANCE;
+  } else {
+    world = position.xyz;
+  }
+  vec3 rel = world - u.prevCam.xyz;
+  vec3 v = vec3(dot(u.p0.xyz, rel), dot(u.p1.xyz, rel), dot(u.p2.xyz, rel));
+  vec2 mv = vec2(0.0);
+  if (v.z > 1.0) {
+    vec2 previous = vec2(float(w), float(h)) * 0.5 + v.xy * u.prevCam.w / v.z;
+    // The ray this frame left the pixel centre by the jitter; the vector is between unjittered positions.
+    vec2 current = vec2(p) + 0.5 + jitter;
+    mv = previous - current;
+  }
+  imageStore(motion, p, vec4(mv, 0.0, 0.0));
+  // DLSS assumes depth runs from 0 at the near plane to 1 at the far plane. The current forward
+  // rotation's third row is the third column of the inverse rotation.
+  float depth = position.w < 0.0 ? 1.0 : clamp(dot(vec3(u.r0.z, u.r1.z, u.r2.z), world - u.cam.xyz) / FAR_PLANE, 0.0, 1.0);
+  imageStore(viewDepth, p, vec4(depth, 0.0, 0.0, 0.0));
+}

@@ -59,10 +59,46 @@ def shaderTasks = fileTree('src/main/glsl').matching { include '*.comp' }.files.
 sourceSets.main.resources.srcDir(spvDir)
 tasks.named('processResources') { dependsOn shaderTasks }
 
+// NVIDIA DLSS: the SDK is fetched from GitHub and a small JNI shim over it compiled with the
+// system C compiler, on Linux only. Without them the client runs with DLSS unavailable.
+def dlssTag = 'v310.7.0'
+def dlssDir = layout.buildDirectory.dir('dlss')
+def nativeDir = layout.buildDirectory.dir('native')
+def onLinux = System.getProperty('os.name').toLowerCase().contains('linux')
+
+tasks.register('dlssSdk', Exec) {
+	onlyIf { onLinux && !dlssDir.get().dir('include').asFile.exists() }
+	def target = dlssDir.get().asFile.absolutePath
+	commandLine 'sh', '-c', "git clone --depth 1 --filter=blob:none --sparse --branch ${dlssTag} https://github.com/NVIDIA/DLSS '${target}' && git -C '${target}' sparse-checkout set include lib/Linux_x86_64 LICENSE.txt"
+}
+
+tasks.register('nativeShim', Exec) {
+	dependsOn 'dlssSdk'
+	onlyIf { onLinux }
+	def src = file('src/main/c/rltx_ngx.c')
+	def out = nativeDir.get().file('librltxngx.so').asFile
+	def sdk = dlssDir.get().asFile.absolutePath
+	def javaHome = System.getProperty('java.home')
+	inputs.file src
+	outputs.file out
+	doFirst { out.parentFile.mkdirs() }
+	commandLine 'gcc', '-shared', '-fPIC', '-O2', '-Wall', '-Werror=implicit-function-declaration', '-Wl,--no-undefined', '-o', out.absolutePath, src.absolutePath,
+		"-I${sdk}/include", "-I${javaHome}/include", "-I${javaHome}/include/linux",
+		"-L${sdk}/lib/Linux_x86_64", '-lnvsdk_ngx', '-lstdc++', '-ldl', '-lpthread'
+	doLast {
+		copy {
+			from "${sdk}/lib/Linux_x86_64/rel"
+			include 'libnvidia-ngx-dlss.so.*'
+			into nativeDir
+		}
+	}
+}
+
 tasks.register('run', JavaExec) {
+	dependsOn 'nativeShim'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = pluginMainClass
-	jvmArgs "-ea", "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED"
+	jvmArgs "-ea", "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED", "-Drltx.nativeDir=${nativeDir.get().asFile.absolutePath}"
 	// -PruneliteHome=/some/dir runs against a separate ~/.runelite so the real profile is untouched.
 	if (project.hasProperty('runeliteHome')) {
 		jvmArgs "-Duser.home=${project.property('runeliteHome')}"
@@ -82,7 +118,7 @@ tasks.register('settingsDoc', JavaExec) {
 // classpath one entry per line for the launcher installers in tools/. The Jagex Launcher can be
 // pointed at the script; it passes the JX_* login environment through to the client.
 tasks.register('launchScript') {
-	dependsOn 'testClasses'
+	dependsOn 'testClasses', 'nativeShim'
 	def windows = System.getProperty('os.name').toLowerCase().contains('windows')
 	def out = layout.buildDirectory.file(windows ? 'rltx-client.cmd' : 'rltx-client.sh')
 	def classpathFile = layout.buildDirectory.file('rltx-classpath.txt')
@@ -103,7 +139,7 @@ tasks.register('launchScript') {
 			argsFile.get().asFile.delete()
 			def cp = sourceSets.test.runtimeClasspath.asPath
 			out.get().asFile.text = """#!/bin/sh
-exec "${javaBin}" -ea --add-opens java.base/java.lang.reflect=ALL-UNNAMED -Xss2m -cp "${cp}" ${pluginMainClass} --developer-mode "\$@" > "\$HOME/.runelite/logs/rltx-console.log" 2>&1
+exec "${javaBin}" -ea --add-opens java.base/java.lang.reflect=ALL-UNNAMED -Xss2m -Drltx.nativeDir="${nativeDir.get().asFile.absolutePath}" -cp "${cp}" ${pluginMainClass} --developer-mode "\$@" > "\$HOME/.runelite/logs/rltx-console.log" 2>&1
 """
 			out.get().asFile.setExecutable(true, false)
 		}

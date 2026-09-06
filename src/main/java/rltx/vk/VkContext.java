@@ -216,8 +216,13 @@ public final class VkContext
 			VkDeviceQueueCreateInfo.Buffer queueInfo = VkDeviceQueueCreateInfo.calloc(1, stack);
 			queueInfo.get(0).sType$Default().queueFamilyIndex(queueFamily).pQueuePriorities(stack.floats(1f));
 
-			PointerBuffer extensions = stack.mallocPointer(REQUIRED_EXTENSIONS.length);
+			String[] ngxDevice = ngxDeviceExtensions(instance, physicalDevice);
+			PointerBuffer extensions = stack.mallocPointer(REQUIRED_EXTENSIONS.length + ngxDevice.length);
 			for (String ext : REQUIRED_EXTENSIONS)
+			{
+				extensions.put(stack.UTF8(ext));
+			}
+			for (String ext : ngxDevice)
 			{
 				extensions.put(stack.UTF8(ext));
 			}
@@ -261,9 +266,110 @@ public final class VkContext
 				.engineVersion(VK_MAKE_VERSION(0, 1, 0))
 				.apiVersion(VK_API_VERSION_1_3);
 			VkInstanceCreateInfo info = VkInstanceCreateInfo.calloc(stack).sType$Default().pApplicationInfo(app);
+			PointerBuffer ngxExtensions = ngxInstanceExtensions(stack);
+			if (ngxExtensions != null)
+			{
+				info.ppEnabledExtensionNames(ngxExtensions);
+			}
 			PointerBuffer pInstance = stack.mallocPointer(1);
 			check(vkCreateInstance(info, null, pInstance), "vkCreateInstance");
 			return new VkInstance(pInstance.get(0), info);
+		}
+	}
+
+	// The instance extensions DLSS needs, when its shim is loaded and the loader offers them all;
+	// otherwise DLSS is marked unavailable and the instance is created as before.
+	private static PointerBuffer ngxInstanceExtensions(MemoryStack stack)
+	{
+		if (!Ngx.loaded())
+		{
+			return null;
+		}
+		String[] wanted = Ngx.instanceExtensions(Ngx.appDataPath(), Ngx.libraryDir());
+		if (wanted == null)
+		{
+			Ngx.disable("NGX could not list the instance extensions it needs (result 0x" + Integer.toHexString(Ngx.lastResult()) + ")");
+			return null;
+		}
+		IntBuffer count = stack.mallocInt(1);
+		check(vkEnumerateInstanceExtensionProperties((ByteBuffer) null, count, null), "vkEnumerateInstanceExtensionProperties");
+		VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(count.get(0), stack);
+		check(vkEnumerateInstanceExtensionProperties((ByteBuffer) null, count, props), "vkEnumerateInstanceExtensionProperties");
+		Set<String> offered = new HashSet<>();
+		for (int i = 0; i < props.capacity(); ++i)
+		{
+			offered.add(props.get(i).extensionNameString());
+		}
+		for (String name : wanted)
+		{
+			if (!offered.contains(name))
+			{
+				Ngx.disable("the Vulkan loader lacks " + name);
+				return null;
+			}
+		}
+		PointerBuffer names = stack.mallocPointer(wanted.length);
+		for (String name : wanted)
+		{
+			names.put(stack.UTF8(name));
+		}
+		names.flip();
+		return names;
+	}
+
+	// The device extensions DLSS needs beyond ours, when the device offers them all.
+	private static String[] ngxDeviceExtensions(VkInstance instance, VkPhysicalDevice pd)
+	{
+		if (!Ngx.loaded())
+		{
+			return new String[0];
+		}
+		String[] wanted = Ngx.deviceExtensions(instance.address(), pd.address(), Ngx.appDataPath(), Ngx.libraryDir());
+		if (wanted == null)
+		{
+			Ngx.disable("NGX could not list the device extensions it needs (result 0x" + Integer.toHexString(Ngx.lastResult()) + ")");
+			return new String[0];
+		}
+		Set<String> offered = deviceExtensionNames(pd);
+		Set<String> ours = new HashSet<>(Arrays.asList(REQUIRED_EXTENSIONS));
+		java.util.List<String> extra = new java.util.ArrayList<>();
+		for (String name : wanted)
+		{
+			if (!offered.contains(name))
+			{
+				Ngx.disable("the device lacks " + name);
+				return new String[0];
+			}
+			if (!ours.contains(name))
+			{
+				extra.add(name);
+			}
+		}
+		Ngx.markExtensions();
+		return extra.toArray(new String[0]);
+	}
+
+	private static Set<String> deviceExtensionNames(VkPhysicalDevice pd)
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			IntBuffer count = stack.mallocInt(1);
+			check(vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, null), "vkEnumerateDeviceExtensionProperties");
+			VkExtensionProperties.Buffer props = VkExtensionProperties.malloc(count.get(0));
+			try
+			{
+				check(vkEnumerateDeviceExtensionProperties(pd, (ByteBuffer) null, count, props), "vkEnumerateDeviceExtensionProperties");
+				Set<String> names = new HashSet<>();
+				for (int i = 0; i < props.capacity(); ++i)
+				{
+					names.add(props.get(i).extensionNameString());
+				}
+				return names;
+			}
+			finally
+			{
+				props.free();
+			}
 		}
 	}
 
