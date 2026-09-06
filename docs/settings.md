@@ -27,6 +27,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | --- | --- | --- |
 | Local lights | true | Torches, fires, lamps and glowing things from 117 HD's light data, each casting ray traced shadows. |
 | Local light strength | 100% (0 to 300) | Scales the brightness of all local lights. |
+| Sampled local lights | true | With more than four lights in range, each pixel traces shadow rays to two lights chosen by how much they would contribute and averages the rest over frames. Off traces a shadow ray to every light in range. |
 | Local light range | 100% (50 to 400) | Scales how far every local light reaches. Braziers and torches in mines carry further with more. |
 | Skybox | None (flat colour) | Sky image from the Fantasy Skybox pack, used as the background and as the sky light. A fixed sky does not move the sun; the 'follows time of day' entries switch with the sun position. Requires the pack folder below. |
 | Procedural sky | false | Replace the skybox with an analytic sky: a gradient that follows the sun through the day, a sun or moon disc, stars at night, and clouds from the weather. The light then always matches the sky. |
@@ -116,9 +117,12 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Cinema keyframe key | Ctrl+K | In the free camera, records where the camera is and where it looks as the next keyframe of a cinema path. The cinema keys only act while the free camera is on. |
 | Cinema clear key | Ctrl+Shift+K | Forgets the recorded cinema keyframes. |
 | Cinema render key | Ctrl+Alt+K | Renders a smooth camera path through the keyframes as numbered PNG frames in a new folder under the screenshots folder, each accumulated like a photo, with the interface hidden. The game stalls while it renders; press again to stop early. |
+| Cinema preview key | Ctrl+Alt+P | Plays the path live at normal quality without saving anything, to check the keyframes. Press again to stop. |
 | Seconds per keyframe | 4 (1 to 30) | How long the camera takes to travel from one cinema keyframe to the next |
 | Cinema frame rate | 30 (12 to 60) | Frames per second of the rendered sequence |
 | Cinema burst | 24 (0 to 500) | Frames accumulated for each cinema frame. More is cleaner and slower; the world's own motion advances between frames by however long each takes. |
+| Cinema motion | Ease at each keyframe | Whether the camera runs at a constant pace or slows into and out of each keyframe |
+| Encode cinema with ffmpeg | true | When ffmpeg is on the path, the frames are piped straight into it and a cinema.mp4 lands in the folder instead of numbered PNGs. |
 | Cinema follows the clock | true | Each keyframe also records the time of day, or the manual sun, and the rendered path runs the clock between them, so a path can carry the sun down and the stars out. |
 | Click to focus | true | In photo mode, Ctrl-clicking the view focuses the lens at that distance and switches Focus to a fixed distance. Plain clicks reach the game as usual. |
 | Focus peaking | false | Paints the edges of whatever the lens holds sharp red, to see the plane of focus while framing. Photos never show it. |
@@ -147,6 +151,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Footprints | true | Footprints pressed into snow and wet ground behind everyone who walks, fading over minutes, rings spreading from each step through puddles, and low plants leaning away from anyone standing in them. |
 | Underwater camera | true | When the free camera dips below the water: the view greens and dims with distance, sunlight dances on the bed, and the surface mirrors or lets the sky through as the angle allows |
 | Texture displacement | true | Textured surfaces such as bark, brick and thatch are traced into the relief their texture describes, so ridges and hollows shift with the viewpoint rather than only their shading. Uses the Texture relief strength. |
+| Wave geometry near the camera | false | Water within fourteen tiles rises and falls as real geometry, so shorelines, pillars and low views meet moving waves. Costs client-thread time each frame in proportion to the water in view; watch the frame rate before leaving it on. |
 
 ## Other plugins
 

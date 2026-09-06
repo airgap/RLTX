@@ -2437,7 +2437,8 @@ public final class RtRenderer
 		{
 			b.putFloat(c);
 		}
-		b.putInt(p.flags2).putInt(0).putInt(0).putInt(0);
+		int flags2 = p.sampledLights ? 1 : 0;
+		b.putInt(flags2).putInt(0).putInt(0).putInt(0);
 		if (b.position() > FRAME_UBO_SIZE)
 		{
 			throw new IllegalStateException("Frame uniforms exceed the buffer: " + b.position() + " of " + FRAME_UBO_SIZE + " bytes");

@@ -327,6 +327,18 @@ public interface RltxConfig extends Config
 		return 100;
 	}
 
+	@ConfigItem(
+		keyName = "sampledLights",
+		name = "Sampled local lights",
+		description = "With more than four lights in range, each pixel traces shadow rays to two lights chosen by how much they would contribute and averages the rest over frames. Off traces a shadow ray to every light in range.",
+		section = skySection,
+		position = -4
+	)
+	default boolean sampledLights()
+	{
+		return true;
+	}
+
 	@Range(min = 50, max = 400)
 	@Units(Units.PERCENT)
 	@ConfigItem(

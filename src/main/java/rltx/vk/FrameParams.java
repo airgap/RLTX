@@ -142,8 +142,8 @@ public final class FrameParams
 	public int bounces;
 	/** A held frame being accumulated in place, and whether its rays leave a real lens aperture. */
 	public boolean still, thinLens;
-	/** Feature flags beyond the first word's thirty-two; none are assigned yet. */
-	public int flags2;
+	/** Shadow rays to two lights drawn by contribution when many are in range, rather than to every one. */
+	public boolean sampledLights;
 	/** Display-space colour of the route glow, and how many route entries were uploaded; 0 draws none. */
 	public float guideR, guideG, guideB;
 	public int guideCount;

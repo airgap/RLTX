@@ -2128,6 +2128,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.lightCount = count;
 		// 117 HD's strengths are tuned for its light units, which run brighter than ours.
 		frame.lightStrength = config.lightStrength() / 100f * 0.35f;
+		frame.sampledLights = config.sampledLights();
 	}
 	private static final WeatherState NO_WEATHER = new WeatherState();
 	private final WeatherState weatherNow = new WeatherState();

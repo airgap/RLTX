@@ -354,36 +354,87 @@ bool occludedWithin(vec3 origin, vec3 dir, float tMax) {
   return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
-// Irradiance from the local lights at a hit, before the albedo: 117 HD's falloff, squared
-// distance fraction from the light's edge, with a shadow ray to each light in range. Their
-// specular highlights towards the viewer accumulate separately as radiance.
-vec3 directLocalSpecular(Hit hit, vec3 viewDir, inout vec3 specular) {
+// One local light's irradiance at a hit before the albedo and before any shadowing: 117 HD's
+// falloff, squared distance fraction from the light's edge. Zero out of range or behind the
+// surface; also gives the direction and distance for the shadow ray.
+vec3 localUnshadowed(int i, Hit hit, out vec3 l, out float d, out vec3 color) {
+  vec4 pr = localLights.v[i * 2];
+  vec3 toLight = pr.xyz - hit.p;
+  float d2 = dot(toLight, toLight);
+  l = vec3(0.0);
+  d = 0.0;
+  color = vec3(0.0);
+  if (d2 >= pr.w * pr.w) { return vec3(0.0); }
+  d = sqrt(d2);
+  l = toLight / d;
+  float ndl = dot(hit.n, l);
+  if (ndl <= 0.0) { return vec3(0.0); }
+  float falloff = 1.0 - d / pr.w;
+  color = localLights.v[i * 2 + 1].rgb * (falloff * falloff * u.lights.y);
+  return color * ndl;
+}
+
+// Up to this many lights in range, every one gets its own shadow ray.
+const int EXACT_LIGHTS = 4;
+
+// Irradiance from the local lights at a hit, shadowed; their specular highlights towards the
+// viewer accumulate separately as radiance. Every light's unshadowed share is cheap to work
+// out, so with sampling on and a crowd of lights in range, all of them weigh in but shadow rays
+// go only to two lights drawn in proportion to that share, each standing in for the whole in
+// proportion to its odds. The draws average out over the accumulation and the denoiser, so a
+// lit town costs two shadow rays a hit rather than one per lamp.
+vec3 directLocalSpecular(Hit hit, vec3 viewDir, inout vec3 specular, inout uint seed) {
   int count = int(u.lights.x);
+  vec3 l;
+  float d;
+  vec3 color;
+  if ((u.flags2.x & 1u) != 0u && count > EXACT_LIGHTS) {
+    // Two weighted reservoirs over one pass: light i replaces a reservoir's pick with
+    // probability weight / running total, which leaves the pick on i with probability
+    // weight / final total.
+    float total = 0.0;
+    int inRange = 0;
+    int pick[2] = int[2](-1, -1);
+    float pickWeight[2] = float[2](0.0, 0.0);
+    for (int i = 0; i < count; ++i) {
+      vec3 e = localUnshadowed(i, hit, l, d, color);
+      float w = e.r + e.g + e.b;
+      if (w <= 0.0) { continue; }
+      ++inRange;
+      total += w;
+      for (int r = 0; r < 2; ++r) {
+        if (rand(seed) * total < w) {
+          pick[r] = i;
+          pickWeight[r] = w;
+        }
+      }
+    }
+    if (inRange == 0) { return vec3(0.0); }
+    if (inRange > EXACT_LIGHTS) {
+      vec3 sum = vec3(0.0);
+      for (int r = 0; r < 2; ++r) {
+        vec3 e = localUnshadowed(pick[r], hit, l, d, color);
+        if (occludedWithin(hit.p, l, d - 2.0)) { continue; }
+        float share = 0.5 * total / pickWeight[r];
+        sum += e * share;
+        specular += specularOf(hit.material, hit.n, viewDir, l, color) * share;
+      }
+      return sum;
+    }
+  }
   vec3 sum = vec3(0.0);
   for (int i = 0; i < count; ++i) {
-    vec4 pr = localLights.v[i * 2];
-    vec3 toLight = pr.xyz - hit.p;
-    float d2 = dot(toLight, toLight);
-    if (d2 >= pr.w * pr.w) {
-      continue;
-    }
-    float d = sqrt(d2);
-    vec3 l = toLight / d;
-    float ndl = dot(hit.n, l);
-    if (ndl <= 0.0 || occludedWithin(hit.p, l, d - 2.0)) {
-      continue;
-    }
-    float falloff = 1.0 - d / pr.w;
-    vec3 color = localLights.v[i * 2 + 1].rgb * (falloff * falloff * u.lights.y);
-    sum += color * ndl;
+    vec3 e = localUnshadowed(i, hit, l, d, color);
+    if (e == vec3(0.0) || occludedWithin(hit.p, l, d - 2.0)) { continue; }
+    sum += e;
     specular += specularOf(hit.material, hit.n, viewDir, l, color);
   }
   return sum;
 }
 
-vec3 directLocal(Hit hit) {
+vec3 directLocal(Hit hit, inout uint seed) {
   vec3 unused = vec3(0.0);
-  return directLocalSpecular(hit, vec3(0.0), unused);
+  return directLocalSpecular(hit, vec3(0.0), unused, seed);
 }
 
 bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint mask, inout uint seed, out Hit hit) {
@@ -1015,7 +1066,7 @@ vec3 shadeWaterFromBelow(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uin
   vec3 reflection = vec3(0.02, 0.10, 0.12);
   Hit mirror;
   if (trace(hit.surface + wn * RAY_EPS, reflectDir, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, mirror)) {
-    reflection = mirror.albedo * (vec3(u.sky.w) + 0.3 * directSun(mirror, sunDir, shadows, seed) + directLocal(mirror));
+    reflection = mirror.albedo * (vec3(u.sky.w) + 0.3 * directSun(mirror, sunDir, shadows, seed) + directLocal(mirror, seed));
   }
   vec3 refracted = refract(dir, wn, 1.33);
   if (dot(refracted, refracted) == 0.0) {
@@ -1040,7 +1091,7 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
   float spec = pow(clamp(dot(reflectDir, sunDir), 1e-10, 1.0), wt.specularGloss) * wt.specularStrength;
   vec3 specular = u.sunColor.rgb * (u.sun.w * lit * spec);
   // The whole sky dome lights the surface, standing in for the bounce light the ground gets.
-  vec3 composite = vec3(u.sky.w) + u.sunColor.rgb * (u.sun.w * ndl * lit) + skyRadiance(wn) * max(-wn.y, 0.0) + vec3(2.0 * u.fog.w) + directLocal(hit);
+  vec3 composite = vec3(u.sky.w) + u.sunColor.rgb * (u.sun.w * ndl * lit) + skyRadiance(wn) * max(-wn.y, 0.0) + vec3(2.0 * u.fog.w) + directLocal(hit, seed);
 
   vec3 reflection;
   Hit mirror;
@@ -1075,7 +1126,7 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
         float fade = 1.0 - clamp(bedDepth / 400.0, 0.0, 1.0);
         bedSun *= 1.0 + (web - 0.25) * fade;
       }
-      under = bed.albedo * (vec3(u.sky.w) + bedSun + directLocal(bed));
+      under = bed.albedo * (vec3(u.sky.w) + bedSun + directLocal(bed, seed));
       if (bedDepth < 150.0) {
         under *= mix(vec3(1.0), wt.depth, bedDepth / 150.0);
       } else if (bedDepth < 500.0) {
@@ -1265,7 +1316,7 @@ void main() {
     sunLight *= 0.45 + pow(n1 * n2, 3.0) * 6.0;
   }
   specular += specularOf(hit.material, hit.n, toEye, sunDir, sunLight);
-  vec3 light = vec3(u.sky.w) + sunLight * sunNdl + directLocalSpecular(hit, toEye, specular);
+  vec3 light = vec3(u.sky.w) + sunLight * sunNdl + directLocalSpecular(hit, toEye, specular, seed);
   if (hit.flame && u.material.x > 0.0) {
     // Flames glow with their own colour and flicker, brightest at the top of the fire.
     float t = u.weather3.x;
@@ -1289,7 +1340,7 @@ void main() {
     Hit mirror;
     vec3 seen;
     if (trace(hit.p, jittered, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_ALL, seed, mirror)) {
-      seen = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, sunDir, shadows, seed) + directLocal(mirror));
+      seen = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, sunDir, shadows, seed) + directLocal(mirror, seed));
     } else {
       seen = skyBackground(jittered);
     }
@@ -1313,7 +1364,7 @@ void main() {
       break;
     }
     throughput *= next.albedo;
-    light += throughput * (vec3(u.sky.w) + directSun(next, sunDir, shadows, seed) + directLocal(next));
+    light += throughput * (vec3(u.sky.w) + directSun(next, sunDir, shadows, seed) + directLocal(next, seed));
     current = next;
   }
   // Water: a Fresnel blend of the lit body colour and a mirror reflection off animated waves,
