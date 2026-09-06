@@ -36,6 +36,11 @@ import net.runelite.client.config.Keybind;
 final class Presets
 {
 	static final File DIR = new File(RuneLite.RUNELITE_DIR, "rltx/presets");
+	/** Written into every saved file; bump when a key is renamed and add the old name to RENAMED. */
+	static final String FORMAT_KEY = "_format";
+	static final int FORMAT = 1;
+	/** Old key to current key, applied when reading files from earlier formats. */
+	static final Map<String, String> RENAMED = new LinkedHashMap<>();
 	private static final Type MAP = new TypeToken<Map<String, String>>()
 	{
 	}.getType();
@@ -93,16 +98,31 @@ final class Presets
 		return values;
 	}
 
-	/** Writes the values into the live configuration; keys this build does not know are skipped. */
-	void apply(Map<String, String> values)
+	/**
+	 * Writes the values into the live configuration, translating renamed keys. Returns the keys
+	 * this build does not know, which were skipped, so the panel can say so.
+	 */
+	List<String> apply(Map<String, String> values)
 	{
+		List<String> unknown = new ArrayList<>();
 		for (Map.Entry<String, String> entry : values.entrySet())
 		{
-			if (items.containsKey(entry.getKey()))
+			String key = entry.getKey();
+			if (key.startsWith("_"))
 			{
-				configManager.setConfiguration(RltxConfig.GROUP, entry.getKey(), entry.getValue());
+				continue;
+			}
+			key = RENAMED.getOrDefault(key, key);
+			if (items.containsKey(key))
+			{
+				configManager.setConfiguration(RltxConfig.GROUP, key, entry.getValue());
+			}
+			else
+			{
+				unknown.add(key);
 			}
 		}
+		return unknown;
 	}
 
 	/** The entries of {@code current} that differ from {@code base}. */
@@ -159,9 +179,12 @@ final class Presets
 		{
 			throw new IOException("Cannot create " + DIR);
 		}
+		Map<String, String> stamped = new LinkedHashMap<>();
+		stamped.put(FORMAT_KEY, Integer.toString(FORMAT));
+		stamped.putAll(values);
 		try (Writer out = Files.newBufferedWriter(file(name).toPath(), StandardCharsets.UTF_8))
 		{
-			gson.toJson(values, MAP, out);
+			gson.toJson(stamped, MAP, out);
 		}
 	}
 
@@ -180,7 +203,10 @@ final class Presets
 
 	void copy(Map<String, String> values)
 	{
-		Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(gson.toJson(values, MAP)), null);
+		Map<String, String> stamped = new LinkedHashMap<>();
+		stamped.put(FORMAT_KEY, Integer.toString(FORMAT));
+		stamped.putAll(values);
+		Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(gson.toJson(stamped, MAP)), null);
 	}
 
 	/** The clipboard's contents as a preset, or null when it holds none. */

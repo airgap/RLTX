@@ -35,6 +35,8 @@ final class AreaRules
 
 	static final class Rule
 	{
+		/** The preset format the overrides were written in; see Presets.FORMAT. */
+		int format = Presets.FORMAT;
 		String name;
 		/** World polygons: the plane, -1 for any, then the corners' x and y in order. */
 		List<int[]> polygons = new ArrayList<>();
@@ -256,8 +258,8 @@ final class AreaRules
 			return "RLTX: area settings restored";
 		}
 		replaced = presets.captureKeys(match.overrides.keySet());
-		presets.apply(match.overrides);
-		return "RLTX: " + match.name + " settings";
+		List<String> unknown = presets.apply(match.overrides);
+		return "RLTX: " + match.name + " settings" + (unknown.isEmpty() ? "" : " (skipped unknown: " + unknown + ")");
 	}
 
 	/** Puts back whatever the active area replaced, for shutdown. */

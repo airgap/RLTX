@@ -409,8 +409,8 @@ final class ControlPanel
 		buttons.add(button("Load from file", () ->
 		{
 			String name = String.valueOf(saved.getEditor().getItem()).trim();
-			presets.apply(presets.load(name));
-			status.setText("Applied " + name);
+			List<String> unknown = presets.apply(presets.load(name));
+			status.setText("Applied " + name + (unknown.isEmpty() ? "" : "; skipped settings this build does not have: " + unknown));
 		}, status));
 		buttons.add(button("Copy to clipboard", () ->
 		{
@@ -425,8 +425,8 @@ final class ControlPanel
 				status.setText("The clipboard holds no settings.");
 				return;
 			}
-			presets.apply(values);
-			status.setText("Applied " + values.size() + " settings from the clipboard.");
+			List<String> unknown = presets.apply(values);
+			status.setText("Applied " + (values.size() - unknown.size()) + " settings from the clipboard" + (unknown.isEmpty() ? "." : "; skipped " + unknown));
 		}, status));
 		page.add(buttons, c);
 		++c.gridy;

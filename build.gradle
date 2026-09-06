@@ -69,6 +69,14 @@ tasks.register('run', JavaExec) {
 	args "--developer-mode"
 }
 
+// Writes docs/settings.md from the config interface's annotations.
+tasks.register('settingsDoc', JavaExec) {
+	dependsOn 'testClasses'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'rltx.SettingsDoc'
+	args 'docs/settings.md'
+}
+
 // Writes a script that starts the dev client on this machine's resolved classpath, and that
 // classpath one entry per line for the launcher installers in tools/. The Jagex Launcher can be
 // pointed at the script; it passes the JX_* login environment through to the client.

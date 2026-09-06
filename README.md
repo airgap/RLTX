@@ -107,7 +107,7 @@ shadowJar` builds a sideloadable jar for clients started in developer mode.
 ## Settings
 
 Settings live in RuneLite's sidebar under RLTX, and in a floating panel on F8 for when the
-sidebar is out of the way. Keys, all rebindable: F11 photo mode, F9 quad-resolution photo, F8
+sidebar is out of the way; `docs/settings.md` lists every one with its default. Keys, all rebindable: F11 photo mode, F9 quad-resolution photo, F8
 settings panel, F10 free camera, Ctrl+K, Ctrl+Shift+K and Ctrl+Alt+K to record, clear and render
 a cinema path while the free camera is on.
 
