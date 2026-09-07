@@ -46,6 +46,9 @@ layout(std430, set = 0, binding = 19) readonly buffer StaticTex { uint t[]; } st
 layout(std430, set = 0, binding = 20) readonly buffer StaticUv { float v[]; } staticUv;
 layout(std430, set = 0, binding = 21) readonly buffer DynTex { uint t[]; } dynTex;
 layout(std430, set = 0, binding = 22) readonly buffer DynUv { float v[]; } dynUv;
+// The client's vertex normals, three signed bytes each; zero where a face is drawn flat.
+layout(std430, set = 0, binding = 57) readonly buffer StaticNrm { uint n[]; } staticNrm;
+layout(std430, set = 0, binding = 58) readonly buffer DynNrm { uint n[]; } dynNrm;
 layout(set = 0, binding = 23) uniform sampler2DArray gameTextures;
 layout(std430, set = 0, binding = 24) readonly buffer TexAnim { vec2 v[]; } texAnim;
 layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } waterTypes;
@@ -560,6 +563,28 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   }
   hit.n = n;
   hit.gn = n;
+  // Where the model carries the client's Gouraud normals they are interpolated across the face,
+  // so rounded low-poly shapes shade as the client draws them rather than in facets.
+  uint no = face * 3u;
+  uint pn0 = hit.dyn ? dynNrm.n[no] : staticNrm.n[no];
+  if (pn0 != 0u) {
+    vec2 nb = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+    vec3 n1 = unpackSnorm4x8(hit.dyn ? dynNrm.n[no + 1u] : staticNrm.n[no + 1u]).xyz;
+    vec3 n2 = unpackSnorm4x8(hit.dyn ? dynNrm.n[no + 2u] : staticNrm.n[no + 2u]).xyz;
+    vec3 sn = unpackSnorm4x8(pn0).xyz * (1.0 - nb.x - nb.y) + n1 * nb.x + n2 * nb.y;
+    // The geometric normal was turned to the ray for a back face; the vertex normals follow it,
+    // and are then kept from facing away from the viewer, where lighting would break down.
+    if (dot(sn, n) < 0.0) {
+      sn = -sn;
+    }
+    float toward = dot(sn, dir);
+    if (toward > -0.05) {
+      sn -= dir * (toward + 0.05);
+    }
+    if (dot(sn, sn) > 1e-6) {
+      hit.n = normalize(sn);
+    }
+  }
   hit.surface = origin + dir * hit.t;
   hit.p = hit.surface + n * RAY_EPS;
   uint packed = hit.dyn ? dynCol.c[face] : staticCol.c[face];
@@ -610,7 +635,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
     vec4 texel = textureLod(gameTextures, vec3(uv, float(tex - 1u)), textureLevel(hit.t, abs(dot(n, dir))));
     hit.albedo = mix(hit.albedo, texel.rgb, texel.a);
     if (u.motion.z > 0.0) {
-      hit.n = bumpNormal(n, v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), u.motion.z);
+      hit.n = bumpNormal(hit.n, v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), u.motion.z);
     }
   }
   return true;

@@ -3,13 +3,15 @@ package rltx.scene;
 import java.util.Arrays;
 
 /**
- * Non-indexed triangle soup: nine floats of position, one RGBA8 colour, a texture id and
- * three UV pairs per face. Texture id 0 means untextured; otherwise it is the client id plus one.
+ * Non-indexed triangle soup: nine floats of position, one RGBA8 colour, a texture id, three UV
+ * pairs and three packed vertex normals per face. Texture id 0 means untextured; otherwise it is
+ * the client id plus one. A normal of zero leaves the face flat-shaded by its geometric normal.
  */
 public final class GeometryBuffer
 {
 	public static final int FLOATS_PER_FACE = 9;
 	public static final int UV_FLOATS_PER_FACE = 6;
+	public static final int NORMALS_PER_FACE = 3;
 
 	private float[] pos;
 	/** Where each face was on the previous frame; equal to {@link #pos} for faces without history. */
@@ -17,6 +19,8 @@ public final class GeometryBuffer
 	private int[] col;
 	private int[] tex;
 	private float[] uv;
+	/** Per vertex, x, y and z as signed bytes in the low three bytes; zero for a flat face. */
+	private int[] nrm;
 	private int faces;
 
 	public GeometryBuffer(int initialFaces)
@@ -26,6 +30,22 @@ public final class GeometryBuffer
 		col = new int[initialFaces];
 		tex = new int[initialFaces];
 		uv = new float[initialFaces * UV_FLOATS_PER_FACE];
+		nrm = new int[initialFaces * NORMALS_PER_FACE];
+	}
+
+	/** Packs a direction as three signed bytes; zero is never produced for a non-zero direction. */
+	public static int packNormal(float x, float y, float z)
+	{
+		float len = (float) Math.sqrt(x * x + y * y + z * z);
+		if (len == 0f)
+		{
+			return 0;
+		}
+		float k = 127f / len;
+		int px = Math.round(x * k) & 0xff;
+		int py = Math.round(y * k) & 0xff;
+		int pz = Math.round(z * k) & 0xff;
+		return px | py << 8 | pz << 16 | 1 << 24;
 	}
 
 	public int faces()
@@ -64,6 +84,20 @@ public final class GeometryBuffer
 		return uv;
 	}
 
+	public int[] normals()
+	{
+		return nrm;
+	}
+
+	/** Gives the face pushed last its three vertex normals, as {@link #packNormal} packs them. */
+	public void lastNormals(int n0, int n1, int n2)
+	{
+		int o = (faces - 1) * NORMALS_PER_FACE;
+		nrm[o] = n0;
+		nrm[o + 1] = n1;
+		nrm[o + 2] = n2;
+	}
+
 	public void clear()
 	{
 		faces = 0;
@@ -80,6 +114,7 @@ public final class GeometryBuffer
 			col = Arrays.copyOf(col, cap);
 			tex = Arrays.copyOf(tex, cap);
 			uv = Arrays.copyOf(uv, cap * UV_FLOATS_PER_FACE);
+			nrm = Arrays.copyOf(nrm, cap * NORMALS_PER_FACE);
 		}
 	}
 
@@ -120,6 +155,10 @@ public final class GeometryBuffer
 		pos[o + 8] = z2;
 		System.arraycopy(pos, o, prev, o, FLOATS_PER_FACE);
 		col[faces] = rgba;
+		int n = faces * NORMALS_PER_FACE;
+		nrm[n] = 0;
+		nrm[n + 1] = 0;
+		nrm[n + 2] = 0;
 		++faces;
 	}
 
@@ -131,6 +170,7 @@ public final class GeometryBuffer
 		System.arraycopy(other.col, 0, col, faces, other.faces);
 		System.arraycopy(other.tex, 0, tex, faces, other.faces);
 		System.arraycopy(other.uv, 0, uv, faces * UV_FLOATS_PER_FACE, other.faces * UV_FLOATS_PER_FACE);
+		System.arraycopy(other.nrm, 0, nrm, faces * NORMALS_PER_FACE, other.faces * NORMALS_PER_FACE);
 		faces += other.faces;
 	}
 }

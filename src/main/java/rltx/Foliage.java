@@ -203,6 +203,7 @@ final class Foliage
 			int[] colors = zone.sway.colors();
 			int[] textures = zone.sway.textures();
 			float[] uvs = zone.sway.uvs();
+			int[] normals = zone.sway.normals();
 			if (swayScratch.length < faces * 9)
 			{
 				swayScratch = new float[faces * 9];
@@ -260,6 +261,7 @@ final class Foliage
 				dynamic.face(swayScratch[o], swayScratch[o + 1], swayScratch[o + 2], swayScratch[o + 3], swayScratch[o + 4], swayScratch[o + 5],
 					swayScratch[o + 6], swayScratch[o + 7], swayScratch[o + 8], colors[f], textures[f],
 					uvs[uo], uvs[uo + 1], uvs[uo + 2], uvs[uo + 3], uvs[uo + 4], uvs[uo + 5]);
+				dynamic.lastNormals(normals[f * 3], normals[f * 3 + 1], normals[f * 3 + 2]);
 			}
 			dynamic.setPreviousPositions(start, swayScratch, faces);
 		}

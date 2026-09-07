@@ -188,7 +188,9 @@ public final class RtRenderer
 	private static final int BINDING_RIPPLE_B = 54;
 	private static final int BINDING_RIPPLE_PARAMS = 55;
 	private static final int BINDING_WATER_MASK = 56;
-	private static final int BINDING_COUNT = 57;
+	private static final int BINDING_STATIC_NRM = 57;
+	private static final int BINDING_DYNAMIC_NRM = 58;
+	private static final int BINDING_COUNT = 59;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -209,6 +211,8 @@ public final class RtRenderer
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
+	private static final int BYTES_PER_FACE_NRM = GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES;
+	private static final int BYTES_PER_FACE_STAGED = BYTES_PER_FACE_POS + Integer.BYTES + Integer.BYTES + BYTES_PER_FACE_UV + BYTES_PER_FACE_NRM;
 	private static final int PUSH_CONSTANT_SIZE = 16;
 	private static final int MAX_DENOISE_PASSES = 5;
 	// Edge-stopping sharpness across face normals and along-surface distance, in pixel footprints.
@@ -277,10 +281,12 @@ public final class RtRenderer
 	private VkBuf dynamicStagingCol;
 	private VkBuf dynamicStagingTex;
 	private VkBuf dynamicStagingUv;
+	private VkBuf dynamicStagingNrm;
 	private VkBuf dynamicPos;
 	private VkBuf dynamicCol;
 	private VkBuf dynamicTex;
 	private VkBuf dynamicUv;
+	private VkBuf dynamicNrm;
 	private Accel dynamicBlas;
 	private Accel dynamicTranslucentBlas;
 	private Accel dynamicWaterBlas;
@@ -295,6 +301,7 @@ public final class RtRenderer
 	private VkBuf staticCol;
 	private VkBuf staticTex;
 	private VkBuf staticUv;
+	private VkBuf staticNrm;
 	private final List<int[]> poolFree = new ArrayList<>();
 	private final Map<Integer, StaticSet> staticSets = new LinkedHashMap<>();
 
@@ -551,6 +558,7 @@ public final class RtRenderer
 		staticCol = ctx.createBuffer((long) POOL_FACES * Integer.BYTES, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		staticTex = ctx.createBuffer((long) POOL_FACES * Integer.BYTES, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		staticUv = ctx.createBuffer((long) POOL_FACES * BYTES_PER_FACE_UV, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		staticNrm = ctx.createBuffer((long) POOL_FACES * BYTES_PER_FACE_NRM, plainUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		poolFree.add(new int[]{0, POOL_FACES});
 
 		for (long set : descriptorSets)
@@ -564,6 +572,8 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_STATIC_UV, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, staticUv);
 			writeBufferDescriptor(set, BINDING_DYNAMIC_TEX, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, dynamicTex);
 			writeBufferDescriptor(set, BINDING_DYNAMIC_UV, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, dynamicUv);
+			writeBufferDescriptor(set, BINDING_STATIC_NRM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, staticNrm);
+			writeBufferDescriptor(set, BINDING_DYNAMIC_NRM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, dynamicNrm);
 			writeBufferDescriptor(set, BINDING_FRAME, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frameUbo);
 		}
 	}
@@ -748,6 +758,8 @@ public final class RtRenderer
 			types[BINDING_STATIC_UV] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_TEX] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_UV] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_STATIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_DYNAMIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_TEXTURES] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_TEX_ANIM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -785,7 +797,7 @@ public final class RtRenderer
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(56);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(52);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(54);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -884,6 +896,9 @@ public final class RtRenderer
 		dynamicStagingUv = ctx.createBuffer(uvBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags);
 		dynamicTex = ctx.createBuffer(colBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		dynamicUv = ctx.createBuffer(uvBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		long nrmBytes = (long) MAX_DYNAMIC_FACES * BYTES_PER_FACE_NRM;
+		dynamicStagingNrm = ctx.createBuffer(nrmBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags);
+		dynamicNrm = ctx.createBuffer(nrmBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		dynamicBlas = createDynamicBlas(true);
 		dynamicTranslucentBlas = createDynamicBlas(false);
@@ -1648,11 +1663,11 @@ public final class RtRenderer
 	private VkBuf createStaging(int faces)
 	{
 		int n = Math.max(faces, 1);
-		return ctx.createBuffer((long) n * (BYTES_PER_FACE_POS + Integer.BYTES + Integer.BYTES + BYTES_PER_FACE_UV),
+		return ctx.createBuffer((long) n * BYTES_PER_FACE_STAGED,
 			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	}
 
-	// The staging buffer holds each zone's four attribute streams back to back; each is copied
+	// The staging buffer holds each zone's five attribute streams back to back; each is copied
 	// into its pool buffer at the zone's slot.
 	private void stageZone(VkCommandBuffer upload, VkBuf staging, int stagingFace, GeometryBuffer geometry, int poolFace)
 	{
@@ -1660,7 +1675,8 @@ public final class RtRenderer
 		long posBytes = (long) faces * BYTES_PER_FACE_POS;
 		long colBytes = (long) faces * Integer.BYTES;
 		long uvBytes = (long) faces * BYTES_PER_FACE_UV;
-		long base = (long) stagingFace * (BYTES_PER_FACE_POS + Integer.BYTES + Integer.BYTES + BYTES_PER_FACE_UV);
+		long nrmBytes = (long) faces * BYTES_PER_FACE_NRM;
+		long base = (long) stagingFace * BYTES_PER_FACE_STAGED;
 		ByteBuffer m = staging.mapped;
 		m.position((int) base);
 		m.asFloatBuffer().put(geometry.positions(), 0, faces * GeometryBuffer.FLOATS_PER_FACE);
@@ -1670,6 +1686,8 @@ public final class RtRenderer
 		m.asIntBuffer().put(geometry.textures(), 0, faces);
 		m.position((int) (base + posBytes + 2 * colBytes));
 		m.asFloatBuffer().put(geometry.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
+		m.position((int) (base + posBytes + 2 * colBytes + uvBytes));
+		m.asIntBuffer().put(geometry.normals(), 0, faces * GeometryBuffer.NORMALS_PER_FACE);
 		m.position(0);
 
 		try (MemoryStack stack = stackPush())
@@ -1683,6 +1701,8 @@ public final class RtRenderer
 			vkCmdCopyBuffer(upload, staging.buffer, staticTex.buffer, copy);
 			copy.get(0).srcOffset(base + posBytes + 2 * colBytes).dstOffset((long) poolFace * BYTES_PER_FACE_UV).size(uvBytes);
 			vkCmdCopyBuffer(upload, staging.buffer, staticUv.buffer, copy);
+			copy.get(0).srcOffset(base + posBytes + 2 * colBytes + uvBytes).dstOffset((long) poolFace * BYTES_PER_FACE_NRM).size(nrmBytes);
+			vkCmdCopyBuffer(upload, staging.buffer, staticNrm.buffer, copy);
 		}
 	}
 
@@ -2438,6 +2458,8 @@ public final class RtRenderer
 				vkCmdCopyBuffer(cmd, dynamicStagingTex.buffer, dynamicTex.buffer, copy);
 				copy.get(0).size((long) dynamicFaces * BYTES_PER_FACE_UV);
 				vkCmdCopyBuffer(cmd, dynamicStagingUv.buffer, dynamicUv.buffer, copy);
+				copy.get(0).size((long) dynamicFaces * BYTES_PER_FACE_NRM);
+				vkCmdCopyBuffer(cmd, dynamicStagingNrm.buffer, dynamicNrm.buffer, copy);
 				memoryBarrier(cmd,
 					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 					VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -2828,6 +2850,9 @@ public final class RtRenderer
 		FloatBuffer uv = dynamicStagingUv.mapped.asFloatBuffer();
 		uv.position(faceOffset * GeometryBuffer.UV_FLOATS_PER_FACE);
 		uv.put(source.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
+		IntBuffer nrm = dynamicStagingNrm.mapped.asIntBuffer();
+		nrm.position(faceOffset * GeometryBuffer.NORMALS_PER_FACE);
+		nrm.put(source.normals(), 0, faces * GeometryBuffer.NORMALS_PER_FACE);
 	}
 
 	// Whether an untransformed scene's zone lies within the render distance of the camera.
@@ -3049,6 +3074,7 @@ public final class RtRenderer
 		ctx.destroyBuffer(staticCol);
 		ctx.destroyBuffer(staticTex);
 		ctx.destroyBuffer(staticUv);
+		ctx.destroyBuffer(staticNrm);
 		destroyAccel(tlas);
 		destroyAccel(dynamicBlas);
 		destroyAccel(dynamicTranslucentBlas);
@@ -3058,10 +3084,12 @@ public final class RtRenderer
 		ctx.destroyBuffer(dynamicStagingCol);
 		ctx.destroyBuffer(dynamicStagingTex);
 		ctx.destroyBuffer(dynamicStagingUv);
+		ctx.destroyBuffer(dynamicStagingNrm);
 		ctx.destroyBuffer(dynamicPos);
 		ctx.destroyBuffer(dynamicCol);
 		ctx.destroyBuffer(dynamicTex);
 		ctx.destroyBuffer(dynamicUv);
+		ctx.destroyBuffer(dynamicNrm);
 		if (gameTextures != null)
 		{
 			destroyImage(gameTextures);

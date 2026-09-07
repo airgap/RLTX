@@ -13,6 +13,7 @@ public final class ModelPusher
 	private float[] tx = new float[4096];
 	private float[] ty = new float[4096];
 	private float[] tz = new float[4096];
+	private int[] pn = new int[4096];
 	private final float[] u = new float[3];
 	private final float[] v = new float[3];
 	// Scene units per unit of the client's face depth bias. The vanilla renderer pulls biased
@@ -54,11 +55,16 @@ public final class ModelPusher
 			tx = new float[cap];
 			ty = new float[cap];
 			tz = new float[cap];
+			pn = new int[cap];
 		}
 
 		final float[] vx = m.getVerticesX();
 		final float[] vy = m.getVerticesY();
 		final float[] vz = m.getVerticesZ();
+		final int[] nX = m.getVertexNormalsX();
+		final int[] nY = m.getVertexNormalsY();
+		final int[] nZ = m.getVertexNormalsZ();
+		final boolean normals = nX != null && nY != null && nZ != null;
 
 		float sin = 0, cos = 1;
 		if (orientation != 0)
@@ -80,16 +86,39 @@ public final class ModelPusher
 			px += x;
 			float py = vy[v] + y;
 			pz += z;
+			float nx = 0f, ny = 0f, nz = 0f;
+			if (normals)
+			{
+				nx = nX[v];
+				ny = nY[v];
+				nz = nZ[v];
+				if (orientation != 0)
+				{
+					float x0 = nx;
+					nx = nz * sin + x0 * cos;
+					nz = nz * cos - x0 * sin;
+				}
+			}
 			if (transform != null)
 			{
 				tx[v] = transform[0] * px + transform[1] * py + transform[2] * pz + transform[3];
 				ty[v] = transform[4] * px + transform[5] * py + transform[6] * pz + transform[7];
 				tz[v] = transform[8] * px + transform[9] * py + transform[10] * pz + transform[11];
-				continue;
+				if (normals)
+				{
+					float x0 = nx, y0 = ny, z0 = nz;
+					nx = transform[0] * x0 + transform[1] * y0 + transform[2] * z0;
+					ny = transform[4] * x0 + transform[5] * y0 + transform[6] * z0;
+					nz = transform[8] * x0 + transform[9] * y0 + transform[10] * z0;
+				}
 			}
-			tx[v] = px;
-			ty[v] = py;
-			tz[v] = pz;
+			else
+			{
+				tx[v] = px;
+				ty[v] = py;
+				tz[v] = pz;
+			}
+			pn[v] = normals ? GeometryBuffer.packNormal(nx, ny, nz) : 0;
 		}
 
 		flameFaces = 0;
@@ -112,10 +141,7 @@ public final class ModelPusher
 		final byte[] transparencies = m.getFaceTransparencies();
 		final byte[] biases = m.getFaceBias();
 		final int modelTransparency = m.getTransparency() & 0xff;
-		final int[] nX = m.getVertexNormalsX();
-		final int[] nY = m.getVertexNormalsY();
-		final int[] nZ = m.getVertexNormalsZ();
-		final boolean undo = palette.undoShading && unlit == null && nX != null && nY != null && nZ != null;
+		final boolean undo = palette.undoShading && unlit == null && normals;
 
 		opaque.ensure(faceCount);
 		for (int f = 0; f < faceCount; ++f)
@@ -136,6 +162,8 @@ public final class ModelPusher
 			int opacity = (255 - t) << 24;
 
 			int a = i1[f], b = i2[f], c = i3[f];
+			// A face whose third colour is -1 is one the client draws flat, in its first colour alone.
+			boolean smooth = normals && c3[f] != -1;
 			// Some models carry a flat, translucent, untextured face at ground level standing in
 			// for a shadow; under real shadows it is a dark smear, so it is dropped as 117 HD does.
 			if (t > 100 && (textures == null || textures[f] == -1) && vy[a] == vy[b] && vy[a] == vy[c] && vy[a] >= -8f)
@@ -163,6 +191,10 @@ public final class ModelPusher
 				faceUvs(vx, vy, vz, a, b, c, textureFaces, t1, t2, t3, f);
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
 					palette.texture(textures[f]) & 0xffffff | opacity, WaterTextures.encode(textures[f]) | highlight << 24, u[0], v[0], u[1], v[1], u[2], v[2]);
+				if (smooth)
+				{
+					out.lastNormals(pn[a], pn[b], pn[c]);
+				}
 				continue;
 			}
 			int hsl = unlit != null ? unlit[f] & 0xffff : c1[f] & 0xffff;
@@ -184,6 +216,10 @@ public final class ModelPusher
 			{
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
 					rgb | opacity, FLAME_BIT | highlight << 24, 0f, 0f, 0f, 0f, 0f, 0f);
+				if (smooth)
+				{
+					out.lastNormals(pn[a], pn[b], pn[c]);
+				}
 				flameX += tx[a] + tx[b] + tx[c];
 				flameZ += tz[a] + tz[b] + tz[c];
 				flameTop = Math.min(flameTop, Math.min(ty[a], Math.min(ty[b], ty[c])));
@@ -194,9 +230,17 @@ public final class ModelPusher
 			{
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
 					rgb | opacity, highlight << 24, 0f, 0f, 0f, 0f, 0f, 0f);
+				if (smooth)
+				{
+					out.lastNormals(pn[a], pn[b], pn[c]);
+				}
 				continue;
 			}
 			out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz, rgb | opacity);
+			if (smooth)
+			{
+				out.lastNormals(pn[a], pn[b], pn[c]);
+			}
 		}
 		if (flameFaces > 0)
 		{
