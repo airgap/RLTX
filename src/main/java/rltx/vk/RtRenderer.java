@@ -190,7 +190,8 @@ public final class RtRenderer
 	private static final int BINDING_WATER_MASK = 56;
 	private static final int BINDING_STATIC_NRM = 57;
 	private static final int BINDING_DYNAMIC_NRM = 58;
-	private static final int BINDING_COUNT = 59;
+	private static final int BINDING_RELIEF = 59;
+	private static final int BINDING_COUNT = 60;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -302,6 +303,8 @@ public final class RtRenderer
 	private VkBuf staticTex;
 	private VkBuf staticUv;
 	private VkBuf staticNrm;
+	private int groundFirst;
+	private int groundFaces;
 	private final List<int[]> poolFree = new ArrayList<>();
 	private final Map<Integer, StaticSet> staticSets = new LinkedHashMap<>();
 
@@ -382,6 +385,7 @@ public final class RtRenderer
 	private Img skyLut;
 	private long skyboxSampler;
 	private Img gameTextures;
+	private Img reliefMaps;
 	private long textureSampler;
 	private VkBuf textureAnimation;
 	private VkBuf waterTypes;
@@ -547,6 +551,9 @@ public final class RtRenderer
 		try
 		{
 			setTextureArray(1, 1, 1, whiteTexel);
+			// Mid grey: a level relief until the real maps arrive.
+			whiteTexel.put(0, (byte) 128);
+			setReliefArray(1, 1, 1, whiteTexel);
 		}
 		finally
 		{
@@ -614,24 +621,41 @@ public final class RtRenderer
 		if (gameTextures != null)
 		{
 			destroyImage(gameTextures);
-			gameTextures = null;
 		}
-		gameTextures = createImage(size, size, layers, levels, VK_FORMAT_R8G8B8A8_UNORM,
-			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+		gameTextures = uploadArray(layers, size, levels, VK_FORMAT_R8G8B8A8_UNORM, 4, rgba, BINDING_TEXTURES);
+		log.info("Game textures: {} layers of {}x{} with {} mip levels", layers, size, size, levels);
+	}
+
+	/** The relief height of every texture layer, one byte per texel, laid out like the colour array. */
+	public void setReliefArray(int layers, int size, int levels, ByteBuffer heights)
+	{
+		idle();
+		if (reliefMaps != null)
+		{
+			destroyImage(reliefMaps);
+		}
+		reliefMaps = uploadArray(layers, size, levels, VK_FORMAT_R8_UNORM, 1, heights, BINDING_RELIEF);
+	}
+
+	// Creates a sampled array image with a mip chain, fills it from tightly packed level-major
+	// data, and binds it with the texture sampler. Blocks until the upload completes.
+	private Img uploadArray(int layers, int size, int levels, int format, int bytesPerTexel, ByteBuffer data, int binding)
+	{
+		Img image = createImage(size, size, layers, levels, format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
 
 		long bytes = 0;
 		for (int level = 0; level < levels; ++level)
 		{
-			bytes += (long) layers * (size >> level) * (size >> level) * 4;
+			bytes += (long) layers * (size >> level) * (size >> level) * bytesPerTexel;
 		}
 		VkBuf staging = ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		MemoryUtil.memCopy(MemoryUtil.memAddress(rgba), MemoryUtil.memAddress(staging.mapped), bytes);
+		MemoryUtil.memCopy(MemoryUtil.memAddress(data), MemoryUtil.memAddress(staging.mapped), bytes);
 
 		VkCommandBuffer upload = ctx.beginOneTime();
 		try (MemoryStack stack = stackPush())
 		{
-			imageLayout(upload, gameTextures.image, layers, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			imageLayout(upload, image.image, layers, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 			VkBufferImageCopy.Buffer regions = VkBufferImageCopy.calloc(levels, stack);
 			long offset = 0;
@@ -641,10 +665,10 @@ public final class RtRenderer
 				regions.get(level).bufferOffset(offset).bufferRowLength(0).bufferImageHeight(0);
 				regions.get(level).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(level).baseArrayLayer(0).layerCount(layers);
 				regions.get(level).imageExtent().width(extent).height(extent).depth(1);
-				offset += (long) layers * extent * extent * 4;
+				offset += (long) layers * extent * extent * bytesPerTexel;
 			}
-			vkCmdCopyBufferToImage(upload, staging.buffer, gameTextures.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions);
-			imageLayout(upload, gameTextures.image, layers, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			vkCmdCopyBufferToImage(upload, staging.buffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions);
+			imageLayout(upload, image.image, layers, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 		}
 		ctx.endOneTimeAndWait(upload);
@@ -653,20 +677,20 @@ public final class RtRenderer
 		try (MemoryStack stack = stackPush())
 		{
 			VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
-			info.get(0).sampler(textureSampler).imageView(gameTextures.view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			info.get(0).sampler(textureSampler).imageView(image.view).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			for (long set : descriptorSets)
 			{
 				VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
 				write.get(0).sType$Default()
 					.dstSet(set)
-					.dstBinding(BINDING_TEXTURES)
+					.dstBinding(binding)
 					.descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 					.descriptorCount(1)
 					.pImageInfo(info);
 				vkUpdateDescriptorSets(device, write, null);
 			}
 		}
-		log.info("Game textures: {} layers of {}x{} with {} mip levels", layers, size, size, levels);
+		return image;
 	}
 
 	public long semaphoreVkDoneHandle()
@@ -760,6 +784,7 @@ public final class RtRenderer
 			types[BINDING_DYNAMIC_UV] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_RELIEF] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_TEXTURES] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_TEX_ANIM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -799,7 +824,7 @@ public final class RtRenderer
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(56);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(54);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
-			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
+			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(14);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
@@ -1640,6 +1665,13 @@ public final class RtRenderer
 		}
 	}
 
+	/** The face range of the opaque dynamic buffer holding ground to be lifted into its relief this frame. */
+	public void setGroundRange(int first, int count)
+	{
+		groundFirst = first;
+		groundFaces = count;
+	}
+
 	/** Per-frame placement and visibility of a loaded scene. */
 	public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds)
 	{
@@ -2464,14 +2496,24 @@ public final class RtRenderer
 					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 					VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 					VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-				if (waterFaces > 0)
+				int lifted = groundFirst + groundFaces <= opaqueFaces ? groundFaces : 0;
+				if (waterFaces > 0 || lifted > 0)
 				{
-					// Water vertices take their wave and ripple heights here, before the build reads them.
+					// Water vertices take their wave and ripple heights here, and ground its texture
+					// relief, before the build reads them.
 					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
-					ByteBuffer displacePush = stack.malloc(PUSH_CONSTANT_SIZE);
-					pushPass(cmd, displacePush, opaqueFaces + translucentFaces, waterFaces, 0, 0);
 					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, displacePipeline);
-					vkCmdDispatch(cmd, (waterFaces + 63) / 64, 1, 1);
+					ByteBuffer displacePush = stack.malloc(PUSH_CONSTANT_SIZE);
+					if (waterFaces > 0)
+					{
+						pushPass(cmd, displacePush, opaqueFaces + translucentFaces, waterFaces, 0, 0);
+						vkCmdDispatch(cmd, (waterFaces + 63) / 64, 1, 1);
+					}
+					if (lifted > 0)
+					{
+						pushPass(cmd, displacePush, groundFirst, lifted, 1, 0);
+						vkCmdDispatch(cmd, (lifted + 63) / 64, 1, 1);
+					}
 					memoryBarrier(cmd,
 						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -3093,6 +3135,10 @@ public final class RtRenderer
 		if (gameTextures != null)
 		{
 			destroyImage(gameTextures);
+		}
+		if (reliefMaps != null)
+		{
+			destroyImage(reliefMaps);
 		}
 		vkDestroySampler(device, textureSampler, null);
 		ctx.destroyBuffer(frameUbo);

@@ -275,6 +275,93 @@ public final class TextureUpscaler
 		return out;
 	}
 
+	/**
+	 * A height map for a texture's relief, one byte per texel. Brightness stands for height, read
+	 * at two scales: a light blur takes the texel noise out of the fine detail, and a wide one
+	 * gives each brick or stone its own level under it. Both wrap, as the texture tiles. The
+	 * range is stretched so a dark texture gets as much relief as a bright one.
+	 */
+	public static byte[] relief(int[] argb, int size)
+	{
+		float[] lum = new float[size * size];
+		for (int i = 0; i < lum.length; ++i)
+		{
+			int p = argb[i];
+			lum[i] = ((p >> 16 & 0xff) * 0.299f + (p >> 8 & 0xff) * 0.587f + (p & 0xff) * 0.114f) / 255f;
+		}
+		float[] fine = boxBlur(lum, size, Math.max(1, size / 128));
+		float[] coarse = boxBlur(lum, size, Math.max(2, size / 16));
+		float[] h = new float[lum.length];
+		for (int i = 0; i < h.length; ++i)
+		{
+			h[i] = 0.6f * fine[i] + 0.4f * coarse[i];
+		}
+		// The second and ninety-eighth percentiles span the range, so a few stray texels do not flatten the rest.
+		float[] sorted = h.clone();
+		java.util.Arrays.sort(sorted);
+		float low = sorted[sorted.length / 50];
+		float high = sorted[sorted.length - 1 - sorted.length / 50];
+		float span = Math.max(high - low, 1e-3f);
+		byte[] out = new byte[h.length];
+		for (int i = 0; i < h.length; ++i)
+		{
+			out[i] = (byte) Math.round(Math.min(1f, Math.max(0f, (h[i] - low) / span)) * 255f);
+		}
+		return out;
+	}
+
+	// A wrapping box blur of the given radius, run along rows then columns.
+	private static float[] boxBlur(float[] in, int size, int radius)
+	{
+		float[] rows = new float[in.length];
+		float[] out = new float[in.length];
+		float norm = 1f / (2 * radius + 1);
+		for (int y = 0; y < size; ++y)
+		{
+			float sum = 0f;
+			for (int d = -radius; d <= radius; ++d)
+			{
+				sum += in[y * size + ((d + size) % size)];
+			}
+			for (int x = 0; x < size; ++x)
+			{
+				rows[y * size + x] = sum * norm;
+				sum += in[y * size + ((x + radius + 1) % size)] - in[y * size + ((x - radius + size) % size)];
+			}
+		}
+		for (int x = 0; x < size; ++x)
+		{
+			float sum = 0f;
+			for (int d = -radius; d <= radius; ++d)
+			{
+				sum += rows[((d + size) % size) * size + x];
+			}
+			for (int y = 0; y < size; ++y)
+			{
+				out[y * size + x] = sum * norm;
+				sum += rows[((y + radius + 1) % size) * size + x] - rows[((y - radius + size) % size) * size + x];
+			}
+		}
+		return out;
+	}
+
+	/** Halves a square one-byte image by averaging each two-by-two. */
+	public static byte[] halvedGray(byte[] gray, int size)
+	{
+		int half = size / 2;
+		byte[] out = new byte[half * half];
+		for (int y = 0; y < half; ++y)
+		{
+			for (int x = 0; x < half; ++x)
+			{
+				int o = (y * 2) * size + x * 2;
+				int sum = (gray[o] & 0xff) + (gray[o + 1] & 0xff) + (gray[o + size] & 0xff) + (gray[o + size + 1] & 0xff);
+				out[y * half + x] = (byte) (sum / 4);
+			}
+		}
+		return out;
+	}
+
 	/** Reads a player's own texture and resamples it to the wanted size; null when there is none. */
 	public static int[] override(File file, int size)
 	{

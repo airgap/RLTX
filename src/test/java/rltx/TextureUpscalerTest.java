@@ -80,6 +80,32 @@ public class TextureUpscalerTest
 	}
 
 	@Test
+	public void reliefSpansTheRangeAndHalves()
+	{
+		int size = 64;
+		int[] in = pattern(size);
+		byte[] relief = TextureUpscaler.relief(in, size);
+		assertEquals(size * size, relief.length);
+		int min = 255, max = 0;
+		for (byte b : relief)
+		{
+			min = Math.min(min, b & 0xff);
+			max = Math.max(max, b & 0xff);
+		}
+		assertEquals(0, min);
+		assertEquals(255, max);
+		byte[] half = TextureUpscaler.halvedGray(relief, size);
+		assertEquals(size * size / 4, half.length);
+
+		int[] flat = new int[16 * 16];
+		java.util.Arrays.fill(flat, 0xff808080);
+		for (byte b : TextureUpscaler.relief(flat, 16))
+		{
+			assertEquals(0, b);
+		}
+	}
+
+	@Test
 	public void writesAPictureToLookAt() throws IOException
 	{
 		int size = 32;

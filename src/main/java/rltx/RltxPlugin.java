@@ -143,6 +143,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private LocalLights lights;
 	private Foliage foliage;
 	private Waves waves;
+	private Ground ground;
 	private PluginGlow glow;
 	private Footprints footprints;
 	private Ripples ripples;
@@ -440,6 +441,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		lights = new LocalLights(client, config, gson, frame);
 		foliage = new Foliage(client, clientThread, config, lights, frame);
 		waves = new Waves(config, frame);
+		ground = new Ground(config, frame);
 		glow = new PluginGlow(client, clientThread, config, pluginManager, overlayManager, npcOverlayService, frame);
 		footprints = new Footprints(client, config, frame);
 		ripples = new Ripples(client, config, frame);
@@ -1067,6 +1069,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int actorFaces = dynamic.faces() + dynamicTranslucent.faces();
 		foliage.push(top, dynamic, renderer, environment.weatherNow);
 		int foliageFaces = dynamic.faces() + dynamicTranslucent.faces() - actorFaces;
+		ground.push(top, dynamic, renderer, gameTexturesUploaded);
+		int groundFaces = dynamic.faces() + dynamicTranslucent.faces() - actorFaces - foliageFaces;
 		waves.push(top, dynamicWater, renderer);
 		ripples.fill(renderer, top, environment.weatherDt);
 		lights.fill(renderer, top == null ? null : top.lights);
@@ -1129,10 +1133,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			double seconds = (end - statInfoReport) / 1e9;
 			long waited = renderer.waitNanos() - statWaitBase;
 			statWaitBase = renderer.waitNanos();
-			log.info("GPU {} ms per frame ({}); CPU {} ms per frame, {} of it waiting on the GPU; {} dynamic faces (actors {}, foliage {}, water {}); {} local lights; {} fps over {} s",
+			log.info("GPU {} ms per frame ({}); CPU {} ms per frame, {} of it waiting on the GPU; {} dynamic faces (actors {}, foliage {}, ground {}, water {}); {} local lights; {} fps over {} s",
 				String.format("%.1f", renderer.lastGpuMillis()), renderer.passReport(),
 				String.format("%.1f", statCpuNanos / 1e6 / Math.max(statInfoFrames, 1)), String.format("%.1f", waited / 1e6 / Math.max(statInfoFrames, 1)),
-				dynamic.faces() + dynamicTranslucent.faces() + dynamicWater.faces(), actorFaces, foliageFaces, dynamicWater.faces(), frame.lightCount,
+				dynamic.faces() + dynamicTranslucent.faces() + dynamicWater.faces(), actorFaces, foliageFaces, groundFaces, dynamicWater.faces(), frame.lightCount,
 				String.format("%.1f", statInfoFrames / seconds), Math.round(seconds));
 			statInfoReport = end;
 			statInfoFrames = 0;
@@ -1307,6 +1311,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				total += (long) layers * (target >> level) * (target >> level) * 4;
 			}
 			ByteBuffer packed = MemoryUtil.memCalloc((int) total);
+			ByteBuffer relief = MemoryUtil.memCalloc((int) (total / 4));
 			java.util.stream.IntStream.range(0, pixels.length).parallel().forEach(id ->
 			{
 				int[] source = pixels[id];
@@ -1328,14 +1333,18 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			java.util.stream.IntStream.range(0, layers).parallel().forEach(layer ->
 			{
 				int[] argb = readLayer(packed, layers, target, layer);
+				byte[] heights = TextureUpscaler.relief(argb, target);
+				writeGray(relief, 0, layers, target, layer, heights);
 				int extent = target;
 				long offset = 0;
 				for (int level = 1; level < levels; ++level)
 				{
 					offset += (long) layers * extent * extent * 4;
 					argb = TextureUpscaler.halved(argb, extent);
+					heights = TextureUpscaler.halvedGray(heights, extent);
 					extent /= 2;
 					writeLayer(packed, offset, layers, extent, layer, argb);
+					writeGray(relief, offset / 4, layers, extent, layer, heights);
 				}
 			});
 			java.util.BitSet cutouts = TextureUpscaler.cutouts(pixels);
@@ -1347,6 +1356,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 					{
 						renderer.setTextureAnimation(scroll);
 						renderer.setTextureArray(layers, target, levels, packed);
+						renderer.setReliefArray(layers, target, levels, relief);
 						frame.textureSize = target;
 						gameTexturesUploaded = true;
 						// Faces with cutout textures need the non-opaque path; reclassify the static scene.
@@ -1358,6 +1368,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				finally
 				{
 					MemoryUtil.memFree(packed);
+					MemoryUtil.memFree(relief);
 					texturesBusy = false;
 				}
 			});
@@ -1375,6 +1386,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			int p = argb[i];
 			int o = base + i * 4;
 			packed.put(o, (byte) (p >> 16)).put(o + 1, (byte) (p >> 8)).put(o + 2, (byte) p).put(o + 3, (byte) (p >>> 24));
+		}
+	}
+
+	private static void writeGray(ByteBuffer packed, long levelOffset, int layers, int extent, int layer, byte[] gray)
+	{
+		int base = (int) (levelOffset + (long) layer * extent * extent);
+		for (int i = 0; i < gray.length; ++i)
+		{
+			packed.put(base + i, gray[i]);
 		}
 	}
 

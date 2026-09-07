@@ -1394,6 +1394,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "terrainRelief",
+		name = "Ground relief near the camera",
+		description = "Ground within twelve tiles rises into its texture's relief as real geometry, so cobbles, stones and tufts of grass stand up, cast shadows and show their edges. The lifting runs on the GPU; the terrain relief strength sets its height.",
+		section = surfacesSection,
+		position = 11
+	)
+	default boolean terrainRelief()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "caustics",
 		name = "Water caustics",
 		description = "Sunlight focused by the waves plays across the bed under clear water.",

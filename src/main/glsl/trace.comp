@@ -50,6 +50,10 @@ layout(std430, set = 0, binding = 22) readonly buffer DynUv { float v[]; } dynUv
 layout(std430, set = 0, binding = 57) readonly buffer StaticNrm { uint n[]; } staticNrm;
 layout(std430, set = 0, binding = 58) readonly buffer DynNrm { uint n[]; } dynNrm;
 layout(set = 0, binding = 23) uniform sampler2DArray gameTextures;
+// Relief height of every texture, one channel, laid out like the colour array.
+layout(set = 0, binding = 59) uniform sampler2DArray reliefMaps;
+// World units of height the full range of a relief map stands for at full strength.
+const float RELIEF_DEPTH = 24.0;
 layout(std430, set = 0, binding = 24) readonly buffer TexAnim { vec2 v[]; } texAnim;
 layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } waterTypes;
 // Local lights: position and radius, then colour premultiplied by strength.
@@ -128,6 +132,7 @@ struct Hit {
   bool terrain;     // untextured terrain face carrying a ground detail id
   bool flame;       // a flame face of a light-bearing object
   uint highlight;   // index into the highlight palette, 0 for none
+  float relief;     // the share of sunlight the surface's own relief lets through
 };
 
 // A texture's material, or the global sheen for faces whose texture defines no specular.
@@ -286,74 +291,106 @@ vec2 faceUv(bool dyn, uint face, vec2 bary, uint tex) {
   return uv + texAnim.v[tex - 1u] * (u.motion.y / 128.0);
 }
 
-float texHeight(vec2 uv, float layer) {
-  return dot(texture(gameTextures, vec3(uv, layer)).rgb, vec3(0.299, 0.587, 0.114));
+float texHeight(vec2 uv, float layer, float level) {
+  return textureLod(reliefMaps, vec3(uv, layer), level).r;
 }
 
-// Texture relief: texel brightness stands in for height, and its gradient along the face's
-// tangent directions tilts the shading normal. Heights are in world units, so a texture
-// stretched across a large face gets proportionally gentler slopes.
-vec3 bumpNormal(vec3 n, vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, float strength) {
+// The face's tangent frame from its texture coordinates: the world vectors along +u and +v.
+bool tangentFrame(vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, out vec3 t, out vec3 b) {
   uint o = face * 6u;
   vec2 uv0 = cornerUv(dyn, o);
   vec2 d1 = cornerUv(dyn, o + 2u) - uv0;
   vec2 d2 = cornerUv(dyn, o + 4u) - uv0;
   float det = d1.x * d2.y - d1.y * d2.x;
   if (abs(det) < 1e-6) {
-    return n;
+    return false;
   }
   vec3 e1 = v1 - v0;
   vec3 e2 = v2 - v0;
-  vec3 t = (e1 * d2.y - e2 * d1.y) / det;
-  vec3 b = (e2 * d1.x - e1 * d2.x) / det;
-  float texel = 1.0 / 128.0;
-  float dhdu = (texHeight(uv + vec2(texel, 0.0), layer) - texHeight(uv - vec2(texel, 0.0), layer)) / (2.0 * texel);
-  float dhdv = (texHeight(uv + vec2(0.0, texel), layer) - texHeight(uv - vec2(0.0, texel), layer)) / (2.0 * texel);
-  // The full brightness range stands for this many world units of height at full strength.
-  float amplitude = strength * 24.0;
+  t = (e1 * d2.y - e2 * d1.y) / det;
+  b = (e2 * d1.x - e1 * d2.x) / det;
+  return true;
+}
+
+// Texture relief: the height map's gradient along the face's tangent directions tilts the
+// shading normal. Heights are in world units, so a texture stretched across a large face gets
+// proportionally gentler slopes. The gradient is read at the level the colour was, so distant
+// relief settles instead of sparkling.
+vec3 bumpNormal(vec3 n, vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, float strength, float level) {
+  vec3 t, b;
+  if (!tangentFrame(v0, v1, v2, dyn, face, t, b)) {
+    return n;
+  }
+  float texel = exp2(level) / float(textureSize(reliefMaps, 0).x);
+  float dhdu = (texHeight(uv + vec2(texel, 0.0), layer, level) - texHeight(uv - vec2(texel, 0.0), layer, level)) / (2.0 * texel);
+  float dhdv = (texHeight(uv + vec2(0.0, texel), layer, level) - texHeight(uv - vec2(0.0, texel), layer, level)) / (2.0 * texel);
+  float amplitude = strength * RELIEF_DEPTH;
   vec3 grad = (dhdu * t / dot(t, t) + dhdv * b / dot(b, b)) * amplitude;
   grad -= n * dot(grad, n);
   return normalize(n - grad);
 }
 
-// Texture displacement: the texture's brightness stands for height, and the view ray is
-// marched into that relief in the surface's own tangent frame until it meets it, so bark,
-// brick and thatch show their ridges and hollows shifting with the viewpoint rather than as
-// paint. Silhouettes stay put; only where the ray lands on the texture moves.
-vec2 displacedUv(vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, vec3 dir, vec3 n, float strength) {
-  uint o = face * 6u;
-  vec2 uv0 = cornerUv(dyn, o);
-  vec2 d1 = cornerUv(dyn, o + 2u) - uv0;
-  vec2 d2 = cornerUv(dyn, o + 4u) - uv0;
-  float det = d1.x * d2.y - d1.y * d2.x;
-  if (abs(det) < 1e-6) {
+// Texture displacement: the view ray is marched into the relief in the surface's own tangent
+// frame until it meets it, so bark, brick and thatch show their ridges and hollows shifting
+// with the viewpoint rather than as paint. Silhouettes stay put; only where the ray lands on
+// the texture moves. Grazing rays cross more texture and get more steps, and a bisection at
+// the end lands the ray exactly rather than within the last step.
+vec2 displacedUv(vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, vec3 dir, vec3 n, float strength, float level) {
+  vec3 t, b;
+  if (!tangentFrame(v0, v1, v2, dyn, face, t, b)) {
     return uv;
   }
-  vec3 e1 = v1 - v0;
-  vec3 e2 = v2 - v0;
-  vec3 t = (e1 * d2.y - e2 * d1.y) / det;
-  vec3 b = (e2 * d1.x - e1 * d2.x) / det;
   float into = max(-dot(dir, n), 0.15);
   vec3 lateral = dir + n * (-dot(dir, n));
   vec2 slide = vec2(dot(lateral, t) / dot(t, t), dot(lateral, b) / dot(b, b));
-  float amplitude = strength * 24.0;
-  const int STEPS = 10;
-  float ds = amplitude / float(STEPS) / into;
+  float amplitude = strength * RELIEF_DEPTH;
+  int steps = int(mix(28.0, 10.0, into));
+  float ds = amplitude / float(steps) / into;
   float s = 0.0;
-  float lastGap = 0.0;
-  for (int i = 0; i < STEPS; ++i) {
+  for (int i = 0; i < steps; ++i) {
     s += ds;
-    vec2 q = uv + slide * s;
-    float depthBelow = amplitude * (1.0 - texHeight(q, layer));
-    float gap = depthBelow - into * s;
+    float gap = amplitude * (1.0 - texHeight(uv + slide * s, layer, level)) - into * s;
     if (gap <= 0.0) {
-      // Crossed the relief between this step and the last; land where they meet.
-      float back = lastGap / max(lastGap - gap, 1e-4);
-      return uv + slide * (s - ds * (1.0 - back));
+      float lo = s - ds;
+      float hi = s;
+      for (int k = 0; k < 4; ++k) {
+        float mid = 0.5 * (lo + hi);
+        if (amplitude * (1.0 - texHeight(uv + slide * mid, layer, level)) - into * mid <= 0.0) {
+          hi = mid;
+        } else {
+          lo = mid;
+        }
+      }
+      return uv + slide * (0.5 * (lo + hi));
     }
-    lastGap = gap;
   }
   return uv + slide * s;
+}
+
+// How much of the sun the relief itself blocks at a point on it: the sun's ray is followed
+// back out of the relief in the tangent frame, and wherever it passes under the height map
+// the point lies in the shadow of a ridge, softly by how deep under.
+float reliefShadow(vec3 v0, vec3 v1, vec3 v2, bool dyn, uint face, vec2 uv, float layer, vec3 sunDir, vec3 n, float strength, float level) {
+  vec3 t, b;
+  float up = dot(sunDir, n);
+  if (up <= 0.02 || !tangentFrame(v0, v1, v2, dyn, face, t, b)) {
+    return 1.0;
+  }
+  vec3 lateral = sunDir - n * up;
+  vec2 slide = vec2(dot(lateral, t) / dot(t, t), dot(lateral, b) / dot(b, b));
+  float amplitude = strength * RELIEF_DEPTH;
+  float here = texHeight(uv, layer, level);
+  // The ray clears the tallest possible ridge once it has climbed the rest of the range.
+  float reach = min((1.0 - here) * amplitude / up, 6.0 * amplitude);
+  const int STEPS = 8;
+  float ds = reach / float(STEPS);
+  float under = 0.0;
+  for (int i = 1; i <= STEPS; ++i) {
+    float s = ds * float(i);
+    float rayHeight = here + up * s / amplitude;
+    under = max(under, (texHeight(uv + slide * s, layer, level) - rayHeight) * amplitude);
+  }
+  return 1.0 - smoothstep(0.0, 4.0, under);
 }
 
 // Translucent geometry is built without the opaque flag, so only its triangles show up as
@@ -563,6 +600,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   }
   hit.n = n;
   hit.gn = n;
+  hit.relief = 1.0;
   // Where the model carries the client's Gouraud normals they are interpolated across the face,
   // so rounded low-poly shapes shade as the client draws them rather than in facets.
   uint no = face * 3u;
@@ -626,16 +664,28 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
         vec3 tn = textureLod(gameTextures, vec3(uv, hit.material.w - 1.0), level).rgb * 2.0 - 1.0;
         hit.n = normalize(hit.n + (vec3(1.0, 0.0, 0.0) * tn.x + vec3(0.0, 0.0, 1.0) * tn.y) * (0.8 * u.material.z));
       }
+      if (hit.dyn && u.material.z > 0.0) {
+        // Ground lifted into its relief: the shading follows the slope the geometry took, read
+        // at the level the lift was, so the light falls on the stones the way they stand.
+        float lod = log2(float(textureSize(reliefMaps, 0).x) / 8.0);
+        float d = 8.0 / 128.0;
+        float amplitude = 8.0 * u.material.z;
+        float dhdx = (texHeight(uv + vec2(d, 0.0), float(tex - 1u), lod) - texHeight(uv - vec2(d, 0.0), float(tex - 1u), lod)) * amplitude / (2.0 * d * 128.0);
+        float dhdz = (texHeight(uv + vec2(0.0, d), float(tex - 1u), lod) - texHeight(uv - vec2(0.0, d), float(tex - 1u), lod)) * amplitude / (2.0 * d * 128.0);
+        hit.n = normalize(hit.n + vec3(-dhdx, 0.0, -dhdz));
+      }
     }
   } else if (tex != 0u && !hit.water && (u.misc.y & FLAG_TEXTURES) != 0u) {
     vec2 uv = faceUv(hit.dyn, face, rayQueryGetIntersectionBarycentricsEXT(rq, true), tex);
+    float level = textureLevel(hit.t, abs(dot(n, dir)));
     if (primaryRay && u.motion.z > 0.0 && (u.misc.y & FLAG_DISPLACEMENT) != 0u) {
-      uv = displacedUv(v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), dir, n, u.motion.z);
+      uv = displacedUv(v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), dir, n, u.motion.z, level);
+      hit.relief = reliefShadow(v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), u.sun.xyz, n, u.motion.z, level);
     }
-    vec4 texel = textureLod(gameTextures, vec3(uv, float(tex - 1u)), textureLevel(hit.t, abs(dot(n, dir))));
+    vec4 texel = textureLod(gameTextures, vec3(uv, float(tex - 1u)), level);
     hit.albedo = mix(hit.albedo, texel.rgb, texel.a);
     if (u.motion.z > 0.0) {
-      hit.n = bumpNormal(hit.n, v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), u.motion.z);
+      hit.n = bumpNormal(hit.n, v0, v1, v2, hit.dyn, face, uv, float(tex - 1u), u.motion.z, level);
     }
   }
   return true;
@@ -1485,7 +1535,7 @@ void main() {
   vec3 specular = vec3(0.0);
   vec3 toEye = -dir;
   float sunNdl = max(dot(hit.n, sunDir), 0.0);
-  float sunVisible = sunNdl > 0.0 && u.sun.w > 0.0 && !(shadows && occluded(hit.p, sunDir, seed)) ? cloudShadow(hit.p) : 0.0;
+  float sunVisible = sunNdl > 0.0 && u.sun.w > 0.0 && !(shadows && occluded(hit.p, sunDir, seed)) ? cloudShadow(hit.p) * hit.relief : 0.0;
   vec3 sunLight = u.sunColor.rgb * (u.sun.w * sunVisible);
   if ((flags & FLAG_UNDERWATER) != 0u && !hit.water) {
     // Sunlight under water: dimmed by its passage and focused by the waves into a dancing web.

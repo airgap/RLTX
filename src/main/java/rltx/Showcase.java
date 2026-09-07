@@ -57,6 +57,7 @@ final class Showcase
 		OVERRIDES.put("foliageWind", "true");
 		OVERRIDES.put("foliageWindRange", "32");
 		OVERRIDES.put("waveGeometry", "true");
+		OVERRIDES.put("terrainRelief", "true");
 		OVERRIDES.put("waterRipples", "true");
 		OVERRIDES.put("antialias", "true");
 		OVERRIDES.put("renderScale", "100");

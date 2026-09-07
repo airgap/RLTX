@@ -22,6 +22,8 @@ public final class StaticScene
 		public final boolean[] groupWater;
 		/** The water faces cut fine and flat for the dynamic path, built on first use and kept with the zone. */
 		public GeometryBuffer waterMesh;
+		/** The terrain faces cut fine for the dynamic path, to be lifted into their texture's relief; built on first use. */
+		public GeometryBuffer groundMesh;
 		/** Foliage that sways in the wind; near the camera these groups are replaced by swayed copies each frame. */
 		public final boolean[] groupSway;
 		/** The foliage faces of this zone in their resting pose, and per vertex how freely each moves. */
