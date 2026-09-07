@@ -146,7 +146,9 @@ vec3 smoothTerrainNormal(vec3 p, vec3 fallback);
 float textureLevel(float t, float cosine) {
   float texelsPerUnit = float(u.flags2.y) / 128.0;
   float unitsPerPixel = t / u.cam.w;
-  return max(0.0, log2(unitsPerPixel * texelsPerUnit) - 1.0);
+  // The bias is a level finer, and finer again by the traced size over the view's when DLSS
+  // upscales, which is the bias NVIDIA asks for so it can rebuild texture detail from its samples.
+  return max(0.0, log2(unitsPerPixel * texelsPerUnit) + uintBitsToFloat(u.flags2.z));
 }
 
 // The average specular reflectance a surface returns toward the viewer, for Ray Reconstruction

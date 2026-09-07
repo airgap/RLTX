@@ -41,6 +41,6 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 night;    // direction to the sun while the moon lights the scene, moon illuminated fraction
   vec4 ground;   // footprint count, footprint strength, water surface height over the camera, bare earth texture layer
   vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
-  uvec4 flags2;    // x: flags once misc.y is full, bit 0 sampled local lights, bit 1 mist indoors, bit 3 ripples; y: texture size in texels
+  uvec4 flags2;    // x: flags once misc.y is full, bit 0 sampled local lights, bit 1 mist indoors, bit 3 ripples; y: texture size in texels; z: mip bias as float bits
   vec4 lens;       // this frame's jitter x and y in traced pixels, whether DLSS upscales, whether Ray Reconstruction denoises
 } u;

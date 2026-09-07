@@ -3014,7 +3014,10 @@ public final class RtRenderer
 			b.putFloat(c);
 		}
 		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0) | (p.ripples ? 8 : 0);
-		b.putInt(flags2).putInt(p.textureSize).putInt(0).putInt(0);
+		// Textures are sampled a level finer than their footprint, and finer again by how much
+		// smaller the traced frame is than the view, so an upscaler has detail to rebuild from.
+		float mipBias = (float) (Math.log((double) internalWidth / outputWidth) / Math.log(2.0)) - 1f;
+		b.putInt(flags2).putInt(p.textureSize).putFloat(mipBias).putInt(0);
 		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
 		if (b.position() > FRAME_UBO_SIZE)
 		{
