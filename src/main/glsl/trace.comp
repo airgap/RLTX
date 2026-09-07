@@ -1574,6 +1574,12 @@ void main() {
   vec3 specular = vec3(0.0);
   vec3 toEye = -dir;
   float sunNdl = max(dot(hit.n, sunDir), 0.0);
+  if (hit.fabric) {
+    // Cloth: the weave scatters light on past the terminator and never gathers it into a hot
+    // spot, so the falloff is wrapped and the lit side held down, the way a matte fabric reads
+    // rather than a smooth shell.
+    sunNdl = 0.8 * max(dot(hit.n, sunDir) + 0.45, 0.0) / 1.45;
+  }
   float sunVisible = sunNdl > 0.0 && u.sun.w > 0.0 && !(shadows && occluded(hit.p, sunDir, seed)) ? cloudShadow(hit.p) * hit.relief : 0.0;
   vec3 sunLight = u.sunColor.rgb * (u.sun.w * sunVisible);
   if ((flags & FLAG_UNDERWATER) != 0u && !hit.water) {
