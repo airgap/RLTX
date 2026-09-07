@@ -150,6 +150,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Chrome chrome;
 	private StyledMenu styledMenu;
 	private Outfits outfits;
+	private Lyku lyku;
 	private final GeometryBuffer portraitOpaque = new GeometryBuffer(1 << 12);
 	private final GeometryBuffer portraitTranslucent = new GeometryBuffer(1 << 10);
 	private static final int GPU_FLAGS = DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0);
@@ -468,6 +469,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		chrome = new Chrome(client, config);
 		styledMenu = new StyledMenu(client, config);
 		outfits = new Outfits(client, config, this::portrait);
+		lyku = new Lyku(okHttpClient, gson, configManager, this::say);
 		eventBus.register(styledMenu);
 		overlayManager.add(styledMenu);
 		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
@@ -635,6 +637,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			showcase.set(config.showcase());
 			say(config.showcase() ? "RLTX: showcase on" : "RLTX: showcase off, your settings are back");
+		}
+		if ("lykuConnect".equals(event.getKey()) && config.lykuConnect())
+		{
+			// A tick box standing in for a button: it opens the browser and clears itself.
+			configManager.setConfiguration(RltxConfig.GROUP, "lykuConnect", false);
+			lyku.connect();
 		}
 		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
 		{
@@ -1423,6 +1431,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.ripples = ripples;
 
 		photo.saveOutfitAsync(argb, width, height, name);
+		if (config.lykuAvatar())
+		{
+			if (lyku.connected())
+			{
+				lyku.setAvatarAsync(argb, width, height);
+			}
+			else
+			{
+				say("Lyku: not connected, so the profile picture stays; tick Connect to Lyku in the settings");
+			}
+		}
 		return true;
 	}
 

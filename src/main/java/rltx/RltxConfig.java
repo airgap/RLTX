@@ -1213,6 +1213,30 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "lykuConnect",
+		name = "Connect to Lyku",
+		description = "Tick to sign in to Lyku in your browser and link this client to your account; it unticks itself. The link lasts ninety days.",
+		section = cameraSection,
+		position = 29
+	)
+	default boolean lykuConnect()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "lykuAvatar",
+		name = "Lyku profile picture from outfit",
+		description = "Each new outfit's portrait, head and shoulders, becomes your Lyku profile picture. Needs the Lyku connection.",
+		section = cameraSection,
+		position = 30
+	)
+	default boolean lykuAvatar()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
 		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",
