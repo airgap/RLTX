@@ -512,6 +512,7 @@ final class Environment
 		frame.fireflies = config.fireflies();
 		frame.dustMotes = config.dustMotes();
 		frame.wildlife = config.wildlife();
+		frame.wildlifeDensity = config.wildlifeDensity() / 100f;
 		frame.rainbows = config.rainbows();
 		frame.focusPeaking = config.focusPeaking();
 		frame.roofOcclusion = config.roofOcclusion();

@@ -30,6 +30,19 @@ layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
 layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } mistGrid;
 layout(set = 0, binding = 27, rgba16f) uniform readonly image2D shaftImage;
 layout(std430, set = 0, binding = 32) readonly buffer Lights { vec4 v[]; } localLights;
+// One bit per tile of the loaded scene, set where the tile is water.
+layout(std430, set = 0, binding = 56) readonly buffer WaterMask { uint v[]; } waterMask;
+
+bool waterAt(vec2 xz) {
+  int offset = int(u.weather3.w);
+  int size = int(u.weather3.z) - 1;
+  ivec2 tile = ivec2(floor(xz / 128.0)) + offset;
+  if (size < 1 || tile.x < 0 || tile.y < 0 || tile.x >= size || tile.y >= size) {
+    return false;
+  }
+  int bit = tile.x * size + tile.y;
+  return (waterMask.v[bit >> 5] & (1u << uint(bit & 31))) != 0u;
+}
 layout(std430, set = 0, binding = 38) readonly buffer Guide { vec4 v[]; } guidePath;
 layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plumes;
 layout(std430, set = 0, binding = 40) readonly buffer Markers { vec4 v[]; } markers;
@@ -436,12 +449,16 @@ vec3 traceParticles(vec3 c, vec3 dir, float tMax, float zoom, int kind, float sp
 const float DRIFT_RANGE = 1400.0;
 const int DRIFT_STEPS = 48;
 
-// Kinds: 0 fireflies, 1 dust motes, 2 butterflies.
-vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, int kind, float strength) {
+// Kinds: 0 fireflies, 1 dust motes, 2 butterflies, 3 dragonflies over water, 4 bees over grass.
+// The density scales how many of the living kinds there are; dust is not alive.
+vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, int kind, float strength, float density) {
   bool fireflies = kind == 0;
   bool grounded = kind != 1;
-  vec3 cellSize = grounded ? vec3(190.0, 1.0e5, 190.0) : vec3(110.0);
-  float presence = kind == 0 ? 0.45 : kind == 1 ? 0.3 : 0.16;
+  vec3 cellSize = kind == 1 ? vec3(110.0) : kind == 3 ? vec3(170.0, 1.0e5, 170.0) : kind == 4 ? vec3(120.0, 1.0e5, 120.0) : vec3(190.0, 1.0e5, 190.0);
+  float presence = kind == 0 ? 0.45 : kind == 1 ? 0.3 : kind == 2 ? 0.22 : kind == 3 ? 0.35 : 0.3;
+  presence = min(kind == 1 ? presence : presence * density, 0.95);
+  // The quick kinds dart about on top of their slow wander.
+  float quick = kind == 3 ? 4.7 : kind == 4 ? 9.0 : 0.0;
   vec3 o = u.cam.xyz;
   vec3 pos = o / cellSize;
   ivec3 cell = ivec3(floor(pos));
@@ -457,21 +474,50 @@ vec3 drifters(vec3 c, vec3 dir, float tMax, float zoom, float t, int kind, float
       vec3 r = vec3(unitFrom(hashCell(salted + ivec3(7, 0, 0))), unitFrom(hashCell(salted + ivec3(0, 5, 0))), unitFrom(hashCell(salted + ivec3(0, 0, 11))));
       vec3 phase = r * 6.2832;
       vec3 wander = vec3(sin(t * 0.37 + phase.x), 0.5 * sin(t * 0.23 + phase.y), cos(t * 0.31 + phase.z));
+      if (quick > 0.0) {
+        wander += 0.35 * vec3(sin(t * quick + phase.z), 0.3 * sin(t * quick * 1.3 + phase.x), cos(t * quick * 1.1 + phase.x));
+      }
       vec3 q = (vec3(cell) + 0.5 + (r - 0.5) * 0.3) * cellSize + wander * (0.3 * cellSize.x);
       bool present = true;
       if (grounded) {
         vec2 ground = mistAt(q.xz);
         // Fireflies keep to misty ground; butterflies go anywhere the grid knows the ground.
-        present = fireflies ? ground.y > 0.0 : ground.x != 0.0;
-        // Up is -y: they hover between knee and head height over the ground.
-        q.y = ground.x - (30.0 + 120.0 * r.y) - 15.0 * wander.y;
+        // Fireflies keep to misty ground, dragonflies to water, bees and butterflies to dry
+        // ground the grid knows.
+        bool water = waterAt(q.xz);
+        present = fireflies ? ground.y > 0.0 : kind == 3 ? water : ground.x != 0.0 && !water;
+        // Up is -y: they hover between knee and head height over the ground, dragonflies and
+        // bees lower.
+        float hover = kind == 3 ? 25.0 + 45.0 * r.y : kind == 4 ? 15.0 + 40.0 * r.y : 30.0 + 120.0 * r.y;
+        q.y = ground.x - hover - 15.0 * wander.y;
       }
       float tQ = dot(q - o, dir);
       if (present && tQ > 0.0 && tQ < tMax) {
         float dist = length(cross(q - o, dir));
         float pixel = tQ / zoom;
         float fade = strength * exp(-tQ / 1500.0);
-        if (kind == 2) {
+        if (kind == 3) {
+          // A dragonfly: a slender body along its line of flight, iridescent, with a faint
+          // shimmer of wings across it.
+          vec2 head = normalize(vec2(cos(t * 0.37 + phase.x) + 1.65 * cos(t * quick + phase.z), -sin(t * 0.31 + phase.z) - 1.35 * sin(t * quick * 1.1 + phase.x)) + vec2(1e-3, 0.0));
+          vec3 off = (o + dir * tQ) - q;
+          float along = dot(off.xz, head);
+          float across = dot(off.xz, vec2(-head.y, head.x));
+          float body = along * along / 256.0 + across * across / 6.25 + off.y * off.y / 6.25;
+          float wings = along * along / 25.0 + across * across / 196.0 + off.y * off.y / 2.25;
+          float near = 1.0 - smoothstep(500.0, 1000.0, tQ);
+          float bodyCover = (1.0 - smoothstep(0.7, 1.3, body)) * near;
+          float wingCover_ = (1.0 - smoothstep(0.6, 1.4, wings)) * near * 0.3;
+          vec3 sheen = mix(vec3(0.15, 0.55, 0.95), vec3(0.2, 0.9, 0.5), r.z);
+          c = mix(c, u.mistColor.rgb * sheen, bodyCover * strength);
+          c = mix(c, u.mistColor.rgb * vec3(0.85, 0.92, 1.0), wingCover_ * strength);
+        } else if (kind == 4) {
+          // A bee: an amber dot buzzing low over the grass.
+          vec3 off = (o + dir * tQ) - q;
+          float shape = dot(off, off) / 12.25;
+          float cover = (1.0 - smoothstep(0.6, 1.4, shape)) * (1.0 - smoothstep(300.0, 600.0, tQ));
+          c = mix(c, u.mistColor.rgb * vec3(0.95, 0.72, 0.12), cover * strength);
+        } else if (kind == 2) {
           // A butterfly: a small flat shape whose width pulses with its wingbeat.
           float beat = abs(cos(t * 9.0 + r.x * 6.2832));
           vec3 off = (o + dir * tQ) - q;
@@ -648,7 +694,7 @@ float wingCover(vec3 o, vec3 dir, float zoom, vec3 body, vec3 heading, float spa
 
 // Flocks of birds wheeling in the sky by day and at dusk, and bats over misty ground at night.
 // Flocks belong to wide cells of the world, so they stay put as the camera moves.
-vec3 fliers(vec3 c, vec3 dir, float tMax, float zoom, float t, float day, float night) {
+vec3 fliers(vec3 c, vec3 dir, float tMax, float zoom, float t, float day, float night, float density) {
   vec3 o = u.cam.xyz;
   float birds = smoothstep(-0.2, -0.05, u.post2.w) * (1.0 - u.weather.z) * (1.0 - 0.6 * u.weather.x);
   if (birds > 0.01) {
@@ -658,7 +704,7 @@ vec3 fliers(vec3 c, vec3 dir, float tMax, float zoom, float t, float day, float 
       for (int fz = -1; fz <= 1; ++fz) {
         ivec2 cell = home + ivec2(fx, fz);
         uint h = hashCell(ivec3(cell.x, 77, cell.y));
-        if (unitFrom(h) > 0.55 * birds) {
+        if (unitFrom(h) > min(0.65 * birds * density, 0.95)) {
           continue;
         }
         vec3 anchor = vec3((float(cell.x) + 0.3 + 0.4 * unitFrom(hashCell(ivec3(cell.x, 1, cell.y)))) * 2400.0,
@@ -679,6 +725,34 @@ vec3 fliers(vec3 c, vec3 dir, float tMax, float zoom, float t, float day, float 
           if (cover > 0.0) {
             c = mix(c, dark, cover * birds);
           }
+        }
+      }
+    }
+  }
+  if (birds > 0.01) {
+    // A hawk soaring high over the odd stretch of country: slow wide circles on held wings,
+    // with a few beats now and then.
+    vec3 dark = vec3(0.04, 0.035, 0.03) * (0.3 + 0.7 * day);
+    ivec2 home = ivec2(floor(o.xz / 4800.0));
+    for (int fx = -1; fx <= 1; ++fx) {
+      for (int fz = -1; fz <= 1; ++fz) {
+        ivec2 cell = home + ivec2(fx, fz);
+        uint h = hashCell(ivec3(cell.x, 99, cell.y));
+        if (unitFrom(h) > min(0.45 * birds * density, 0.9)) {
+          continue;
+        }
+        vec3 r = vec3(unitFrom(hashCell(ivec3(cell.x, 91, cell.y))), unitFrom(hashCell(ivec3(cell.x, 92, cell.y))), unitFrom(hashCell(ivec3(cell.x, 93, cell.y))));
+        vec3 anchor = vec3((float(cell.x) + 0.25 + 0.5 * r.x) * 4800.0, -1300.0 - 400.0 * r.y, (float(cell.y) + 0.25 + 0.5 * r.z) * 4800.0);
+        float radius = 450.0 + 250.0 * r.y;
+        float rate = 0.08 * (r.z < 0.5 ? 1.0 : -1.0);
+        float phase = t * rate + 6.2832 * r.x;
+        vec3 body = anchor + vec3(cos(phase) * radius, 30.0 * sin(t * 0.4 + r.y * 6.2832), sin(phase) * radius);
+        vec3 heading = normalize(vec3(-sin(phase), 0.0, cos(phase)) * sign(rate));
+        float beating = max(0.0, sin(t * 0.35 + r.z * 6.2832) - 0.8) * 5.0;
+        float flap = 0.12 * sin(t * 1.2 + r.x) + beating * sin(t * 7.0);
+        float cover = wingCover(o, dir, zoom, body, heading, 95.0, flap, tMax);
+        if (cover > 0.0) {
+          c = mix(c, dark, cover * birds);
         }
       }
     }
@@ -744,6 +818,104 @@ vec3 wisps(vec3 c, vec3 dir, float tMax, float zoom, float t) {
   return c;
 }
 
+// Moths: a few pale flutterers about each lamp at night, circling it close.
+vec3 moths(vec3 c, vec3 dir, float tMax, float zoom, float t, float night, float density) {
+  vec3 o = u.cam.xyz;
+  int count = min(int(u.lights.x), 64);
+  int each = min(int(2.0 + 2.0 * density), 5);
+  for (int i = 0; i < count; ++i) {
+    vec3 lamp = localLights.v[i * 2].xyz;
+    float along = dot(lamp - o, dir);
+    if (along < 20.0 || along > tMax + 120.0 || length(cross(lamp - o, dir)) > 160.0) {
+      continue;
+    }
+    for (int k = 0; k < each; ++k) {
+      ivec3 id = ivec3(int(lamp.x), 300 + k, int(lamp.z));
+      vec3 r = vec3(unitFrom(hashCell(id)), unitFrom(hashCell(id + ivec3(0, 31, 0))), unitFrom(hashCell(id + ivec3(0, 63, 0))));
+      float a = t * (1.5 + r.y) * (r.z < 0.5 ? 1.0 : -1.0) + r.x * 6.2832;
+      float rad = 25.0 + 35.0 * r.x + 8.0 * sin(t * 3.7 + r.z * 6.2832);
+      vec3 q = lamp + vec3(cos(a) * rad, -10.0 + 18.0 * sin(t * 3.1 + r.z * 6.2832), sin(a) * rad);
+      float tQ = dot(q - o, dir);
+      if (tQ < 10.0 || tQ > tMax) {
+        continue;
+      }
+      vec3 off = (o + dir * tQ) - q;
+      float beat = abs(sin(t * 21.0 + r.x * 6.2832));
+      vec2 span = vec2(3.0 + 4.0 * beat, 3.0);
+      float shape = dot(off.xz / span, off.xz / span) + off.y * off.y / 4.0;
+      float cover = (1.0 - smoothstep(0.7, 1.3, shape)) * (1.0 - smoothstep(400.0, 800.0, tQ));
+      if (cover > 0.01) {
+        c = mix(c, vec3(0.85, 0.8, 0.65) * (0.4 + 0.6 * beat), cover * night);
+      }
+    }
+  }
+  return c;
+}
+
+// Fish leaping from open water: now and then one arcs out of a patch of water and falls back,
+// with a ring spreading from where it left and where it landed.
+vec3 leapers(vec3 c, vec3 dir, float tMax, float zoom, float t, float density) {
+  vec3 o = u.cam.xyz;
+  ivec2 home = ivec2(floor(o.xz / 400.0));
+  for (int fx = -3; fx <= 3; ++fx) {
+    for (int fz = -3; fz <= 3; ++fz) {
+      ivec2 cell = home + ivec2(fx, fz);
+      uint h = hashCell(ivec3(cell.x, 400, cell.y));
+      if (unitFrom(h) > min(0.5 * density, 0.95)) {
+        continue;
+      }
+      vec3 r = vec3(unitFrom(hashCell(ivec3(cell.x, 401, cell.y))), unitFrom(hashCell(ivec3(cell.x, 402, cell.y))), unitFrom(hashCell(ivec3(cell.x, 403, cell.y))));
+      float period = 6.0 + 8.0 * r.y;
+      float age = fract(t / period + r.x) * period;
+      if (age > 2.2) {
+        continue;
+      }
+      vec2 centre = (vec2(cell) + 0.5) * 400.0 + (r.xz - 0.5) * 300.0;
+      if (!waterAt(centre)) {
+        continue;
+      }
+      float surface = mistAt(centre).x;
+      vec2 head = vec2(cos(r.z * 6.2832), sin(r.z * 6.2832));
+      // The leap: out at one end, an arc forty-five units high, in at the other, in under a second.
+      float s = age / 0.8;
+      if (s < 1.0) {
+        vec2 over = centre + head * (s * 70.0 - 35.0);
+        vec3 q = vec3(over.x, surface - sin(3.1416 * s) * 45.0, over.y);
+        float tQ = dot(q - o, dir);
+        if (tQ > 10.0 && tQ < tMax) {
+          vec3 off = (o + dir * tQ) - q;
+          float along = dot(off.xz, head);
+          float across = dot(off.xz, vec2(-head.y, head.x));
+          float shape = along * along / 49.0 + across * across / 16.0 + off.y * off.y / 16.0;
+          float cover = (1.0 - smoothstep(0.7, 1.3, shape)) * (1.0 - smoothstep(600.0, 1200.0, tQ));
+          vec3 fish = mix(vec3(0.1, 0.12, 0.1), vec3(0.75, 0.8, 0.8), 0.6 * sin(3.1416 * s));
+          c = mix(c, fish, cover);
+        }
+      }
+      // Rings on the surface where it left the water and where it came down.
+      if (abs(dir.y) > 1e-4) {
+        float tp = (surface - o.y) / dir.y;
+        if (tp > 10.0 && tp < tMax) {
+          vec2 p = (o + dir * tp).xz;
+          float pixel = tp / zoom;
+          for (int e = 0; e < 2; ++e) {
+            float since = e == 0 ? age : age - 0.8;
+            if (since < 0.0 || since > 1.4) {
+              continue;
+            }
+            vec2 at = centre + head * (e == 0 ? -35.0 : 35.0);
+            float radius = 8.0 + 80.0 * since;
+            float ring = 1.0 - smoothstep(0.0, 2.0 * pixel + 3.0, abs(length(p - at) - radius));
+            float fade = (1.0 - since / 1.4) * (1.0 - smoothstep(800.0, 1400.0, tp));
+            c = mix(c, c * 1.5 + 0.12, ring * fade * 0.7);
+          }
+        }
+      }
+    }
+  }
+  return c;
+}
+
 vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
   bool fireflies = (u.misc.y & 262144u) != 0u && u.weather3.z >= 2.0;
   bool dust = (u.misc.y & 524288u) != 0u && u.sun.w > 0.0;
@@ -752,20 +924,30 @@ vec3 ambientLife(vec3 c, ivec2 px, vec3 dir, float depth) {
   float tMax = min(depth > 0.0 ? depth : DRIFT_RANGE, DRIFT_RANGE);
   // Fireflies keep to dry nights; motes need daylight to be seen at all.
   float night = (1.0 - smoothstep(-0.08, 0.03, u.post2.w)) * (1.0 - u.weather.z);
+  float density = clamp(u.motion.w, 0.0, 3.0);
   if (fireflies && night > 0.01) {
-    c = drifters(c, dir, tMax, u.cam.w, t, 0, night);
+    c = drifters(c, dir, tMax, u.cam.w, t, 0, night, density);
   }
   float day = smoothstep(-0.02, 0.08, u.post2.w);
   if (dust && day > 0.01) {
-    c = drifters(c, dir, tMax, u.cam.w, t, 1, day);
+    c = drifters(c, dir, tMax, u.cam.w, t, 1, day, density);
   }
-  bool wildlife = (u.misc.y & 16777216u) != 0u;
+  bool wildlife = (u.misc.y & 16777216u) != 0u && density > 0.0;
   if (wildlife && day > 0.01 && u.weather3.z >= 2.0) {
-    // Butterflies keep to fair weather.
-    c = drifters(c, dir, tMax, u.cam.w, t, 2, day * (1.0 - u.weather.z) * (1.0 - 0.7 * u.weather.x));
+    // Butterflies, dragonflies and bees keep to fair weather.
+    float fair = day * (1.0 - u.weather.z) * (1.0 - 0.7 * u.weather.x);
+    c = drifters(c, dir, tMax, u.cam.w, t, 2, fair, density);
+    c = drifters(c, dir, tMax, u.cam.w, t, 3, fair, density);
+    c = drifters(c, dir, tMax, u.cam.w, t, 4, fair, density);
   }
   if (wildlife) {
-    c = fliers(c, dir, tMax, u.cam.w, t, day, night);
+    c = fliers(c, dir, tMax, u.cam.w, t, day, night, density);
+    if (night > 0.01) {
+      c = moths(c, dir, tMax, u.cam.w, t, night, density);
+    }
+    if (u.weather3.z >= 2.0) {
+      c = leapers(c, dir, tMax, u.cam.w, t, density);
+    }
   }
   return c;
 }

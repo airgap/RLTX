@@ -1,14 +1,19 @@
 package rltx;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 import net.runelite.api.Client;
 import net.runelite.api.SpritePixels;
+import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetType;
 
 /**
  * The interface chrome in the renderer's palette: the client's own sprites for the chatbox,
  * tabs, minimap frame, borders and buttons are read from the cache, regraded, and put back as
  * sprite overrides. Nothing is redrawn by hand, so every skin keeps the shapes players know.
+ * Sprites carry no alpha, so where the chrome lies over the scene its translucency comes from
+ * the opacity of the widgets that draw it.
  */
 final class Chrome
 {
@@ -23,10 +28,21 @@ final class Chrome
 		7445, 7446, 7447, 7448, 7449, 7450, 7452, 7453,
 	};
 
+	private static final Set<Integer> SPRITE_SET = new HashSet<>();
+
+	static
+	{
+		for (int id : SPRITES)
+		{
+			SPRITE_SET.add(id);
+		}
+	}
+
 	private final Client client;
 	private final RltxConfig config;
 	private RltxConfig.Chrome applied = RltxConfig.Chrome.OFF;
 	private final Set<Integer> installed = new HashSet<>();
+	private int appliedOpacity;
 
 	Chrome(Client client, RltxConfig config)
 	{
@@ -42,6 +58,16 @@ final class Chrome
 		{
 			remove();
 			applied = skin;
+		}
+		int opacity = skin == RltxConfig.Chrome.OFF ? 0 : Math.round(255f * config.chromeTransparency() / 100f);
+		// The client rebuilds interfaces as they open, so the widgets are revisited every tick.
+		if (opacity != 0 || appliedOpacity != 0)
+		{
+			for (Widget root : client.getWidgetRoots())
+			{
+				fade(root, opacity);
+			}
+			appliedOpacity = opacity;
 		}
 		if (skin == RltxConfig.Chrome.OFF || installed.size() == SPRITES.length)
 		{
@@ -77,9 +103,17 @@ final class Chrome
 		}
 	}
 
-	/** On the client thread: puts the client's own sprites back. */
+	/** On the client thread: puts the client's own sprites back, solid. */
 	void remove()
 	{
+		if (appliedOpacity != 0)
+		{
+			for (Widget root : client.getWidgetRoots())
+			{
+				fade(root, 0);
+			}
+			appliedOpacity = 0;
+		}
 		if (installed.isEmpty())
 		{
 			return;
@@ -92,11 +126,41 @@ final class Chrome
 		client.getWidgetSpriteCache().reset();
 	}
 
+	// Sets the opacity of every graphic widget drawing a chrome sprite under this one.
+	private static void fade(Widget widget, int opacity)
+	{
+		if (widget == null)
+		{
+			return;
+		}
+		if (widget.getType() == WidgetType.GRAPHIC && SPRITE_SET.contains(widget.getSpriteId()))
+		{
+			widget.setOpacity(opacity);
+		}
+		for (Widget[] group : Arrays.asList(widget.getStaticChildren(), widget.getDynamicChildren(), widget.getNestedChildren()))
+		{
+			if (group == null)
+			{
+				continue;
+			}
+			for (Widget child : group)
+			{
+				fade(child, opacity);
+			}
+		}
+	}
+
 	// Each opaque pixel is drawn toward grey, pushed through a contrast curve about the middle,
 	// and tinted; a zero pixel is transparent and stays so, and a result that would be zero is
-	// kept a shade above it for the same reason.
+	// kept a shade above it for the same reason. Glass reads the stone's own bevels instead: its
+	// lit ridges become gold edges and everything else a dark pane.
 	private static void grade(int[] pixels, RltxConfig.Chrome skin)
 	{
+		if (skin == RltxConfig.Chrome.GLASS)
+		{
+			glass(pixels);
+			return;
+		}
 		float desaturate, contrast, brightness, tintR, tintG, tintB;
 		switch (skin)
 		{
@@ -141,6 +205,35 @@ final class Chrome
 			r = channel(r, l, desaturate, contrast, brightness * tintR);
 			g = channel(g, l, desaturate, contrast, brightness * tintG);
 			b = channel(b, l, desaturate, contrast, brightness * tintB);
+			int out = Math.round(r * 255f) << 16 | Math.round(g * 255f) << 8 | Math.round(b * 255f);
+			pixels[i] = out == 0 ? 1 : out;
+		}
+	}
+
+	private static void glass(int[] pixels)
+	{
+		for (int i = 0; i < pixels.length; ++i)
+		{
+			int p = pixels[i];
+			if (p == 0)
+			{
+				continue;
+			}
+			float l = (0.299f * (p >> 16 & 0xff) + 0.587f * (p >> 8 & 0xff) + 0.114f * (p & 0xff)) / 255f;
+			float r, g, b;
+			if (l > 0.58f)
+			{
+				float gold = 0.75f + 0.5f * (l - 0.58f);
+				r = Math.min(1f, 0.84f * gold);
+				g = Math.min(1f, 0.70f * gold);
+				b = Math.min(1f, 0.40f * gold);
+			}
+			else
+			{
+				r = 0.07f + 0.14f * l;
+				g = 0.08f + 0.15f * l;
+				b = 0.10f + 0.19f * l;
+			}
 			int out = Math.round(r * 255f) << 16 | Math.round(g * 255f) << 8 | Math.round(b * 255f);
 			pixels[i] = out == 0 ? 1 : out;
 		}

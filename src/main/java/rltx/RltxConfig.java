@@ -1829,6 +1829,20 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
+	@Range(max = 300)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "wildlifeDensity",
+		name = "Wildlife density",
+		description = "How many creatures there are: birds and a hawk aloft, butterflies and bees over the grass, dragonflies and leaping fish over water, moths about the lamps and bats at night.",
+		section = weatherSection,
+		position = 45
+	)
+	default int wildlifeDensity()
+	{
+		return 100;
+	}
+
 	@ConfigItem(
 		keyName = "rainbows",
 		name = "Rainbows",
@@ -2092,6 +2106,7 @@ public interface RltxConfig extends Config
 	enum Chrome
 	{
 		OFF("Off"),
+		GLASS("Glass"),
 		SLATE("Slate"),
 		OBSIDIAN("Obsidian"),
 		EMBER("Ember");
@@ -2113,13 +2128,27 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "chrome",
 		name = "Interface chrome",
-		description = "Regrades the client's own chatbox, tabs, minimap frame, borders and buttons into a palette: cool slate, near-black obsidian or warm ember. Off keeps the client's sprites; other interface skins are overridden while this is on.",
+		description = "Redraws the client's own chatbox, tabs, minimap frame, borders and buttons. Glass is dark translucent panes with gold edges; slate, obsidian and ember regrade the stone into a palette. Off keeps the client's sprites; other interface skins are overridden while this is on.",
 		section = interfaceSection,
 		position = 0
 	)
 	default Chrome chrome()
 	{
-		return Chrome.SLATE;
+		return Chrome.GLASS;
+	}
+
+	@Range(max = 80)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "chromeTransparency",
+		name = "Chrome transparency",
+		description = "How far the scene shows through the interface chrome, where it lies over the scene. 0 is solid.",
+		section = interfaceSection,
+		position = 1
+	)
+	default int chromeTransparency()
+	{
+		return 35;
 	}
 
 	@ConfigItem(
@@ -2127,7 +2156,7 @@ public interface RltxConfig extends Config
 		name = "Styled right-click menus",
 		description = "Draws the right-click menu on a dark translucent panel with a lit border, in the same place and at the same row pitch as the client's so clicks land where they show.",
 		section = interfaceSection,
-		position = 1
+		position = 2
 	)
 	default boolean styledMenus()
 	{
@@ -2141,7 +2170,7 @@ public interface RltxConfig extends Config
 		name = "Menu opacity",
 		description = "How solid the styled right-click menu's panel is.",
 		section = interfaceSection,
-		position = 2
+		position = 3
 	)
 	default int menuOpacity()
 	{

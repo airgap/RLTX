@@ -96,6 +96,8 @@ public final class FrameParams
 	public boolean fireflies, dustMotes;
 	/** Birds, bats and butterflies. */
 	public boolean wildlife;
+	/** How many creatures there are, 1 for the usual number. */
+	public float wildlifeDensity = 1f;
 	/** Rainbows after rain, hot air over fires, and the camera being under water. */
 	public boolean rainbows, heatShimmer, underwater;
 	/** How strongly the aurora shows, 0 to 1. */

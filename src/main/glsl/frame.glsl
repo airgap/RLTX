@@ -17,7 +17,7 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 denoise; // luminance, normal and position sigmas, unused
   vec4 sunColor; // rgb tint of the direct light, unused
   vec4 path;     // diffuse bounce count, lens aperture radius, focus distance, wave strength
-  vec4 motion;   // shutter fraction, game cycle for texture scrolling, texture relief, unused
+  vec4 motion;   // shutter fraction, game cycle for texture scrolling, texture relief, wildlife density
   vec4 weather;  // cloud cover, fog amount, rain, snow
   vec4 weather2; // ground wetness, snow cover, accumulated wind displacement x and z in world units
   vec4 fog;      // fog colour in display space, lightning flash
