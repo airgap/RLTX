@@ -1454,8 +1454,18 @@ bool glassEdge(vec2 uiPx, out float nearest, out vec2 outward) {
         ++s;
         continue;
       }
-      if (glassAt(uiPx + d * (dist + 3.0)) || glassAt(uiPx + d * (dist + 6.0))) {
-        s += 4;
+      // An item or a run of text lying on the pane is up to some forty pixels across; glass
+      // resuming within that is not an edge, and the march goes on from where it resumes.
+      float resume = -1.0;
+      for (int k = 0; k < 6; ++k) {
+        float probe = dist + float(k * k + 2 * k + 3);
+        if (glassAt(uiPx + d * probe)) {
+          resume = probe;
+          break;
+        }
+      }
+      if (resume > 0.0) {
+        s = int(ceil(resume / STEP)) + 1;
         continue;
       }
       // The edge lies within the last step; it is placed to a quarter pixel so the slab's
@@ -1583,8 +1593,10 @@ void main() {
       vec3 forward = normalize(vec3(row0.z, row1.z, row2.z));
       vec3 pane = origin + dir * (GLASS_DISTANCE * length(viewDir));
       glassRim = 1.0 - smoothstep(1.5, 3.0, nearest);
+      // Reflectance rises toward the rim but is held short of a mirror: a sharp mirror of a
+      // moving world on every edge reads as a shimmer, not as glass.
       float cosI = clamp(dot(-dir, glassNormal), 0.0, 1.0);
-      glassFresnel = 0.04 + 0.96 * pow(1.0 - cosI, 5.0);
+      glassFresnel = 0.04 + 0.56 * pow(1.0 - cosI, 5.0);
       // The world in the glass.
       vec3 reflected = reflect(dir, glassNormal);
       Hit mirror;
