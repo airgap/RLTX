@@ -139,13 +139,14 @@ vec4 materialOf(uint tex) {
 
 vec3 smoothTerrainNormal(vec3 p, vec3 fallback);
 
-// The mip level for a texture seen at a hit: texels per pixel from the hit distance, the zoom
-// and the view angle, textures being laid one repeat per tile. Compute shaders have no
-// derivatives to choose it for them.
+// The mip level for a texture seen at a hit: texels per pixel from the hit distance and the
+// zoom, textures being laid one repeat per tile, taken one level finer than the footprint so two
+// texels meet each pixel and the enlarged textures show. Compute shaders have no derivatives to
+// choose it for them, and the accumulation smooths what the finer level aliases at grazing angles.
 float textureLevel(float t, float cosine) {
   float texelsPerUnit = float(u.flags2.y) / 128.0;
   float unitsPerPixel = t / u.cam.w;
-  return max(0.0, log2(unitsPerPixel * texelsPerUnit / max(cosine, 0.25)));
+  return max(0.0, log2(unitsPerPixel * texelsPerUnit) - 1.0);
 }
 
 // The average specular reflectance a surface returns toward the viewer, for Ray Reconstruction
