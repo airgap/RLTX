@@ -16,13 +16,32 @@ import rltx.vk.RtRenderer;
  */
 final class Waves
 {
-	private static final float WATER_RANGE = 14 * Perspective.LOCAL_TILE_SIZE;
-	private static final int WATER_FACE_BUDGET = 60_000;
-	/** Each water triangle is cut this many times along each edge; a tile's two become thirty-two. */
-	private static final int SUBDIVISIONS = 4;
+	/** Zones whose nearest edge lies within this of the camera are lifted; the shader fades the lift to nothing at it. */
+	static final float WATER_RANGE = 14 * Perspective.LOCAL_TILE_SIZE;
+	private static final float ZONE_SIZE = 8 * Perspective.LOCAL_TILE_SIZE;
+	private static final int WATER_FACE_BUDGET = 80_000;
+	/** Each water triangle is cut this many times along each edge; a tile's two become eighteen. */
+	private static final int SUBDIVISIONS = 3;
 
 	private final RltxConfig config;
 	private final FrameParams frame;
+	private int[] order = new int[64];
+	private float[] distance = new float[64];
+	private int[] faces = new int[64];
+
+	private static void swap(int[] a, int i, int j)
+	{
+		int t = a[i];
+		a[i] = a[j];
+		a[j] = t;
+	}
+
+	private static void swap(float[] a, int i, int j)
+	{
+		float t = a[i];
+		a[i] = a[j];
+		a[j] = t;
+	}
 
 	Waves(RltxConfig config, FrameParams frame)
 	{
@@ -43,7 +62,9 @@ final class Waves
 			top.displaced = new boolean[built.zones.length];
 		}
 		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
-		int budget = WATER_FACE_BUDGET;
+		// Zones by the distance from the camera to their nearest edge, so what the budget leaves
+		// flat is the farthest water, beyond where the shader has faded the lift out anyway.
+		int candidates = 0;
 		for (int i = 0; i < built.zones.length; ++i)
 		{
 			StaticScene.Zone zone = built.zones[i];
@@ -57,24 +78,55 @@ final class Waves
 			{
 				waterFaces += zone.groupWater[g] ? zone.groupFaceCount[g] : 0;
 			}
-			int meshFaces = waterFaces * SUBDIVISIONS * SUBDIVISIONS;
-			if (waterFaces == 0 || budget < meshFaces)
+			if (waterFaces == 0)
 			{
 				continue;
 			}
-			float centreX = ((i / built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
-			float centreZ = ((i % built.zonesZ) * 8 - offsetTiles + 4) * Perspective.LOCAL_TILE_SIZE;
-			float dx = centreX - frame.cameraX;
-			float dz = centreZ - frame.cameraZ;
-			if (dx * dx + dz * dz > WATER_RANGE * WATER_RANGE)
+			float minX = ((i / built.zonesZ) * 8 - offsetTiles) * Perspective.LOCAL_TILE_SIZE;
+			float minZ = ((i % built.zonesZ) * 8 - offsetTiles) * Perspective.LOCAL_TILE_SIZE;
+			float dx = Math.max(0f, Math.max(minX - frame.cameraX, frame.cameraX - (minX + ZONE_SIZE)));
+			float dz = Math.max(0f, Math.max(minZ - frame.cameraZ, frame.cameraZ - (minZ + ZONE_SIZE)));
+			float nearest = (float) Math.sqrt(dx * dx + dz * dz);
+			if (nearest > WATER_RANGE)
 			{
 				continue;
 			}
-			top.displaced[i] = true;
+			if (candidates == order.length)
+			{
+				order = java.util.Arrays.copyOf(order, order.length * 2);
+				distance = java.util.Arrays.copyOf(distance, distance.length * 2);
+				faces = java.util.Arrays.copyOf(faces, faces.length * 2);
+			}
+			order[candidates] = i;
+			distance[candidates] = nearest;
+			faces[candidates] = waterFaces;
+			++candidates;
+		}
+		int budget = WATER_FACE_BUDGET;
+		for (int k = 0; k < candidates; ++k)
+		{
+			int best = k;
+			for (int j = k + 1; j < candidates; ++j)
+			{
+				if (distance[j] < distance[best])
+				{
+					best = j;
+				}
+			}
+			swap(order, k, best);
+			swap(distance, k, best);
+			swap(faces, k, best);
+			int meshFaces = faces[k] * SUBDIVISIONS * SUBDIVISIONS;
+			if (budget < meshFaces)
+			{
+				break;
+			}
+			StaticScene.Zone zone = built.zones[order[k]];
+			top.displaced[order[k]] = true;
 			budget -= meshFaces;
 			if (zone.waterMesh == null)
 			{
-				zone.waterMesh = subdivide(zone, waterFaces);
+				zone.waterMesh = subdivide(zone, faces[k]);
 			}
 			dynamicWater.append(zone.waterMesh);
 		}

@@ -22,6 +22,10 @@ layout(set = 0, binding = 53, rg32f) uniform readonly image2D rippleField;
 layout(std430, set = 0, binding = 55) readonly buffer RippleParams { vec4 v[]; } ripple;
 
 const int GEOMETRY_WAVES = 8;
+// Zones are lifted out to this distance from the camera; the lift fades to nothing over the
+// last stretch so the lifted water meets the flat water beyond without a step.
+const float RANGE = 14.0 * 128.0;
+const float FADE = 384.0;
 
 float rippleHeight(vec2 xz) {
   vec2 base = ripple.v[0].xy;
@@ -89,6 +93,7 @@ void main() {
     if (ripples) {
       h += rippleHeight(xz);
     }
+    h *= 1.0 - smoothstep(RANGE - FADE, RANGE, distance(xz, u.cam.xz));
     // Up is -y.
     dynPos.v[o + 1] -= h;
   }
