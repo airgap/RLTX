@@ -155,9 +155,8 @@ final class Chrome
 
 	// Each opaque pixel is drawn toward grey, pushed through a contrast curve about the middle,
 	// and tinted; a zero pixel is transparent and stays so, and a result that would be zero is
-	// kept a shade above it for the same reason. Glass reads the stone's own bevels instead: its
-	// lit ridges become gold edges and everything else the key colour the compositor renders as
-	// a pane of liquid glass over the scene.
+	// kept a shade above it for the same reason. Glass keeps only the shape: every opaque pixel
+	// becomes the key colour the compositor renders as a pane of liquid glass over the scene.
 	private static void grade(int[] pixels, RltxConfig.Chrome skin)
 	{
 		if (skin == RltxConfig.Chrome.GLASS)
@@ -214,25 +213,13 @@ final class Chrome
 		}
 	}
 
+	// Every opaque pixel becomes the key colour: the pane's silhouette alone reaches the
+	// compositor, which draws the glass, its rim and its light from that shape.
 	private static void glass(int[] pixels)
 	{
 		for (int i = 0; i < pixels.length; ++i)
 		{
-			int p = pixels[i];
-			if (p == 0)
-			{
-				continue;
-			}
-			float l = (0.299f * (p >> 16 & 0xff) + 0.587f * (p >> 8 & 0xff) + 0.114f * (p & 0xff)) / 255f;
-			if (l > 0.58f)
-			{
-				float gold = 0.75f + 0.5f * (l - 0.58f);
-				int r = Math.round(Math.min(1f, 0.84f * gold) * 255f);
-				int g = Math.round(Math.min(1f, 0.70f * gold) * 255f);
-				int b = Math.round(Math.min(1f, 0.40f * gold) * 255f);
-				pixels[i] = r << 16 | g << 8 | b;
-			}
-			else
+			if (pixels[i] != 0)
 			{
 				pixels[i] = GLASS_KEY;
 			}
