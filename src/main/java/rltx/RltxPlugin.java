@@ -149,6 +149,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Ground ground;
 	private Chrome chrome;
 	private StyledMenu styledMenu;
+	private static final int GPU_FLAGS = DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0);
+	/** The stem of a photo just saved whose stock render is still to be drawn, or null. */
+	private String stockStem;
 	private PluginGlow glow;
 	private Footprints footprints;
 	private Ripples ripples;
@@ -441,6 +444,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			log.warn("Area settings not loaded from {}", AreaRules.FILE, e);
 		}
 		photo = new PhotoMode(client, config, configManager, drawManager, this::say);
+		photo.onSaved(stem ->
+		{
+			if (config.photoStock())
+			{
+				clientThread.invoke(() -> stockStem = stem);
+			}
+		});
 		freeCamera = new FreeCamera(client, config);
 		cinema = new Cinema(config, freeCamera, photo, drawManager, gson, this::say);
 		environment = new Environment(client, clientThread, config, configManager, okHttpClient, gson, cinema, frame);
@@ -502,7 +512,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				client.setDrawCallbacks(this);
 				// UNLIT_FACE_COLORS is deliberately absent: with it set from client start, actors stop
 				// being handed to drawDynamic. Face colours fall back to the client's lit colours.
-				client.setGpuFlags(DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0));
+				client.setGpuFlags(GPU_FLAGS);
 				// Rebuilds the interface buffer with an alpha channel.
 				client.resizeCanvas();
 
@@ -1432,6 +1442,23 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return argb;
 	}
 
+	// The client's own renderer draws the next frame as a baseline beside a photo: the GPU flags
+	// and the callbacks come off for that one frame and go back as soon as it has been drawn, so
+	// the client rasterises the scene itself, interface and all, and hands the image over.
+	private void captureStock()
+	{
+		String stem = stockStem;
+		stockStem = null;
+		client.setDrawCallbacks(null);
+		client.setGpuFlags(0);
+		drawManager.requestNextFrameListener(image ->
+		{
+			client.setGpuFlags(GPU_FLAGS);
+			client.setDrawCallbacks(this);
+			photo.saveStockAsync(image, stem);
+		});
+	}
+
 	@Override
 	public void draw(int overlayColor)
 	{
@@ -1490,6 +1517,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			compositor.drawUi(overlayColor, 0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
 		}
 		drawManager.processDrawComplete(PhotoMode::screenshot);
+		if (stockStem != null && gameState == GameState.LOGGED_IN)
+		{
+			captureStock();
+		}
 
 		try
 		{

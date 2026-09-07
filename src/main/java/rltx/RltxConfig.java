@@ -1189,6 +1189,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "photoStock",
+		name = "Stock render with each photo",
+		description = "Also saves the client's own render of the same view as a baseline beside the photo, drawn by its software renderer for one frame once the photo is taken. The interface is included and the frame is the window's size.",
+		section = cameraSection,
+		position = 27
+	)
+	default boolean photoStock()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
 		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",

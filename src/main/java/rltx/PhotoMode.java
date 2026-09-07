@@ -40,6 +40,8 @@ final class PhotoMode
 	private final ConfigManager configManager;
 	private final DrawManager drawManager;
 	private final Consumer<String> say;
+	/** Told the stem of every photo saved, for what is saved beside it. */
+	private Consumer<String> saved;
 
 	volatile boolean chromeHidden;
 	private boolean hintShown;
@@ -113,6 +115,36 @@ final class PhotoMode
 		this.configManager = configManager;
 		this.drawManager = drawManager;
 		this.say = say;
+	}
+
+	void onSaved(Consumer<String> saved)
+	{
+		this.saved = saved;
+	}
+
+	/** Saves the client's own render of the view beside the photo of the same name; copied here, since the client redraws into it. */
+	void saveStockAsync(Image image, String stem)
+	{
+		BufferedImage copy = new BufferedImage(image.getWidth(null), image.getHeight(null), BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = copy.createGraphics();
+		g.drawImage(image, 0, 0, null);
+		g.dispose();
+		Thread saver = new Thread(() ->
+		{
+			File file = new File(new File(RuneLite.SCREENSHOT_DIR, "RLTX"), stem + "-stock.png");
+			try
+			{
+				ImageIO.write(copy, "png", file);
+			}
+			catch (IOException e)
+			{
+				log.warn("Stock render not saved to {}", file, e);
+				return;
+			}
+			log.info("Stock render saved to {}", file);
+		}, "rltx-photo");
+		saver.setDaemon(true);
+		saver.start();
 	}
 
 	// The hotkeys take their keybinds through this so that their field initialisers, which run
@@ -251,6 +283,10 @@ final class PhotoMode
 		}
 		log.info("Photo saved to {}", file);
 		say.accept("Photo saved to " + file.getName());
+		if (saved != null)
+		{
+			saved.accept(stem);
+		}
 	}
 
 	// The finished frame as the interface sees it, read back from the framebuffer the client is
