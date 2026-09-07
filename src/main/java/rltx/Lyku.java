@@ -277,7 +277,8 @@ final class Lyku
 		body.addProperty("dataUrl", "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes));
 		String token = configManager.getConfiguration(RltxConfig.GROUP, TOKEN_KEY);
 		String workspace = configManager.getConfiguration(RltxConfig.GROUP, WORKSPACE_KEY);
-		post(API + "/api/uploadAvatar", RequestBody.create(JSON, gson.toJson(body)), token, workspace);
+		JsonObject reply = post(API + "/api/uploadAvatar", RequestBody.create(JSON, gson.toJson(body)), token, workspace);
+		log.info("Lyku profile picture updated: {} bytes of {}, now at {}", bytes.length, mime, reply.has("avatarUrl") ? reply.get("avatarUrl").getAsString() : "?");
 		say.accept("Lyku: profile picture updated to this outfit");
 	}
 
