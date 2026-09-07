@@ -57,6 +57,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Mist everywhere | false | Lay the ground mist over the whole scene instead of only swamps and graveyards. |
 | Rain speed | 100% (30 to 300) | How fast drops fall; 100 is about seven tiles a second for the heaviest drops. |
 | Rain streak length | 100% (30 to 300) | Length of each drop's streak; 100 is just under a tile. |
+| Mist indoors | false | Lets mist drift through roofed rooms as well. Off keeps it outside; an area can turn it on for a haunted or cursed place, as the bundled Draynor Manor area does. |
 | Lightning | true | Flashes of light during thunderstorms. |
 | Rain ripples | true | Rings spreading on water surfaces where raindrops land. |
 | Rain runoff | true | Simulate water on the terrain while it rains: it collects in hollows, runs down slopes into streams, and drains away afterwards, replacing the fixed puddle spots. |
