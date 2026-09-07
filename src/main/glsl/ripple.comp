@@ -13,7 +13,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 #include "frame.glsl"
 layout(push_constant) uniform Push {
   int pass; // 0 reads the first image and writes the second, 1 the reverse
-  int step;
+  int step; // which of the frame's substeps this is; walkers push on the first only
   int last;
   int passes;
 } pc;
@@ -33,7 +33,7 @@ const float DAMPING = 0.012;
 const float RESTORE = 0.003;
 const float RAIN_DEPTH = 3.5;
 const float WALKER_RADIUS = 22.0;
-const float LIMIT = 30.0;
+const float LIMIT = 12.0;
 
 ivec2 wrapped(ivec2 cell) {
   return ((cell % N) + N) % N;
@@ -119,7 +119,7 @@ void main() {
       + float(hash(texel + ivec2(0, 1), salt) < rainRate) + float(hash(texel - ivec2(0, 1), salt) < rainRate);
     next += around * (RAIN_DEPTH / 4.0);
   }
-  for (int i = 0; i < walkers; ++i) {
+  for (int i = 0; i < (pc.step == 0 ? walkers : 0); ++i) {
     vec4 w = ripple.v[3 + i];
     vec2 d = xz - w.xy;
     float x = dot(d, d) / (WALKER_RADIUS * WALKER_RADIUS);

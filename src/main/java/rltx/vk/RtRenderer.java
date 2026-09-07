@@ -2476,7 +2476,7 @@ public final class RtRenderer
 				int rippleGroups = RIPPLE_CELLS / 8;
 				for (int s = 0; s < params.rippleSteps; ++s)
 				{
-					pushPass(cmd, ripplePush, s & 1, 0, 0, 0);
+					pushPass(cmd, ripplePush, s & 1, s, 0, 0);
 					vkCmdDispatch(cmd, rippleGroups, rippleGroups, 1);
 					computeBarrier(cmd);
 				}

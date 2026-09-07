@@ -93,12 +93,12 @@ final class Ripples
 			return count;
 		}
 		float[] last = lastPosition.get(actor);
-		float speed = 0f;
-		if (last != null && dt > 0f)
+		float moved = 0f;
+		if (last != null)
 		{
 			float dx = lp.getX() - last[0];
 			float dz = lp.getY() - last[1];
-			speed = (float) Math.sqrt(dx * dx + dz * dz) / dt;
+			moved = (float) Math.sqrt(dx * dx + dz * dz);
 		}
 		if (last == null)
 		{
@@ -107,14 +107,16 @@ final class Ripples
 		}
 		last[0] = lp.getX();
 		last[1] = lp.getY();
-		if (!top.waterBed.isWater(plane, lp.getSceneX(), lp.getSceneY()))
+		// Only movement disturbs the water: the push is for the distance covered this frame, so a
+		// body standing in the river leaves it alone instead of driving the cells under it without end.
+		if (moved <= 0f || moved > 4 * CELL_SIZE * 8 || !top.waterBed.isWater(plane, lp.getSceneX(), lp.getSceneY()))
 		{
 			return count;
 		}
 		int o = (3 + count) * 4;
 		packed[o] = lp.getX();
 		packed[o + 1] = lp.getY();
-		packed[o + 2] = 0.25f + 1.6f * Math.min(speed / WAVE_SPEED, 1f);
+		packed[o + 2] = 1.2f * Math.min(moved / CELL_SIZE, 2f);
 		packed[o + 3] = 0f;
 		return count + 1;
 	}
