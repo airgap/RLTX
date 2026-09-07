@@ -13,6 +13,8 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.inject.Inject;
@@ -26,6 +28,7 @@ import net.runelite.api.Constants;
 import net.runelite.api.FloatProjection;
 import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
+import net.runelite.api.Animation;
 import net.runelite.api.Model;
 import net.runelite.api.NPC;
 import net.runelite.api.Perspective;
@@ -1248,28 +1251,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			return false;
 		}
-		final float stageX = -40000f, stageZ = -40000f, stageHalf = 1500f;
-		portraitOpaque.clear();
-		portraitTranslucent.clear();
-		framePusher.actor = true;
-		framePusher.push(model, 0, (int) stageX, 0, (int) stageZ, null, palette(), portraitOpaque, portraitTranslucent);
-		framePusher.actor = false;
-		int faces = portraitOpaque.faces();
-		if (faces == 0)
+		final float stageX = -40000f, stageZ = -40000f;
+		float[] span = stage(model, stageX, stageZ);
+		if (span == null)
 		{
 			return false;
 		}
-		float[] pos = portraitOpaque.positions();
-		float top = Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
-		for (int i = 0; i < faces * GeometryBuffer.FLOATS_PER_FACE; i += 3)
-		{
-			top = Math.min(top, pos[i + 1]);
-			bottom = Math.max(bottom, pos[i + 1]);
-		}
-		// The stage, a grey floor to stand on and cast a shadow across.
-		int grey = 0xff6a6a6a;
-		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ - stageHalf, grey);
-		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX - stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, grey);
+		float top = span[0], bottom = span[1];
 
 		final int width = 1024, height = 1536;
 		float modelHeight = Math.max(bottom - top, 60f);
@@ -1367,6 +1355,48 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		burst(48, false, portraitOpaque, portraitTranslucent, empty);
 		glSignalPending = false;
 		int[] argb = renderer.readbackOutput();
+
+		// The idle cycle, pose by pose: the client is asked for the model at each frame of the
+		// idle animation in turn, and each is rendered smaller and more briefly than the still.
+		List<int[]> cycle = null;
+		int[] durations = null;
+		final int cycleWidth = 384, cycleHeight = 576;
+		Animation idle = config.outfitAnimation() ? client.loadAnimation(player.getIdlePoseAnimation()) : null;
+		if (idle != null && idle.getNumFrames() > 1)
+		{
+			int count = idle.getNumFrames();
+			int[] lengths = idle.getFrameLengths();
+			int step = (count + CYCLE_POSES - 1) / CYCLE_POSES;
+			int savedPose = player.getPoseAnimationFrame();
+			cycle = new ArrayList<>();
+			List<Integer> millis = new ArrayList<>();
+			frame.zoom = cycleHeight * distance / (1.3f * modelHeight);
+			renderer.ensureOutput(cycleWidth, cycleHeight, 1f, -1, false);
+			for (int f = 0; f < count; f += step)
+			{
+				player.setPoseAnimationFrame(f);
+				Model posed = player.getModel();
+				if (posed == null || stage(posed, stageX, stageZ) == null)
+				{
+					continue;
+				}
+				burst(CYCLE_SAMPLES, false, portraitOpaque, portraitTranslucent, empty);
+				cycle.add(renderer.readbackOutput());
+				int duration = 0;
+				for (int k = f; k < Math.min(count, f + step); ++k)
+				{
+					// Frame lengths are in client ticks of twenty milliseconds.
+					duration += (lengths != null && k < lengths.length ? Math.max(lengths[k], 1) : 1) * 20;
+				}
+				millis.add(duration);
+			}
+			player.setPoseAnimationFrame(savedPose);
+			durations = new int[millis.size()];
+			for (int i = 0; i < durations.length; ++i)
+			{
+				durations[i] = millis.get(i);
+			}
+		}
 		renderer.ensureOutput(canvasWidth, canvasHeight, 1f, -1, false);
 		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 
@@ -1431,18 +1461,53 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.ripples = ripples;
 
 		photo.saveOutfitAsync(argb, width, height, name);
-		if (config.lykuAvatar())
+		boolean toLyku = config.lykuAvatar();
+		if (toLyku && !lyku.connected())
 		{
-			if (lyku.connected())
-			{
-				lyku.setAvatarAsync(argb, width, height);
-			}
-			else
-			{
-				say("Lyku: not connected, so the profile picture stays; tick Connect to Lyku in the settings");
-			}
+			say("Lyku: not connected, so the profile picture stays; tick Connect to Lyku in the settings");
+			toLyku = false;
+		}
+		if (cycle != null && cycle.size() > 1)
+		{
+			photo.saveOutfitAnimationAsync(cycle, durations, cycleWidth, cycleHeight, name, toLyku ? lyku : null);
+		}
+		else if (toLyku)
+		{
+			lyku.setAvatarAsync(argb, width, height);
 		}
 		return true;
+	}
+
+	/** How many poses of the idle cycle are rendered at most, and how many samples each gets. */
+	private static final int CYCLE_POSES = 20;
+	private static final int CYCLE_SAMPLES = 12;
+
+	// Fills the portrait buffers with a model standing at the stage's centre and the grey floor
+	// under it; returns the model's top and bottom, or null when it has no faces.
+	private float[] stage(Model model, float stageX, float stageZ)
+	{
+		final float stageHalf = 1500f;
+		portraitOpaque.clear();
+		portraitTranslucent.clear();
+		framePusher.actor = true;
+		framePusher.push(model, 0, (int) stageX, 0, (int) stageZ, null, palette(), portraitOpaque, portraitTranslucent);
+		framePusher.actor = false;
+		int faces = portraitOpaque.faces();
+		if (faces == 0)
+		{
+			return null;
+		}
+		float[] pos = portraitOpaque.positions();
+		float top = Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
+		for (int i = 0; i < faces * GeometryBuffer.FLOATS_PER_FACE; i += 3)
+		{
+			top = Math.min(top, pos[i + 1]);
+			bottom = Math.max(bottom, pos[i + 1]);
+		}
+		int grey = 0xff6a6a6a;
+		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ - stageHalf, grey);
+		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX - stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, grey);
+		return new float[]{top, bottom};
 	}
 
 	// Holds this frame's scene still and accumulates many more samples of it before it is shown,

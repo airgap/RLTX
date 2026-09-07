@@ -152,6 +152,63 @@ final class PhotoMode
 		saver.start();
 	}
 
+	/**
+	 * Saves the idle cycle as a looping WebP beside the portrait, each frame cropped to the square
+	 * that holds head to hips, and hands the bytes to Lyku when asked. Lyku takes two megabytes at
+	 * most, so a cycle that comes out larger loses every other pose until it fits.
+	 */
+	void saveOutfitAnimationAsync(java.util.List<int[]> frames, int[] durations, int width, int height, String name, Lyku lyku)
+	{
+		Thread worker = new Thread(() ->
+		{
+			int side = Math.min(width, height);
+			int top = Math.min(height - side, Math.round(0.05f * height));
+			java.util.List<int[]> squares = new java.util.ArrayList<>();
+			for (int[] frame : frames)
+			{
+				int[] square = new int[side * side];
+				for (int y = 0; y < side; ++y)
+				{
+					System.arraycopy(frame, (top + y) * width, square, y * side, side);
+				}
+				squares.add(square);
+			}
+			int[] shown = durations.clone();
+			byte[] bytes = rltx.media.WebP.animation(side, side, squares, shown);
+			while (bytes.length > Lyku.MAX_AVATAR_BYTES && squares.size() > 4)
+			{
+				java.util.List<int[]> fewer = new java.util.ArrayList<>();
+				int[] merged = new int[(squares.size() + 1) / 2];
+				for (int i = 0; i < squares.size(); i += 2)
+				{
+					fewer.add(squares.get(i));
+					merged[i / 2] = shown[i] + (i + 1 < shown.length ? shown[i + 1] : 0);
+				}
+				squares = fewer;
+				shown = merged;
+				bytes = rltx.media.WebP.animation(side, side, squares, shown);
+			}
+			File file = new File(Outfits.FOLDER, name + ".webp");
+			try
+			{
+				java.nio.file.Files.write(file.toPath(), bytes);
+			}
+			catch (IOException e)
+			{
+				log.warn("Outfit animation not saved to {}", file, e);
+				return;
+			}
+			log.info("Outfit animation saved to {} ({} poses, {} bytes)", file, squares.size(), bytes.length);
+			say.accept("Outfit animation saved to " + file.getName());
+			if (lyku != null)
+			{
+				lyku.setAvatarBytesAsync(bytes, "image/webp");
+			}
+		}, "rltx-photo");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
 	/** Saves the client's own render of the view beside the photo of the same name; copied here, since the client redraws into it. */
 	void saveStockAsync(Image image, String stem)
 	{

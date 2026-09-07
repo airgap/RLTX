@@ -47,6 +47,7 @@ final class Lyku
 	private static final MediaType FORM = MediaType.get("application/x-www-form-urlencoded");
 	/** Lyku accepts up to two megabytes; a square of this size from the portrait is far under. */
 	private static final int AVATAR_SIZE = 512;
+	static final int MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
 	private final OkHttpClient http;
 	private final Gson gson;
@@ -224,12 +225,7 @@ final class Lyku
 				g.dispose();
 				ByteArrayOutputStream png = new ByteArrayOutputStream();
 				ImageIO.write(avatar, "png", png);
-				JsonObject body = new JsonObject();
-				body.addProperty("dataUrl", "data:image/png;base64," + Base64.getEncoder().encodeToString(png.toByteArray()));
-				String token = configManager.getConfiguration(RltxConfig.GROUP, TOKEN_KEY);
-				String workspace = configManager.getConfiguration(RltxConfig.GROUP, WORKSPACE_KEY);
-				post(API + "/api/uploadAvatar", RequestBody.create(JSON, gson.toJson(body)), token, workspace);
-				say.accept("Lyku: profile picture updated to this outfit");
+				uploadAvatar(png.toByteArray(), "image/png");
 			}
 			catch (IOException | RuntimeException e)
 			{
@@ -239,6 +235,39 @@ final class Lyku
 		}, "rltx-lyku");
 		worker.setDaemon(true);
 		worker.start();
+	}
+
+	/** Puts an image already encoded, such as a looping WebP of the idle cycle, up as the profile picture. */
+	void setAvatarBytesAsync(byte[] bytes, String mime)
+	{
+		Thread worker = new Thread(() ->
+		{
+			try
+			{
+				uploadAvatar(bytes, mime);
+			}
+			catch (IOException | RuntimeException e)
+			{
+				log.warn("Lyku avatar not updated", e);
+				say.accept("Lyku: profile picture not updated, " + e.getMessage());
+			}
+		}, "rltx-lyku");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	private void uploadAvatar(byte[] bytes, String mime) throws IOException
+	{
+		if (bytes.length > MAX_AVATAR_BYTES)
+		{
+			throw new IOException("the picture is over Lyku's two megabyte limit");
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("dataUrl", "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes));
+		String token = configManager.getConfiguration(RltxConfig.GROUP, TOKEN_KEY);
+		String workspace = configManager.getConfiguration(RltxConfig.GROUP, WORKSPACE_KEY);
+		post(API + "/api/uploadAvatar", RequestBody.create(JSON, gson.toJson(body)), token, workspace);
+		say.accept("Lyku: profile picture updated to this outfit");
 	}
 
 	// A JSON reply to a POST; a token and workspace, when given, name the account and the tenant.

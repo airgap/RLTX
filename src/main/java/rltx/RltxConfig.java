@@ -1237,6 +1237,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "outfitAnimation",
+		name = "Animated outfit portrait",
+		description = "Renders the whole idle cycle of a new outfit, pose by pose, and saves it beside the portrait as a looping WebP, which then serves as the Lyku profile picture when that is on. The game pauses for a few seconds while the poses render.",
+		section = cameraSection,
+		position = 31
+	)
+	default boolean outfitAnimation()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
 		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",
