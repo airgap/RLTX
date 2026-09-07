@@ -145,6 +145,14 @@ public final class GroundTextures
 		}
 	}
 
+	private static int lerp(int a, int b, float t)
+	{
+		int r = Math.round((a >> 16 & 0xff) + ((b >> 16 & 0xff) - (a >> 16 & 0xff)) * t);
+		int g = Math.round((a >> 8 & 0xff) + ((b >> 8 & 0xff) - (a >> 8 & 0xff)) * t);
+		int bl = Math.round((a & 0xff) + ((b & 0xff) - (a & 0xff)) * t);
+		return r << 16 | g << 8 | bl;
+	}
+
 	private static byte detail(int channel, double mean)
 	{
 		return (byte) Math.min(255, Math.round(channel / mean * 127.5));
@@ -180,12 +188,35 @@ public final class GroundTextures
 	}
 
 	// Box filter down to the array's size; the pack's textures are 256 or 512 square.
+	// Larger sources are averaged down in blocks; smaller ones are enlarged with bilinear samples
+	// that wrap, since the textures tile.
 	private static int[] resample(BufferedImage image, int size)
 	{
 		int w = image.getWidth();
 		int h = image.getHeight();
 		int[] src = image.getRGB(0, 0, w, h, null, 0, w);
 		int[] out = new int[size * size];
+		if (w < size || h < size)
+		{
+			for (int y = 0; y < size; ++y)
+			{
+				float fy = (y + 0.5f) * h / size - 0.5f;
+				int y0 = (int) Math.floor(fy);
+				float ty = fy - y0;
+				int ya = ((y0 % h) + h) % h;
+				int yb = (ya + 1) % h;
+				for (int x = 0; x < size; ++x)
+				{
+					float fx = (x + 0.5f) * w / size - 0.5f;
+					int x0 = (int) Math.floor(fx);
+					float tx = fx - x0;
+					int xa = ((x0 % w) + w) % w;
+					int xb = (xa + 1) % w;
+					out[y * size + x] = lerp(lerp(src[ya * w + xa], src[ya * w + xb], tx), lerp(src[yb * w + xa], src[yb * w + xb], tx), ty);
+				}
+			}
+			return out;
+		}
 		int bx = Math.max(w / size, 1);
 		int by = Math.max(h / size, 1);
 		for (int y = 0; y < size; ++y)
