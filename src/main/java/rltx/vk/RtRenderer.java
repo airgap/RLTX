@@ -398,6 +398,7 @@ public final class RtRenderer
 	private VkBuf rippleParams;
 	private VkBuf waterMaskBuffer;
 	private long ripplePipeline;
+	private long displacePipeline;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -809,6 +810,7 @@ public final class RtRenderer
 		upscalePipeline = createComputePipeline("/rltx/upscale.comp.spv");
 		motionPipeline = createComputePipeline("/rltx/motion.comp.spv");
 		ripplePipeline = createComputePipeline("/rltx/ripple.comp.spv");
+		displacePipeline = createComputePipeline("/rltx/displace.comp.spv");
 	}
 
 	private long createComputePipeline(String resource)
@@ -2389,6 +2391,26 @@ public final class RtRenderer
 				VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT);
 			recordZoneUpdates(cmd);
+			if (params.ripples)
+			{
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
+				// The ripple field steps an even number of times so its result is in the first image.
+				if (rippleUninitialized)
+				{
+					rippleUninitialized = false;
+					imageBarrier(cmd, rippleA.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+					imageBarrier(cmd, rippleB.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+				}
+				ByteBuffer ripplePush = stack.malloc(PUSH_CONSTANT_SIZE);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ripplePipeline);
+				int rippleGroups = RIPPLE_CELLS / 8;
+				for (int s = 0; s < params.rippleSteps; ++s)
+				{
+					pushPass(cmd, ripplePush, s & 1, 0, 0, 0);
+					vkCmdDispatch(cmd, rippleGroups, rippleGroups, 1);
+					computeBarrier(cmd);
+				}
+			}
 
 			if (dynamicFaces > 0)
 			{
@@ -2403,7 +2425,20 @@ public final class RtRenderer
 				memoryBarrier(cmd,
 					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 					VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+					VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+				if (waterFaces > 0)
+				{
+					// Water vertices take their wave and ripple heights here, before the build reads them.
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
+					ByteBuffer displacePush = stack.malloc(PUSH_CONSTANT_SIZE);
+					pushPass(cmd, displacePush, opaqueFaces + translucentFaces, waterFaces, 0, 0);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, displacePipeline);
+					vkCmdDispatch(cmd, (waterFaces + 63) / 64, 1, 1);
+					memoryBarrier(cmd,
+						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+				}
 				stamp(cmd, 1);
 
 				if (opaqueFaces > 0)
@@ -2473,25 +2508,6 @@ public final class RtRenderer
 			int groupsX = (internalWidth + 7) / 8;
 			int groupsY = (internalHeight + 7) / 8;
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
-			if (params.ripples)
-			{
-				// The ripple field steps an even number of times so its result is in the first image.
-				if (rippleUninitialized)
-				{
-					rippleUninitialized = false;
-					imageBarrier(cmd, rippleA.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
-					imageBarrier(cmd, rippleB.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
-				}
-				ByteBuffer ripplePush = stack.malloc(PUSH_CONSTANT_SIZE);
-				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ripplePipeline);
-				int rippleGroups = RIPPLE_CELLS / 8;
-				for (int s = 0; s < params.rippleSteps; ++s)
-				{
-					pushPass(cmd, ripplePush, s & 1, 0, 0, 0);
-					vkCmdDispatch(cmd, rippleGroups, rippleGroups, 1);
-					computeBarrier(cmd);
-				}
-			}
 			// Every stamp is written every frame, run or not, so the readback never waits on one.
 			stamp(cmd, 3);
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tracePipeline);
@@ -3074,6 +3090,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, upscalePipeline, null);
 		vkDestroyPipeline(device, motionPipeline, null);
 		vkDestroyPipeline(device, ripplePipeline, null);
+		vkDestroyPipeline(device, displacePipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);
 		vkDestroyDescriptorSetLayout(device, descriptorLayout, null);

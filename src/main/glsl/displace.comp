@@ -1,0 +1,95 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Lifts the water vertices of the dynamic set by their waves before the acceleration structure
+// is built from them: the eight longest waves of the shading spectrum, as the water normal
+// computes them, plus the simulated ripples. The client uploads the water flat and finely cut,
+// so all the motion is worked out here.
+
+layout(local_size_x = 64) in;
+
+#include "frame.glsl"
+layout(push_constant) uniform Push {
+  int pass; // the first water face of the dynamic set
+  int step; // how many water faces follow it
+  int last;
+  int passes;
+} pc;
+layout(std430, set = 0, binding = 4) buffer DynPos { float v[]; } dynPos;
+layout(std430, set = 0, binding = 21) readonly buffer DynTex { uint t[]; } dynTex;
+layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } waterTypes;
+layout(set = 0, binding = 53, rg32f) uniform readonly image2D rippleField;
+layout(std430, set = 0, binding = 55) readonly buffer RippleParams { vec4 v[]; } ripple;
+
+const int GEOMETRY_WAVES = 8;
+
+float rippleHeight(vec2 xz) {
+  vec2 base = ripple.v[0].xy;
+  float cellSize = ripple.v[1].x;
+  vec2 c = xz / cellSize - 0.5;
+  if (c.x < base.x || c.y < base.y || c.x >= base.x + 511.0 || c.y >= base.y + 511.0) {
+    return 0.0;
+  }
+  ivec2 i0 = ivec2(floor(c));
+  vec2 f = c - vec2(i0);
+  ivec2 t00 = ((i0 % 512) + 512) % 512;
+  ivec2 t11 = (((i0 + 1) % 512) + 512) % 512;
+  float h00 = imageLoad(rippleField, t00).x;
+  float h10 = imageLoad(rippleField, ivec2(t11.x, t00.y)).x;
+  float h01 = imageLoad(rippleField, ivec2(t00.x, t11.y)).x;
+  float h11 = imageLoad(rippleField, t11).x;
+  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
+// The same wave table the shading normal builds, for its eight longest waves: indices 16 to 23.
+float waveHeight(vec2 xz, float t, float windAngle) {
+  float h = 0.0;
+  for (int w = 0; w < GEOMETRY_WAVES; ++w) {
+    float fi = float(24 - GEOMETRY_WAVES + w);
+    float h1 = fract(sin(fi * 12.9898) * 43758.5453);
+    float h2 = fract(sin(fi * 78.233 + 1.0) * 43758.5453);
+    float h3 = fract(sin(fi * 37.719 + 2.0) * 43758.5453);
+    float wavelength = 15.0 * pow(400.0 / 15.0, (fi + h1) / 24.0);
+    float k = 6.2831853 / wavelength;
+    float spread = 0.35 + (1.2 - 0.35) * (1.0 - fi / 24.0);
+    float a = windAngle + (h2 - 0.5) * 2.0 * spread;
+    float omega = sqrt(9.8 * 128.0 * k);
+    // The normal's slope amplitude over k is the height amplitude of the same wave.
+    float amplitude = 2.0 * 0.22 * pow(wavelength / 400.0, 0.25) / k;
+    float phase = dot(vec2(cos(a), sin(a)), xz) * k - omega * t + h3 * 6.2831853;
+    float s = 0.5 + 0.5 * sin(phase);
+    h += amplitude * (s * sqrt(s) - 0.42);
+  }
+  return h;
+}
+
+void main() {
+  int face = pc.pass + int(gl_GlobalInvocationID.x);
+  if (int(gl_GlobalInvocationID.x) >= pc.step) {
+    return;
+  }
+  uint tex = dynTex.t[face];
+  uint typeIndex = (tex >> 16) & 0xFFu;
+  if (typeIndex == 0u) {
+    return;
+  }
+  vec4 a = waterTypes.v[(typeIndex - 1u) * 4u];
+  vec4 b = waterTypes.v[(typeIndex - 1u) * 4u + 1u];
+  vec4 d = waterTypes.v[(typeIndex - 1u) * 4u + 3u];
+  bool isFlat = (uint(a.w) & 1u) != 0u;
+  float strength = isFlat ? 0.0 : d.z * u.path.w;
+  float t = u.weather3.x * 0.9 / max(b.w, 0.05);
+  vec2 windDir = dot(u.wind.xy, u.wind.xy) > 1.0 ? normalize(u.wind.xy) : vec2(0.62, 0.78);
+  float windAngle = atan(windDir.y, windDir.x);
+  bool ripples = (u.flags2.x & 8u) != 0u;
+  for (int v = 0; v < 3; ++v) {
+    int o = (face * 3 + v) * 3;
+    vec2 xz = vec2(dynPos.v[o], dynPos.v[o + 2]);
+    float h = strength > 0.0 ? waveHeight(xz, t, windAngle) * strength : 0.0;
+    if (ripples) {
+      h += rippleHeight(xz);
+    }
+    // Up is -y.
+    dynPos.v[o + 1] -= h;
+  }
+}

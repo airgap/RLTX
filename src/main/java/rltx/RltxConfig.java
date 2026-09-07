@@ -1956,13 +1956,13 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "waveGeometry",
 		name = "Wave geometry near the camera",
-		description = "Water within fourteen tiles rises and falls as real geometry, so shorelines, pillars and low views meet moving waves. Costs client-thread time each frame in proportion to the water in view; watch the frame rate before leaving it on.",
+		description = "Water within fourteen tiles rises and falls as real geometry, cut finely enough to carry the simulated ripples, so shorelines, pillars and low views meet moving water. The lifting runs on the GPU.",
 		section = surfacesSection,
 		position = 43
 	)
 	default boolean waveGeometry()
 	{
-		return false;
+		return true;
 	}
 
 	@ConfigItem(

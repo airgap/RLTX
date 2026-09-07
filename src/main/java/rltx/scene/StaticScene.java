@@ -20,6 +20,8 @@ public final class StaticScene
 		public final boolean[] groupTranslucent;
 		/** Water surfaces, kept apart so shadow rays can pass through them. */
 		public final boolean[] groupWater;
+		/** The water faces cut fine and flat for the dynamic path, built on first use and kept with the zone. */
+		public GeometryBuffer waterMesh;
 		/** Foliage that sways in the wind; near the camera these groups are replaced by swayed copies each frame. */
 		public final boolean[] groupSway;
 		/** The foliage faces of this zone in their resting pose, and per vertex how freely each moves. */
