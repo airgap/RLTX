@@ -75,6 +75,7 @@ import rltx.scene.Palette;
 import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.scene.TextureCutouts;
+import rltx.scene.TextureUpscaler;
 import rltx.scene.WaterSim;
 import rltx.scene.lights.SceneLights;
 import rltx.vk.FrameParams;
@@ -1217,11 +1218,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.resetHistory();
 	}
 
-	// The client decodes its textures lazily; once every one is available they are packed into
-	// one array and uploaded. Brightness is forced to 1 so the gamma is applied only by us.
+	// The client decodes its textures lazily; once every one is available they are gathered on
+	// the client thread, enlarged and given mip levels on a worker, then uploaded as one array.
+	// Brightness is forced to 1 so the gamma is applied only by us.
+	private boolean texturesBusy;
+
 	private void ensureGameTextures()
 	{
-		if (gameTexturesUploaded || !(config.textures() || config.terrainTextures()))
+		if (gameTexturesUploaded || texturesBusy || !(config.textures() || config.terrainTextures()))
 		{
 			return;
 		}
@@ -1242,87 +1246,145 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				return;
 			}
 		}
-
-		final int size = 128;
 		if (textures.length > GroundTextures.BASE)
 		{
 			throw new IllegalStateException("The client has " + textures.length + " textures; ground detail layers start at " + GroundTextures.BASE);
 		}
-		int layers = GroundTextures.BASE + GroundTextures.layerCount();
-		ByteBuffer packed = MemoryUtil.memCalloc(layers * size * size * 4);
-		java.util.BitSet cutouts = new java.util.BitSet();
-		try
+
+		final int size = 128;
+		int[][] pixels = new int[textures.length][];
+		float[] scroll = new float[textures.length * 2];
+		double brightness = provider.getBrightness();
+		provider.setBrightness(1.0);
+		for (int id = 0; id < textures.length; ++id)
 		{
-			double brightness = provider.getBrightness();
-			provider.setBrightness(1.0);
-			int uploaded = 0;
-			for (int id = 0; id < textures.length; ++id)
+			Texture texture = textures[id];
+			if (texture == null)
 			{
-				if (textures[id] == null)
+				continue;
+			}
+			int[] loaded = provider.load(id);
+			if (loaded == null || loaded.length != size * size)
+			{
+				log.warn("Texture {} has {} pixels; expected {}x{}", id, loaded == null ? 0 : loaded.length, size, size);
+				continue;
+			}
+			pixels[id] = loaded.clone();
+			float speed = texture.getAnimationSpeed();
+			switch (texture.getAnimationDirection())
+			{
+				case 1:
+					scroll[id * 2 + 1] = -speed;
+					break;
+				case 3:
+					scroll[id * 2 + 1] = speed;
+					break;
+				case 2:
+					scroll[id * 2] = -speed;
+					break;
+				case 4:
+					scroll[id * 2] = speed;
+					break;
+				default:
+					break;
+			}
+		}
+		provider.setBrightness(brightness);
+
+		int target = config.textureUpscale() == RltxConfig.TextureUpscale.OFF ? size : size * 4;
+		File folder = new File(RuneLite.RUNELITE_DIR, "rltx/textures");
+		texturesBusy = true;
+		Thread worker = new Thread(() ->
+		{
+			int layers = GroundTextures.BASE + GroundTextures.layerCount();
+			int levels = TextureUpscaler.levels(target);
+			long total = 0;
+			for (int level = 0; level < levels; ++level)
+			{
+				total += (long) layers * (target >> level) * (target >> level) * 4;
+			}
+			ByteBuffer packed = MemoryUtil.memCalloc((int) total);
+			java.util.stream.IntStream.range(0, pixels.length).parallel().forEach(id ->
+			{
+				int[] source = pixels[id];
+				if (source == null)
 				{
-					continue;
+					return;
 				}
-				int[] pixels = provider.load(id);
-				if (pixels == null || pixels.length != size * size)
+				// The client marks a transparent texel with a zero pixel; here it becomes zero alpha.
+				int[] argb = new int[source.length];
+				for (int i = 0; i < source.length; ++i)
 				{
-					log.warn("Texture {} has {} pixels; expected {}x{}", id, pixels == null ? 0 : pixels.length, size, size);
-					continue;
+					argb[i] = source[i] == 0 ? 0 : 0xff000000 | source[i];
 				}
-				int base = id * size * size * 4;
-				for (int i = 0; i < pixels.length; ++i)
+				TextureUpscaler.export(new File(folder, "original/" + id + ".png"), argb, size);
+				int[] big = TextureUpscaler.upscaled(argb, size, target, new File(folder, "upscaled/" + id + ".png"));
+				writeLayer(packed, 0, layers, target, id, big);
+			});
+			GroundTextures.pack(packed, target);
+			java.util.stream.IntStream.range(0, layers).parallel().forEach(layer ->
+			{
+				int[] argb = readLayer(packed, layers, target, layer);
+				int extent = target;
+				long offset = 0;
+				for (int level = 1; level < levels; ++level)
 				{
-					int rgb = pixels[i];
-					if (rgb == 0)
+					offset += (long) layers * extent * extent * 4;
+					argb = TextureUpscaler.halved(argb, extent);
+					extent /= 2;
+					writeLayer(packed, offset, layers, extent, layer, argb);
+				}
+			});
+			java.util.BitSet cutouts = TextureUpscaler.cutouts(pixels);
+			clientThread.invoke(() ->
+			{
+				try
+				{
+					if (renderer != null)
 					{
-						cutouts.set(id);
-						continue;
+						renderer.setTextureAnimation(scroll);
+						renderer.setTextureArray(layers, target, levels, packed);
+						frame.textureSize = target;
+						gameTexturesUploaded = true;
+						// Faces with cutout textures need the non-opaque path; reclassify the static scene.
+						TextureCutouts.set(cutouts);
+						staticDirty = true;
+						log.info("Uploaded {} game textures at {}x{}, {} with cutouts", pixels.length, target, target, cutouts.cardinality());
 					}
-					int o = base + i * 4;
-					packed.put(o, (byte) (rgb >> 16)).put(o + 1, (byte) (rgb >> 8)).put(o + 2, (byte) rgb).put(o + 3, (byte) 0xff);
 				}
-				++uploaded;
-			}
-			provider.setBrightness(brightness);
-			float[] scroll = new float[textures.length * 2];
-			for (int id = 0; id < textures.length; ++id)
-			{
-				Texture texture = textures[id];
-				if (texture == null)
+				finally
 				{
-					continue;
+					MemoryUtil.memFree(packed);
+					texturesBusy = false;
 				}
-				float speed = texture.getAnimationSpeed();
-				switch (texture.getAnimationDirection())
-				{
-					case 1:
-						scroll[id * 2 + 1] = -speed;
-						break;
-					case 3:
-						scroll[id * 2 + 1] = speed;
-						break;
-					case 2:
-						scroll[id * 2] = -speed;
-						break;
-					case 4:
-						scroll[id * 2] = speed;
-						break;
-					default:
-						break;
-				}
-			}
-			renderer.setTextureAnimation(scroll);
-			GroundTextures.pack(packed, size);
-			renderer.setTextureArray(layers, size, packed);
-			gameTexturesUploaded = true;
-			// Faces with cutout textures need the non-opaque path; reclassify the static scene.
-			TextureCutouts.set(cutouts);
-			staticDirty = true;
-			log.info("Uploaded {} game textures, {} with cutouts", uploaded, cutouts.cardinality());
-		}
-		finally
+			});
+		}, "rltx-textures");
+		worker.setDaemon(true);
+		worker.start();
+	}
+
+	// One layer of one mip level of the packed array, as RGBA bytes; a zero alpha texel stays zero.
+	private static void writeLayer(ByteBuffer packed, long levelOffset, int layers, int extent, int layer, int[] argb)
+	{
+		int base = (int) (levelOffset + (long) layer * extent * extent * 4);
+		for (int i = 0; i < argb.length; ++i)
 		{
-			MemoryUtil.memFree(packed);
+			int p = argb[i];
+			int o = base + i * 4;
+			packed.put(o, (byte) (p >> 16)).put(o + 1, (byte) (p >> 8)).put(o + 2, (byte) p).put(o + 3, (byte) (p >>> 24));
 		}
+	}
+
+	private static int[] readLayer(ByteBuffer packed, int layers, int extent, int layer)
+	{
+		int base = layer * extent * extent * 4;
+		int[] argb = new int[extent * extent];
+		for (int i = 0; i < argb.length; ++i)
+		{
+			int o = base + i * 4;
+			argb[i] = (packed.get(o + 3) & 0xff) << 24 | (packed.get(o) & 0xff) << 16 | (packed.get(o + 1) & 0xff) << 8 | (packed.get(o + 2) & 0xff);
+		}
+		return argb;
 	}
 
 	@Override

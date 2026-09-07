@@ -149,6 +149,8 @@ public final class FrameParams
 	/** Whether the water ripple field is simulated and shaded this frame, and how many even steps it takes. */
 	public boolean ripples;
 	public int rippleSteps;
+	/** Texels along a side of the game textures as uploaded, for choosing mip levels. */
+	public int textureSize = 128;
 	/** Display-space colour of the route glow, and how many route entries were uploaded; 0 draws none. */
 	public float guideR, guideG, guideB;
 	public int guideCount;

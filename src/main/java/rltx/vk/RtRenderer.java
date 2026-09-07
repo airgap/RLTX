@@ -539,7 +539,7 @@ public final class RtRenderer
 		whiteTexel.put((byte) 0xff).put((byte) 0xff).put((byte) 0xff).put((byte) 0xff).flip();
 		try
 		{
-			setTextureArray(1, 1, whiteTexel);
+			setTextureArray(1, 1, 1, whiteTexel);
 		}
 		finally
 		{
@@ -575,11 +575,11 @@ public final class RtRenderer
 			VkSamplerCreateInfo info = VkSamplerCreateInfo.calloc(stack).sType$Default()
 				.magFilter(VK_FILTER_LINEAR)
 				.minFilter(VK_FILTER_LINEAR)
-				.mipmapMode(VK_SAMPLER_MIPMAP_MODE_NEAREST)
+				.mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR)
 				.addressModeU(VK_SAMPLER_ADDRESS_MODE_REPEAT)
 				.addressModeV(VK_SAMPLER_ADDRESS_MODE_REPEAT)
 				.addressModeW(VK_SAMPLER_ADDRESS_MODE_REPEAT)
-				.maxLod(0f);
+				.maxLod(VK_LOD_CLAMP_NONE);
 			LongBuffer pSampler = stack.mallocLong(1);
 			check(vkCreateSampler(device, info, null, pSampler), "vkCreateSampler");
 			textureSampler = pSampler.get(0);
@@ -594,10 +594,11 @@ public final class RtRenderer
 	}
 
 	/**
-	 * Replaces the game texture array: {@code layers} square textures of {@code size} pixels,
-	 * tightly packed RGBA8 one after another. Blocks until the upload completes.
+	 * Replaces the game texture array: {@code layers} square textures of {@code size} pixels with
+	 * their mip chain, tightly packed RGBA8 as all layers of level 0, then all layers of level 1,
+	 * and so on down to one texel. Blocks until the upload completes.
 	 */
-	public void setTextureArray(int layers, int size, ByteBuffer rgba)
+	public void setTextureArray(int layers, int size, int levels, ByteBuffer rgba)
 	{
 		idle();
 		if (gameTextures != null)
@@ -605,10 +606,14 @@ public final class RtRenderer
 			destroyImage(gameTextures);
 			gameTextures = null;
 		}
-		gameTextures = createImage(size, size, layers, VK_FORMAT_R8G8B8A8_UNORM,
+		gameTextures = createImage(size, size, layers, levels, VK_FORMAT_R8G8B8A8_UNORM,
 			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
 
-		long bytes = (long) layers * size * size * 4;
+		long bytes = 0;
+		for (int level = 0; level < levels; ++level)
+		{
+			bytes += (long) layers * (size >> level) * (size >> level) * 4;
+		}
 		VkBuf staging = ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		MemoryUtil.memCopy(MemoryUtil.memAddress(rgba), MemoryUtil.memAddress(staging.mapped), bytes);
@@ -618,11 +623,17 @@ public final class RtRenderer
 		{
 			imageLayout(upload, gameTextures.image, layers, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
-			VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
-			region.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0);
-			region.get(0).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(layers);
-			region.get(0).imageExtent().width(size).height(size).depth(1);
-			vkCmdCopyBufferToImage(upload, staging.buffer, gameTextures.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+			VkBufferImageCopy.Buffer regions = VkBufferImageCopy.calloc(levels, stack);
+			long offset = 0;
+			for (int level = 0; level < levels; ++level)
+			{
+				int extent = size >> level;
+				regions.get(level).bufferOffset(offset).bufferRowLength(0).bufferImageHeight(0);
+				regions.get(level).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(level).baseArrayLayer(0).layerCount(layers);
+				regions.get(level).imageExtent().width(extent).height(extent).depth(1);
+				offset += (long) layers * extent * extent * 4;
+			}
+			vkCmdCopyBufferToImage(upload, staging.buffer, gameTextures.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions);
 			imageLayout(upload, gameTextures.image, layers, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 		}
@@ -645,7 +656,7 @@ public final class RtRenderer
 				vkUpdateDescriptorSets(device, write, null);
 			}
 		}
-		log.info("Game textures: {} layers of {}x{}", layers, size, size);
+		log.info("Game textures: {} layers of {}x{} with {} mip levels", layers, size, size, levels);
 	}
 
 	public long semaphoreVkDoneHandle()
@@ -1185,7 +1196,7 @@ public final class RtRenderer
 				.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
 				.image(image);
 			fillColorRange(barrier.get(0).subresourceRange());
-			barrier.get(0).subresourceRange().layerCount(layers);
+			barrier.get(0).subresourceRange().layerCount(layers).levelCount(VK_REMAINING_MIP_LEVELS);
 			vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, null, null, barrier);
 		}
 	}
@@ -2145,13 +2156,18 @@ public final class RtRenderer
 
 	private Img createImage(int width, int height, int layers, int format, int usage, boolean exported)
 	{
+		return createImage(width, height, layers, 1, format, usage, exported);
+	}
+
+	private Img createImage(int width, int height, int layers, int levels, int format, int usage, boolean exported)
+	{
 		Img img = new Img();
 		try (MemoryStack stack = stackPush())
 		{
 			VkImageCreateInfo imageInfo = VkImageCreateInfo.calloc(stack).sType$Default()
 				.imageType(VK_IMAGE_TYPE_2D)
 				.format(format)
-				.mipLevels(1)
+				.mipLevels(levels)
 				.arrayLayers(layers)
 				.samples(VK_SAMPLE_COUNT_1_BIT)
 				.tiling(VK_IMAGE_TILING_OPTIMAL)
@@ -2201,7 +2217,7 @@ public final class RtRenderer
 				.viewType(layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D)
 				.format(format);
 			fillColorRange(viewInfo.subresourceRange());
-			viewInfo.subresourceRange().layerCount(layers);
+			viewInfo.subresourceRange().layerCount(layers).levelCount(levels);
 			LongBuffer pView = stack.mallocLong(1);
 			check(vkCreateImageView(device, viewInfo, null, pView), "vkCreateImageView");
 			img.view = pView.get(0);
@@ -2998,7 +3014,7 @@ public final class RtRenderer
 			b.putFloat(c);
 		}
 		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0) | (p.ripples ? 8 : 0);
-		b.putInt(flags2).putInt(0).putInt(0).putInt(0);
+		b.putInt(flags2).putInt(p.textureSize).putInt(0).putInt(0);
 		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
 		if (b.position() > FRAME_UBO_SIZE)
 		{

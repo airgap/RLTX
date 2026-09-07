@@ -1230,6 +1230,37 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	enum TextureUpscale
+	{
+		OFF("Off, 128 texels"),
+		SUPER_XBR("Super-xBR, 512 texels");
+
+		private final String label;
+
+		TextureUpscale(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
+	@ConfigItem(
+		keyName = "textureUpscale",
+		name = "Texture upscaling",
+		description = "Enlarges the game's 128-texel textures four times with Super-xBR, a pixel-art scaler that cleans edges without inventing detail, and gives every texture mip levels. A texture you put in RuneLite's rltx/textures/upscaled folder, named by its id, is used instead; the originals are written to rltx/textures/original to start from. Takes effect after the plugin restarts.",
+		section = surfacesSection,
+		position = 1
+	)
+	default TextureUpscale textureUpscale()
+	{
+		return TextureUpscale.SUPER_XBR;
+	}
+
 	@ConfigItem(
 		keyName = "unlitColours",
 		name = "Remove baked shading",

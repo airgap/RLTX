@@ -143,6 +143,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | --- | --- | --- |
 | Remove baked shading | true | Reverse the vanilla renderer's fixed-direction shading out of model and terrain colours so only the ray traced lighting shapes them. Approximate for models. |
 | Textures | false | Sample the game's textures on textured faces instead of their average colour |
+| Texture upscaling | Super-xBR, 512 texels | Enlarges the game's 128-texel textures four times with Super-xBR, a pixel-art scaler that cleans edges without inventing detail, and gives every texture mip levels. A texture you put in RuneLite's rltx/textures/upscaled folder, named by its id, is used instead; the originals are written to rltx/textures/original to start from. Takes effect after the plugin restarts. |
 | Texture relief | 35% (0 to 100) | Treats the brightness of a texture as height and tilts the lighting normal across it, giving brick and stone textures relief. Only applies with textures on. 0 disables. |
 | Reflective water | true | Render water tiles as a reflective surface with animated waves and a sun glint |
 | Glossy reflections | true | Trace a reflection ray from every visible surface, blurred by its roughness, so polished and wet things mirror their surroundings. |
