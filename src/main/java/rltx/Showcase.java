@@ -116,14 +116,12 @@ final class Showcase
 	{
 		private final int bounces;
 		private final float terrainBump;
-		private final float bumpStrength;
 		private final boolean[] flags;
 
 		private Held(FrameParams f)
 		{
 			bounces = f.bounces;
 			terrainBump = f.terrainBump;
-			bumpStrength = f.bumpStrength;
 			flags = new boolean[]{f.shadows, f.sampledLights, f.glossyReflections, f.caustics, f.textures, f.terrainTextures, f.terrainSmoothing,
 				f.textureDisplacement, f.cloudShadows, f.roofOcclusion, f.wildlife, f.fireflies, f.dustMotes, f.rainbows, f.heatShimmer, f.puddles,
 				f.rainRipples, f.antialias};
@@ -133,7 +131,6 @@ final class Showcase
 		{
 			f.bounces = bounces;
 			f.terrainBump = terrainBump;
-			f.bumpStrength = bumpStrength;
 			f.shadows = flags[0];
 			f.sampledLights = flags[1];
 			f.glossyReflections = flags[2];
@@ -159,13 +156,13 @@ final class Showcase
 	 * Raises the levers of a frame already filled from the live settings to the showcase's, for a
 	 * photo taken at showcase quality whatever is on. Only what a frame decides for itself changes;
 	 * geometry pushed before the frame, such as swaying foliage and lifted water, is as it was.
+	 * The relief strength of model textures is a look rather than a level and stays the player's.
 	 */
 	static Held maximise(FrameParams f, boolean texturesReady)
 	{
 		Held held = new Held(f);
 		f.bounces = 4;
 		f.terrainBump = 2f;
-		f.bumpStrength = 1f;
 		f.shadows = true;
 		f.sampledLights = false;
 		f.glossyReflections = true;
