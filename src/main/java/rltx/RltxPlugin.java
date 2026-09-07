@@ -1168,11 +1168,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	}
 
-	// A photo at twice the width and height of the view: the renderer's images are resized for the
-	// burst, the field of view held by doubling the zoom, the result read straight back, and the
-	// view-sized images restored and handed back to OpenGL for the frame that follows.
+	// A photo at twice the width and height of the view, at showcase quality whatever is on: the
+	// renderer's images are resized for the burst, the field of view held by doubling the zoom,
+	// the result read straight back, and the view-sized images restored and handed back to OpenGL
+	// for the frame that follows.
 	private void quadPhoto(int width, int height)
 	{
+		Showcase.Held held = Showcase.maximise(frame, gameTexturesUploaded);
 		float zoom = frame.zoom;
 		float diffusionRadius = frame.diffusionRadius;
 		frame.zoom = zoom * 2f;
@@ -1187,6 +1189,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.diffusionRadius = diffusionRadius;
 		renderer.ensureOutput(width, height, 1f, -1, false);
 		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
+		held.restore(frame);
 		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
 	}
 

@@ -6,6 +6,7 @@ import java.lang.reflect.Type;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import net.runelite.client.config.ConfigManager;
+import rltx.vk.FrameParams;
 
 /**
  * The showcase: one switch that pushes every quality setting to its top for showing the renderer
@@ -107,5 +108,81 @@ final class Showcase
 	boolean on()
 	{
 		return replaced != null;
+	}
+
+	/** A frame's quality levers as they were before a burst raised them, to put back after. */
+	static final class Held
+	{
+		private final int bounces;
+		private final float terrainBump;
+		private final float bumpStrength;
+		private final boolean[] flags;
+
+		private Held(FrameParams f)
+		{
+			bounces = f.bounces;
+			terrainBump = f.terrainBump;
+			bumpStrength = f.bumpStrength;
+			flags = new boolean[]{f.shadows, f.sampledLights, f.glossyReflections, f.caustics, f.textures, f.terrainTextures, f.terrainSmoothing,
+				f.textureDisplacement, f.cloudShadows, f.roofOcclusion, f.wildlife, f.fireflies, f.dustMotes, f.rainbows, f.heatShimmer, f.puddles,
+				f.rainRipples, f.antialias};
+		}
+
+		void restore(FrameParams f)
+		{
+			f.bounces = bounces;
+			f.terrainBump = terrainBump;
+			f.bumpStrength = bumpStrength;
+			f.shadows = flags[0];
+			f.sampledLights = flags[1];
+			f.glossyReflections = flags[2];
+			f.caustics = flags[3];
+			f.textures = flags[4];
+			f.terrainTextures = flags[5];
+			f.terrainSmoothing = flags[6];
+			f.textureDisplacement = flags[7];
+			f.cloudShadows = flags[8];
+			f.roofOcclusion = flags[9];
+			f.wildlife = flags[10];
+			f.fireflies = flags[11];
+			f.dustMotes = flags[12];
+			f.rainbows = flags[13];
+			f.heatShimmer = flags[14];
+			f.puddles = flags[15];
+			f.rainRipples = flags[16];
+			f.antialias = flags[17];
+		}
+	}
+
+	/**
+	 * Raises the levers of a frame already filled from the live settings to the showcase's, for a
+	 * photo taken at showcase quality whatever is on. Only what a frame decides for itself changes;
+	 * geometry pushed before the frame, such as swaying foliage and lifted water, is as it was.
+	 */
+	static Held maximise(FrameParams f, boolean texturesReady)
+	{
+		Held held = new Held(f);
+		f.bounces = 4;
+		f.terrainBump = 2f;
+		f.bumpStrength = 1f;
+		f.shadows = true;
+		f.sampledLights = false;
+		f.glossyReflections = true;
+		f.caustics = true;
+		f.textures = texturesReady;
+		f.terrainTextures = texturesReady;
+		f.terrainSmoothing = true;
+		f.textureDisplacement = true;
+		f.cloudShadows = true;
+		f.roofOcclusion = true;
+		f.wildlife = true;
+		f.fireflies = true;
+		f.dustMotes = true;
+		f.rainbows = true;
+		f.heatShimmer = true;
+		f.puddles = true;
+		f.rainRipples = true;
+		f.antialias = true;
+		return held;
 	}
 }
