@@ -157,7 +157,7 @@ final class PhotoMode
 	 * that holds head to hips, and hands the bytes to Lyku when asked. Lyku takes two megabytes at
 	 * most, so a cycle that comes out larger loses every other pose until it fits.
 	 */
-	void saveOutfitAnimationAsync(java.util.List<int[]> frames, int[] durations, int width, int height, String name, Lyku lyku)
+	void saveOutfitAnimationAsync(java.util.List<int[]> frames, int[] durations, int width, int height, String name, java.util.function.BiConsumer<byte[], String> upload)
 	{
 		Thread worker = new Thread(() ->
 		{
@@ -200,9 +200,9 @@ final class PhotoMode
 			}
 			log.info("Outfit animation saved to {} ({} poses, {} bytes)", file, squares.size(), bytes.length);
 			say.accept("Outfit animation saved to " + file.getName());
-			if (lyku != null)
+			if (upload != null)
 			{
-				lyku.setAvatarBytesAsync(bytes, "image/webp");
+				upload.accept(bytes, "image/webp");
 			}
 		}, "rltx-photo");
 		worker.setDaemon(true);

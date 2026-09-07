@@ -2,23 +2,12 @@ package rltx;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import com.sun.net.httpserver.HttpServer;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.URLDecoder;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.function.Consumer;
 import javax.imageio.ImageIO;
 import lombok.extern.slf4j.Slf4j;
@@ -53,7 +42,7 @@ final class Lyku
 	private final Gson gson;
 	private final ConfigManager configManager;
 	private final Consumer<String> say;
-	private HttpServer callback;
+	private OauthPkce callback;
 	/** Run once a sign-in has completed. */
 	private Runnable connected;
 
@@ -95,7 +84,6 @@ final class Lyku
 			{
 				log.warn("Lyku sign-in failed", e);
 				say.accept("Lyku: sign-in failed, " + e.getMessage());
-				stopCallback();
 			}
 		}, "rltx-lyku");
 		worker.setDaemon(true);
@@ -104,94 +92,41 @@ final class Lyku
 
 	private void signIn() throws IOException
 	{
-		HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		OauthPkce pkce = new OauthPkce();
 		synchronized (this)
 		{
-			callback = server;
+			callback = pkce;
 		}
-		String redirect = "http://127.0.0.1:" + server.getAddress().getPort() + "/callback";
-
-		JsonObject registration = new JsonObject();
-		registration.add("redirect_uris", gson.toJsonTree(new String[]{redirect}));
-		registration.addProperty("client_name", "RLTX");
-		JsonObject client = post(API + "/oauth/register", RequestBody.create(JSON, gson.toJson(registration)), null, null);
-		String clientId = client.get("client_id").getAsString();
-
-		SecureRandom random = new SecureRandom();
-		byte[] bytes = new byte[32];
-		random.nextBytes(bytes);
-		String verifier = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-		random.nextBytes(bytes);
-		String state = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-		String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(sha256(verifier.getBytes(StandardCharsets.US_ASCII)));
-
-		String[] code = new String[1];
-		server.createContext("/callback", exchange ->
+		try
 		{
-			Map<String, String> query = query(exchange.getRequestURI().getRawQuery());
-			boolean ok = state.equals(query.get("state")) && query.containsKey("code");
-			String page = ok
-				? "<html><body style='font-family:sans-serif;background:#141210;color:#f0ead6'><h2>RLTX is connected to Lyku.</h2><p>You can close this tab and go back to the game.</p></body></html>"
-				: "<html><body style='font-family:sans-serif;background:#141210;color:#f0ead6'><h2>Sign-in did not complete.</h2><p>" + (query.containsKey("error") ? query.get("error") : "the reply did not match the request") + "</p></body></html>";
-			byte[] body = page.getBytes(StandardCharsets.UTF_8);
-			exchange.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
-			exchange.sendResponseHeaders(200, body.length);
-			try (OutputStream out = exchange.getResponseBody())
+			JsonObject registration = new JsonObject();
+			registration.add("redirect_uris", gson.toJsonTree(new String[]{pkce.redirect()}));
+			registration.addProperty("client_name", "RLTX");
+			JsonObject client = post(API + "/oauth/register", RequestBody.create(JSON, gson.toJson(registration)), null, null);
+			String clientId = client.get("client_id").getAsString();
+			String authorize = API + "/oauth/authorize?response_type=code&client_id=" + OauthPkce.encode(clientId) + "&redirect_uri=" + OauthPkce.encode(pkce.redirect())
+				+ "&scope=write&state=" + OauthPkce.encode(pkce.state) + "&code_challenge=" + OauthPkce.encode(pkce.challenge) + "&code_challenge_method=S256";
+			LinkBrowser.browse(authorize);
+			say.accept("Lyku: finish signing in in your browser");
+			String code = pkce.awaitCode(10 * 60_000L);
+			String form = "grant_type=authorization_code&code=" + OauthPkce.encode(code) + "&redirect_uri=" + OauthPkce.encode(pkce.redirect())
+				+ "&client_id=" + OauthPkce.encode(clientId) + "&code_verifier=" + OauthPkce.encode(pkce.verifier);
+			JsonObject token = post(API + "/oauth/token", RequestBody.create(FORM, form), null, null);
+			String access = token.get("access_token").getAsString();
+			String workspace = token.has("workspace") ? token.get("workspace").getAsString() : null;
+			long expires = System.currentTimeMillis() + token.get("expires_in").getAsLong() * 1000L;
+			configManager.setConfiguration(RltxConfig.GROUP, TOKEN_KEY, access);
+			configManager.setConfiguration(RltxConfig.GROUP, EXPIRES_KEY, Long.toString(expires));
+			if (workspace != null)
 			{
-				out.write(body);
+				configManager.setConfiguration(RltxConfig.GROUP, WORKSPACE_KEY, workspace);
 			}
-			synchronized (code)
-			{
-				code[0] = ok ? query.get("code") : "";
-				code.notifyAll();
-			}
-		});
-		server.start();
-
-		String authorize = API + "/oauth/authorize?response_type=code&client_id=" + encode(clientId) + "&redirect_uri=" + encode(redirect)
-			+ "&scope=write&state=" + encode(state) + "&code_challenge=" + encode(challenge) + "&code_challenge_method=S256";
-		LinkBrowser.browse(authorize);
-		say.accept("Lyku: finish signing in in your browser");
-
-		synchronized (code)
-		{
-			long deadline = System.currentTimeMillis() + 10 * 60_000L;
-			while (code[0] == null && System.currentTimeMillis() < deadline)
-			{
-				try
-				{
-					code.wait(deadline - System.currentTimeMillis());
-				}
-				catch (InterruptedException e)
-				{
-					Thread.currentThread().interrupt();
-					break;
-				}
-			}
+			say.accept("Lyku: connected" + (token.has("workspace_name") ? " to " + token.get("workspace_name").getAsString() : ""));
 		}
-		stopCallback();
-		if (code[0] == null)
+		finally
 		{
-			throw new IOException("no reply from the browser within ten minutes");
+			stopCallback();
 		}
-		if (code[0].isEmpty())
-		{
-			throw new IOException("Lyku did not grant access");
-		}
-
-		String form = "grant_type=authorization_code&code=" + encode(code[0]) + "&redirect_uri=" + encode(redirect)
-			+ "&client_id=" + encode(clientId) + "&code_verifier=" + encode(verifier);
-		JsonObject token = post(API + "/oauth/token", RequestBody.create(FORM, form), null, null);
-		String access = token.get("access_token").getAsString();
-		String workspace = token.has("workspace") ? token.get("workspace").getAsString() : null;
-		long expires = System.currentTimeMillis() + token.get("expires_in").getAsLong() * 1000L;
-		configManager.setConfiguration(RltxConfig.GROUP, TOKEN_KEY, access);
-		configManager.setConfiguration(RltxConfig.GROUP, EXPIRES_KEY, Long.toString(expires));
-		if (workspace != null)
-		{
-			configManager.setConfiguration(RltxConfig.GROUP, WORKSPACE_KEY, workspace);
-		}
-		say.accept("Lyku: connected" + (token.has("workspace_name") ? " to " + token.get("workspace_name").getAsString() : ""));
 		if (connected != null)
 		{
 			connected.run();
@@ -202,7 +137,7 @@ final class Lyku
 	{
 		if (callback != null)
 		{
-			callback.stop(0);
+			callback.close();
 			callback = null;
 		}
 	}
@@ -225,18 +160,7 @@ final class Lyku
 		{
 			try
 			{
-				BufferedImage portrait = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-				portrait.setRGB(0, 0, width, height, argb, 0, width);
-				int side = Math.min(width, height);
-				int top = Math.min(height - side, Math.round(0.05f * height));
-				BufferedImage avatar = new BufferedImage(AVATAR_SIZE, AVATAR_SIZE, BufferedImage.TYPE_INT_RGB);
-				Graphics2D g = avatar.createGraphics();
-				g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-				g.drawImage(portrait.getSubimage(0, top, side, side), 0, 0, AVATAR_SIZE, AVATAR_SIZE, null);
-				g.dispose();
-				ByteArrayOutputStream png = new ByteArrayOutputStream();
-				ImageIO.write(avatar, "png", png);
-				uploadAvatar(png.toByteArray(), "image/png");
+				uploadAvatar(avatarPng(argb, width, height), "image/png");
 			}
 			catch (IOException | RuntimeException e)
 			{
@@ -246,6 +170,23 @@ final class Lyku
 		}, "rltx-lyku");
 		worker.setDaemon(true);
 		worker.start();
+	}
+
+	/** The square from just under a portrait's top edge, head to hips, as a PNG of the avatar size. */
+	static byte[] avatarPng(int[] argb, int width, int height) throws IOException
+	{
+		BufferedImage portrait = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+		portrait.setRGB(0, 0, width, height, argb, 0, width);
+		int side = Math.min(width, height);
+		int top = Math.min(height - side, Math.round(0.05f * height));
+		BufferedImage avatar = new BufferedImage(AVATAR_SIZE, AVATAR_SIZE, BufferedImage.TYPE_INT_RGB);
+		Graphics2D g = avatar.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+		g.drawImage(portrait.getSubimage(0, top, side, side), 0, 0, AVATAR_SIZE, AVATAR_SIZE, null);
+		g.dispose();
+		ByteArrayOutputStream png = new ByteArrayOutputStream();
+		ImageIO.write(avatar, "png", png);
+		return png.toByteArray();
 	}
 
 	/** Puts an image already encoded, such as a looping WebP of the idle cycle, up as the profile picture. */
@@ -307,54 +248,6 @@ final class Lyku
 				throw new IOException("Lyku answered " + response.code() + (text.isEmpty() ? "" : ": " + text));
 			}
 			return gson.fromJson(text, JsonObject.class);
-		}
-	}
-
-	private static Map<String, String> query(String raw)
-	{
-		Map<String, String> out = new HashMap<>();
-		if (raw == null)
-		{
-			return out;
-		}
-		for (String pair : raw.split("&"))
-		{
-			int eq = pair.indexOf('=');
-			try
-			{
-				String key = URLDecoder.decode(eq < 0 ? pair : pair.substring(0, eq), "UTF-8");
-				String value = eq < 0 ? "" : URLDecoder.decode(pair.substring(eq + 1), "UTF-8");
-				out.put(key, value);
-			}
-			catch (IOException e)
-			{
-				throw new IllegalArgumentException(e);
-			}
-		}
-		return out;
-	}
-
-	private static String encode(String value)
-	{
-		try
-		{
-			return URLEncoder.encode(value, "UTF-8");
-		}
-		catch (IOException e)
-		{
-			throw new IllegalArgumentException(e);
-		}
-	}
-
-	private static byte[] sha256(byte[] input)
-	{
-		try
-		{
-			return MessageDigest.getInstance("SHA-256").digest(input);
-		}
-		catch (NoSuchAlgorithmException e)
-		{
-			throw new IllegalStateException(e);
 		}
 	}
 }

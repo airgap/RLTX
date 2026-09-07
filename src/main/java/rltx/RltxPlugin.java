@@ -7,6 +7,7 @@ import com.google.inject.Provides;
 import java.awt.Canvas;
 import java.awt.Dimension;
 import java.awt.geom.AffineTransform;
+import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -16,6 +17,7 @@ import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import javax.imageio.ImageIO;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
@@ -154,6 +156,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private StyledMenu styledMenu;
 	private Outfits outfits;
 	private Lyku lyku;
+	private LykuOrg lykuOrg;
 	private final GeometryBuffer portraitOpaque = new GeometryBuffer(1 << 12);
 	private final GeometryBuffer portraitTranslucent = new GeometryBuffer(1 << 10);
 	private final GeometryBuffer portraitWater = new GeometryBuffer(1 << 8);
@@ -483,6 +486,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				pushOutfitToLyku();
 			}
 		}));
+		lykuOrg = new LykuOrg(okHttpClient, gson, configManager, config, this::say);
+		lykuOrg.onConnected(() -> clientThread.invoke(() ->
+		{
+			if (config.lykuOrgAvatar())
+			{
+				pushOutfitToLyku();
+			}
+		}));
 		stages = new Stages(client, this::say);
 		eventBus.register(styledMenu);
 		overlayManager.add(styledMenu);
@@ -652,7 +663,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			showcase.set(config.showcase());
 			say(config.showcase() ? "RLTX: showcase on" : "RLTX: showcase off, your settings are back");
 		}
-		if ("lykuAvatar".equals(event.getKey()) && config.lykuAvatar())
+		if ("lykuAvatar".equals(event.getKey()) && config.lykuAvatar() || "lykuOrgAvatar".equals(event.getKey()) && config.lykuOrgAvatar())
 		{
 			// Turning it on puts the outfit worn now up straight away, not only the next change.
 			clientThread.invoke(this::pushOutfitToLyku);
@@ -662,6 +673,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			// A tick box standing in for a button: it opens the browser and clears itself.
 			configManager.setConfiguration(RltxConfig.GROUP, "lykuConnect", false);
 			lyku.connect();
+		}
+		if ("lykuOrgConnect".equals(event.getKey()) && config.lykuOrgConnect())
+		{
+			configManager.setConfiguration(RltxConfig.GROUP, "lykuOrgConnect", false);
+			lykuOrg.connect();
 		}
 		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
 		{
@@ -1528,21 +1544,57 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.ripples = ripples;
 
 		photo.saveOutfitAsync(argb, width, height, name);
-		boolean toLyku = config.lykuAvatar();
-		if (toLyku && !lyku.connected())
-		{
-			say("Lyku: not connected, so the profile picture stays; tick Connect to Lyku in the settings");
-			toLyku = false;
-		}
+		java.util.function.BiConsumer<byte[], String> upload = profilePictureSinks();
 		if (cycle != null && cycle.size() > 1)
 		{
-			photo.saveOutfitAnimationAsync(cycle, durations, cycleWidth, cycleHeight, name, toLyku ? lyku : null);
+			photo.saveOutfitAnimationAsync(cycle, durations, cycleWidth, cycleHeight, name, upload);
 		}
-		else if (toLyku)
+		else if (upload != null)
 		{
-			lyku.setAvatarAsync(argb, width, height);
+			try
+			{
+				upload.accept(Lyku.avatarPng(argb, width, height), "image/png");
+			}
+			catch (IOException e)
+			{
+				log.warn("Portrait not encoded for upload", e);
+			}
 		}
 		return true;
+	}
+
+	// Where a new portrait goes as a profile picture: each linked account whose setting is on;
+	// null when there is none. A setting on without its link says so.
+	private java.util.function.BiConsumer<byte[], String> profilePictureSinks()
+	{
+		boolean org = config.lykuOrgAvatar();
+		boolean co = config.lykuAvatar();
+		if (org && !lykuOrg.connected())
+		{
+			say("Lyku.org: not connected, so the profile picture stays; tick Connect to Lyku.org in the settings");
+			org = false;
+		}
+		if (co && !lyku.connected())
+		{
+			say("Lyku.co: not connected, so the profile picture stays; tick Connect to a Lyku.co workspace in the settings");
+			co = false;
+		}
+		if (!org && !co)
+		{
+			return null;
+		}
+		final boolean toOrg = org, toCo = co;
+		return (bytes, mime) ->
+		{
+			if (toOrg)
+			{
+				lykuOrg.setProfilePictureAsync(bytes, mime);
+			}
+			if (toCo)
+			{
+				lyku.setAvatarBytesAsync(bytes, mime);
+			}
+		};
 	}
 
 	/** How many poses of the idle cycle are rendered at most, and how many samples each gets. */
@@ -1588,11 +1640,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		return new float[]{top, bottom};
 	}
 
-	// The portrait of the outfit worn now, as already on disk, put up as the Lyku profile picture.
+	// The portrait of the outfit worn now, as already on disk, put up as the profile picture of
+	// every linked account whose setting is on.
 	private void pushOutfitToLyku()
 	{
 		String name = outfits.currentName();
-		if (name == null || !lyku.connected())
+		java.util.function.BiConsumer<byte[], String> upload = name == null ? null : profilePictureSinks();
+		if (upload == null)
 		{
 			return;
 		}
@@ -1605,12 +1659,23 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		try
 		{
-			lyku.setAvatarBytesAsync(java.nio.file.Files.readAllBytes(file.toPath()), webp.exists() ? "image/webp" : "image/png");
+			byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
+			if (webp.exists())
+			{
+				upload.accept(bytes, "image/webp");
+			}
+			else
+			{
+				// The still on disk is the full portrait; the picture is its head and shoulders.
+				BufferedImage image = ImageIO.read(file);
+				int[] argb = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth());
+				upload.accept(Lyku.avatarPng(argb, image.getWidth(), image.getHeight()), "image/png");
+			}
 		}
 		catch (IOException e)
 		{
-			log.warn("Outfit {} not read for Lyku", file, e);
-			say("Lyku: could not read " + file.getName());
+			log.warn("Outfit {} not read for upload", file, e);
+			say("RLTX: could not read " + file.getName());
 		}
 	}
 

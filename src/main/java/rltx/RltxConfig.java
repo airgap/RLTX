@@ -67,23 +67,30 @@ public interface RltxConfig extends Config
 	String interfaceSection = "interface";
 
 	@ConfigSection(
+		name = "Accounts",
+		description = "Links to Lyku.org and a Lyku.co workspace",
+		position = 7
+	)
+	String accountsSection = "accounts";
+
+	@ConfigSection(
 		name = "Other plugins",
 		description = "How RLTX draws what other plugins put on the scene",
-		position = 7
+		position = 8
 	)
 	String pluginsSection = "plugins";
 
 	@ConfigSection(
 		name = "Areas",
 		description = "Settings that change with where you stand, kept in the F8 panel's Areas tab",
-		position = 8
+		position = 9
 	)
 	String areasSection = "areas";
 
 	@ConfigSection(
 		name = "Debug",
 		description = "Development toggles",
-		position = 9,
+		position = 10,
 		closedByDefault = true
 	)
 	String debugSection = "debug";
@@ -1213,11 +1220,47 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "lykuOrgClientId",
+		name = "Lyku.org client id",
+		description = "The client id of an app you register at developers.lyku.org: public client, redirect URI http://127.0.0.1/callback. Needed before connecting.",
+		section = accountsSection,
+		position = 0
+	)
+	default String lykuOrgClientId()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		keyName = "lykuOrgConnect",
+		name = "Connect to Lyku.org",
+		description = "Tick to sign in to Lyku.org in your browser and link this client to your account; it unticks itself. Renewed from a ninety-day refresh token.",
+		section = accountsSection,
+		position = 1
+	)
+	default boolean lykuOrgConnect()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "lykuOrgAvatar",
+		name = "Lyku.org profile picture from outfit",
+		description = "Each new outfit's portrait, head and shoulders, or its idle cycle when animated portraits are on, becomes your Lyku.org profile picture. Needs the Lyku.org connection.",
+		section = accountsSection,
+		position = 2
+	)
+	default boolean lykuOrgAvatar()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "lykuConnect",
-		name = "Connect to Lyku",
-		description = "Tick to sign in to Lyku in your browser and link this client to your account; it unticks itself. The link lasts ninety days.",
-		section = cameraSection,
-		position = 29
+		name = "Connect to a Lyku.co workspace",
+		description = "Tick to sign in to Lyku.co in your browser and link this client to a workspace; it unticks itself. The link lasts ninety days.",
+		section = accountsSection,
+		position = 3
 	)
 	default boolean lykuConnect()
 	{
@@ -1226,10 +1269,10 @@ public interface RltxConfig extends Config
 
 	@ConfigItem(
 		keyName = "lykuAvatar",
-		name = "Lyku profile picture from outfit",
-		description = "Each new outfit's portrait, head and shoulders, becomes your Lyku profile picture. Needs the Lyku connection.",
-		section = cameraSection,
-		position = 30
+		name = "Lyku.co profile picture from outfit",
+		description = "Each new outfit's portrait, head and shoulders, or its idle cycle when animated portraits are on, becomes your Lyku.co account picture. Needs the workspace connection.",
+		section = accountsSection,
+		position = 4
 	)
 	default boolean lykuAvatar()
 	{
