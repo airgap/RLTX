@@ -17,6 +17,7 @@ layout(push_constant) uniform Push {
 } pc;
 layout(std430, set = 0, binding = 4) buffer DynPos { float v[]; } dynPos;
 layout(std430, set = 0, binding = 21) readonly buffer DynTex { uint t[]; } dynTex;
+layout(std430, set = 0, binding = 22) readonly buffer DynUv { float v[]; } dynUv;
 layout(std430, set = 0, binding = 25) readonly buffer WaterTypes { vec4 v[]; } waterTypes;
 layout(set = 0, binding = 53, rg32f) uniform readonly image2D rippleField;
 layout(std430, set = 0, binding = 55) readonly buffer RippleParams { vec4 v[]; } ripple;
@@ -28,7 +29,8 @@ const int GEOMETRY_WAVES = 8;
 const float RANGE = 14.0 * 128.0;
 const float FADE = 384.0;
 // Ground is lifted out to a shorter range, by up to this many units at full relief strength,
-// with the grid cut this fine; the height map is read at the level whose texels match the grid.
+// with the grid cut this fine; the height map is read at the level whose texels are the grid's
+// cells, so no height between two vertices is missed and thrown up as a spike.
 const float GROUND_RANGE = 12.0 * 128.0;
 const float GROUND_FADE = 256.0;
 const float GROUND_DEPTH = 8.0;
@@ -81,11 +83,13 @@ void liftGround(int face) {
   uint tex = dynTex.t[face];
   float layer = float((tex & 0xFFFFu) - 1u);
   float amplitude = GROUND_DEPTH * min(u.material.z, 1.0);
-  float level = log2(float(textureSize(reliefMaps, 0).x) * GROUND_CELL / 128.0 / 2.0);
+  float level = log2(float(textureSize(reliefMaps, 0).x) * GROUND_CELL / 128.0);
   for (int v = 0; v < 3; ++v) {
     int o = (face * 3 + v) * 3;
     vec2 xz = vec2(dynPos.v[o], dynPos.v[o + 2]);
     float h = amplitude * textureLod(reliefMaps, vec3(xz / 128.0, layer), level).r;
+    // The vertex's share of the lift, nothing at an edge whose far side would not meet it.
+    h *= dynUv.v[face * 6 + 3 + v];
     h *= 1.0 - smoothstep(GROUND_RANGE - GROUND_FADE, GROUND_RANGE, distance(xz, u.cam.xz));
     dynPos.v[o + 1] -= h;
   }
