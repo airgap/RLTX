@@ -410,6 +410,8 @@ public final class RtRenderer
 	private Img linearDepthImage;
 	private long rrFeature;
 	private boolean rrOn;
+	/** Set once its feature failed to create, so the request is not retried every frame. */
+	private boolean rrUnavailable;
 	/** The DLSS quality the images and feature were made for, -1 for none. */
 	private int dlssQuality = -1;
 	private boolean dlssReady;
@@ -1939,7 +1941,7 @@ public final class RtRenderer
 	public boolean ensureOutput(int width, int height, float scale, int dlss, boolean rayReconstruction)
 	{
 		int quality = dlssReady ? dlss : -1;
-		boolean rr = dlssReady && rayReconstruction;
+		boolean rr = dlssReady && rayReconstruction && !rrUnavailable;
 		int[] optimal = quality >= 0 ? Ngx.optimalSettings(width, height, quality) : null;
 		int traceWidth;
 		int traceHeight;
@@ -2039,8 +2041,9 @@ public final class RtRenderer
 			ctx.endOneTimeAndWait(setup);
 			if (rrFeature == 0)
 			{
-				log.warn("Ray Reconstruction feature creation failed with NGX result 0x{}; denoising as before", Integer.toHexString(Ngx.lastResult()));
+				log.warn("Ray Reconstruction feature creation failed with NGX result 0x{}; denoising as before until the plugin restarts", Integer.toHexString(Ngx.lastResult()));
 				rrOn = false;
+				rrUnavailable = true;
 			}
 		}
 		if (quality >= 0)

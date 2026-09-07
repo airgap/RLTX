@@ -72,8 +72,17 @@ tasks.register('dlssSdk', Exec) {
 	commandLine 'sh', '-c', "git clone --depth 1 --filter=blob:none --sparse --branch ${dlssTag} https://github.com/NVIDIA/DLSS '${target}' && git -C '${target}' sparse-checkout set include lib/Linux_x86_64 LICENSE.txt"
 }
 
-tasks.register('nativeShim', Exec) {
+// The DLSS and Ray Reconstruction libraries NGX loads from the native directory.
+tasks.register('dlssLibs', Copy) {
 	dependsOn 'dlssSdk'
+	onlyIf { onLinux }
+	from "${dlssDir.get().asFile.absolutePath}/lib/Linux_x86_64/rel"
+	include 'libnvidia-ngx-dlss.so.*', 'libnvidia-ngx-dlssd.so.*'
+	into nativeDir
+}
+
+tasks.register('nativeShim', Exec) {
+	dependsOn 'dlssLibs'
 	onlyIf { onLinux }
 	def src = file('src/main/c/rltx_ngx.c')
 	def out = nativeDir.get().file('librltxngx.so').asFile
@@ -85,13 +94,6 @@ tasks.register('nativeShim', Exec) {
 	commandLine 'gcc', '-shared', '-fPIC', '-O2', '-Wall', '-Werror=implicit-function-declaration', '-Wl,--no-undefined', '-o', out.absolutePath, src.absolutePath,
 		"-I${sdk}/include", "-I${javaHome}/include", "-I${javaHome}/include/linux",
 		"-L${sdk}/lib/Linux_x86_64", '-lnvsdk_ngx', '-lstdc++', '-ldl', '-lpthread'
-	doLast {
-		copy {
-			from "${sdk}/lib/Linux_x86_64/rel"
-			include 'libnvidia-ngx-dlss.so.*'
-			into nativeDir
-		}
-	}
 }
 
 tasks.register('run', JavaExec) {
