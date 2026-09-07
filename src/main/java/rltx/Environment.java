@@ -726,6 +726,7 @@ final class Environment
 		frame.terrainTextures = config.terrainTextures();
 		frame.terrainSmoothing = config.terrainSmoothing();
 		frame.terrainBump = config.terrainBump() / 100f;
+		frame.groundRelief = config.groundRelief() / 100f * 8f;
 		frame.rainRipples = config.rainRipples();
 		frame.rainSpeed = config.rainSpeed() / 100f;
 		fillEyes();

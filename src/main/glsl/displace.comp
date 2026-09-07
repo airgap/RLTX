@@ -28,12 +28,11 @@ const int GEOMETRY_WAVES = 8;
 // last stretch so the lifted water meets the flat water beyond without a step.
 const float RANGE = 14.0 * 128.0;
 const float FADE = 384.0;
-// Ground is lifted out to a shorter range, by up to this many units at full relief strength,
-// with the grid cut this fine; the height map is read at the level whose texels are the grid's
-// cells, so no height between two vertices is missed and thrown up as a spike.
+// Ground is lifted out to a shorter range, by the height the frame gives, with the grid cut
+// this fine; the height map is read at the level whose texels are the grid's cells, so no
+// height between two vertices is missed and thrown up as a spike.
 const float GROUND_RANGE = 12.0 * 128.0;
 const float GROUND_FADE = 256.0;
-const float GROUND_DEPTH = 8.0;
 const float GROUND_CELL = 128.0 / 4.0;
 
 float rippleHeight(vec2 xz) {
@@ -82,7 +81,7 @@ float waveHeight(vec2 xz, float t, float windAngle) {
 void liftGround(int face) {
   uint tex = dynTex.t[face];
   float layer = float((tex & 0xFFFFu) - 1u);
-  float amplitude = GROUND_DEPTH * min(u.material.z, 1.0);
+  float amplitude = uintBitsToFloat(u.flags2.w);
   float level = log2(float(textureSize(reliefMaps, 0).x) * GROUND_CELL / 128.0);
   for (int v = 0; v < 3; ++v) {
     int o = (face * 3 + v) * 3;

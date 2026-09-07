@@ -147,6 +147,8 @@ public final class FrameParams
 	/** Whether mist may drift through roofed rooms; otherwise it keeps outside. */
 	public boolean mistIndoors;
 	public boolean clothActors;
+	/** How far ground near the camera rises into its texture's relief, in world units at full height. */
+	public float groundRelief;
 	/** Whether the water ripple field is simulated and shaded this frame, and how many even steps it takes. */
 	public boolean ripples;
 	public int rippleSteps;

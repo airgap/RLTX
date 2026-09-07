@@ -162,7 +162,7 @@ final class Showcase
 	{
 		Held held = new Held(f);
 		f.bounces = 4;
-		f.terrainBump = 2f;
+		f.terrainBump = Math.max(f.terrainBump, 2f);
 		f.shadows = true;
 		f.sampledLights = false;
 		f.glossyReflections = true;

@@ -1379,7 +1379,7 @@ public interface RltxConfig extends Config
 		return true;
 	}
 
-	@Range(max = 200)
+	@Range(max = 800)
 	@Units(Units.PERCENT)
 	@ConfigItem(
 		keyName = "terrainBump",
@@ -1415,6 +1415,20 @@ public interface RltxConfig extends Config
 	default boolean terrainRelief()
 	{
 		return false;
+	}
+
+	@Range(max = 800)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "groundRelief",
+		name = "Ground relief height",
+		description = "How high the ground near the camera rises into its texture's relief; 100 is eight units, a sixteenth of a tile.",
+		section = surfacesSection,
+		position = 12
+	)
+	default int groundRelief()
+	{
+		return 100;
 	}
 
 	@ConfigItem(

@@ -45,7 +45,7 @@ final class Ground
 
 	void push(LoadedScene top, GeometryBuffer dynamic, RtRenderer renderer, boolean texturesReady)
 	{
-		if (!config.terrainRelief() || !frame.terrainTextures || !texturesReady || top == null)
+		if (!config.terrainRelief() || frame.groundRelief <= 0f || !frame.terrainTextures || !texturesReady || top == null)
 		{
 			renderer.setGroundRange(0, 0);
 			return;

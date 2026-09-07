@@ -672,12 +672,12 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
         vec3 tn = textureLod(gameTextures, vec3(uv, hit.material.w - 1.0), level).rgb * 2.0 - 1.0;
         hit.n = normalize(hit.n + (vec3(1.0, 0.0, 0.0) * tn.x + vec3(0.0, 0.0, 1.0) * tn.y) * (0.8 * u.material.z));
       }
-      if (hit.dyn && u.material.z > 0.0) {
+      float amplitude = uintBitsToFloat(u.flags2.w);
+      if (hit.dyn && amplitude > 0.0) {
         // Ground lifted into its relief: the shading follows the slope the geometry took, read
         // at the level the lift was, so the light falls on the stones the way they stand.
         float lod = log2(float(textureSize(reliefMaps, 0).x) / 4.0);
         float d = 16.0 / 128.0;
-        float amplitude = 8.0 * min(u.material.z, 1.0);
         float dhdx = (texHeight(uv + vec2(d, 0.0), float(tex - 1u), lod) - texHeight(uv - vec2(d, 0.0), float(tex - 1u), lod)) * amplitude / (2.0 * d * 128.0);
         float dhdz = (texHeight(uv + vec2(0.0, d), float(tex - 1u), lod) - texHeight(uv - vec2(0.0, d), float(tex - 1u), lod)) * amplitude / (2.0 * d * 128.0);
         hit.n = normalize(hit.n + vec3(-dhdx, 0.0, -dhdz));
