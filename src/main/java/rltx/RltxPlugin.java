@@ -46,6 +46,7 @@ import net.runelite.client.RuneLite;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.callback.RenderCallbackManager;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.npcoverlay.NpcOverlayService;
@@ -124,6 +125,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	@Inject
 	private OverlayManager overlayManager;
+	@Inject
+	private EventBus eventBus;
 
 	@Inject
 	private NpcOverlayService npcOverlayService;
@@ -144,6 +147,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Foliage foliage;
 	private Waves waves;
 	private Ground ground;
+	private Chrome chrome;
+	private StyledMenu styledMenu;
 	private PluginGlow glow;
 	private Footprints footprints;
 	private Ripples ripples;
@@ -201,6 +206,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
+		chrome.apply();
 		Player local = client.getLocalPlayer();
 		currentPosition = local == null ? null : WorldPoint.fromLocalInstance(client, local.getLocalLocation());
 		String area = areaRules.tick(currentPosition, config.areaSettings(), onMistyGround(currentPosition));
@@ -445,6 +451,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		glow = new PluginGlow(client, clientThread, config, pluginManager, overlayManager, npcOverlayService, frame);
 		footprints = new Footprints(client, config, frame);
 		ripples = new Ripples(client, config, frame);
+		chrome = new Chrome(client, config);
+		styledMenu = new StyledMenu(client, config);
+		eventBus.register(styledMenu);
+		overlayManager.add(styledMenu);
 		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
 		keyManager.registerKeyListener(controlPanelKey);
 		keyManager.registerKeyListener(showcaseKey);
@@ -539,8 +549,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		freeCamera.unregister(keyManager, mouseManager);
 		lights.reset();
 		glow.clear();
+		eventBus.unregister(styledMenu);
+		overlayManager.remove(styledMenu);
 		clientThread.invoke(() ->
 		{
+			chrome.remove();
 			lights.restoreWeapon();
 			glow.restoreOverlays();
 			client.setGpuFlags(0);

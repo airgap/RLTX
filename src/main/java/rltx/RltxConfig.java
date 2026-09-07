@@ -60,23 +60,30 @@ public interface RltxConfig extends Config
 	String surfacesSection = "surfaces";
 
 	@ConfigSection(
+		name = "Interface",
+		description = "The game's own chrome and menus",
+		position = 6
+	)
+	String interfaceSection = "interface";
+
+	@ConfigSection(
 		name = "Other plugins",
 		description = "How RLTX draws what other plugins put on the scene",
-		position = 6
+		position = 7
 	)
 	String pluginsSection = "plugins";
 
 	@ConfigSection(
 		name = "Areas",
 		description = "Settings that change with where you stand, kept in the F8 panel's Areas tab",
-		position = 7
+		position = 8
 	)
 	String areasSection = "areas";
 
 	@ConfigSection(
 		name = "Debug",
 		description = "Development toggles",
-		position = 8,
+		position = 9,
 		closedByDefault = true
 	)
 	String debugSection = "debug";
@@ -2080,5 +2087,64 @@ public interface RltxConfig extends Config
 	default boolean areaSettings()
 	{
 		return true;
+	}
+
+	enum Chrome
+	{
+		OFF("Off"),
+		SLATE("Slate"),
+		OBSIDIAN("Obsidian"),
+		EMBER("Ember");
+
+		private final String label;
+
+		Chrome(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
+	@ConfigItem(
+		keyName = "chrome",
+		name = "Interface chrome",
+		description = "Regrades the client's own chatbox, tabs, minimap frame, borders and buttons into a palette: cool slate, near-black obsidian or warm ember. Off keeps the client's sprites; other interface skins are overridden while this is on.",
+		section = interfaceSection,
+		position = 0
+	)
+	default Chrome chrome()
+	{
+		return Chrome.SLATE;
+	}
+
+	@ConfigItem(
+		keyName = "styledMenus",
+		name = "Styled right-click menus",
+		description = "Draws the right-click menu on a dark translucent panel with a lit border, in the same place and at the same row pitch as the client's so clicks land where they show.",
+		section = interfaceSection,
+		position = 1
+	)
+	default boolean styledMenus()
+	{
+		return true;
+	}
+
+	@Range(min = 30, max = 100)
+	@Units(Units.PERCENT)
+	@ConfigItem(
+		keyName = "menuOpacity",
+		name = "Menu opacity",
+		description = "How solid the styled right-click menu's panel is.",
+		section = interfaceSection,
+		position = 2
+	)
+	default int menuOpacity()
+	{
+		return 88;
 	}
 }
