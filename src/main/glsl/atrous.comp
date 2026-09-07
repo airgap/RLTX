@@ -26,6 +26,7 @@ layout(set = 0, binding = 13, rgba8) uniform readonly image2D albedoImage;
 layout(set = 0, binding = 14, rgba16f) uniform readonly image2D normalImage;
 // The chrome's glass, traced this frame and never denoised: rgb laid over, w letting the frame through.
 layout(set = 0, binding = 61, rgba16f) uniform readonly image2D glassImage;
+layout(set = 0, binding = 62, rg16f) uniform readonly image2D glassBendImage;
 // Ping-pong buffers: even passes read A and write B, odd passes the reverse.
 layout(set = 0, binding = 17, rgba16f) uniform image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform image2D filterB;
@@ -1045,6 +1046,32 @@ vec3 precipitation(vec3 c, ivec2 px, float depth) {
 // The finished pixel goes to the output, or to the filter image when the post pass follows
 // and gathers from it.
 void writeOutput(ivec2 p, vec3 c);
+vec4 readFilter(ivec2 q);
+
+// The finished frame at a pixel, in display space: the painted sky as it is, a surface as the
+// albedo and its filtered light through the tone curve. What the glass is looked through.
+vec3 displayAt(ivec2 q) {
+  ivec2 size = imageSize(currPos);
+  q = clamp(q, ivec2(0), size - 1);
+  if (imageLoad(currPos, q).w < 0.0 && (u.misc.y & 1048576u) == 0u) {
+    return imageLoad(sampleImage, q).rgb;
+  }
+  vec3 albedo = u.lens.w > 0.0 ? vec3(1.0) : imageLoad(albedoImage, q).rgb;
+  return tonemap(albedo * readFilter(q).rgb);
+}
+
+// The chrome's glass over a pixel: what lies behind it is read from where the slab bends the
+// view to, dimmed and tinted by what the glass lets through, with the traced reflection, glints
+// and rim laid over. A pixel under no glass is left as it is.
+vec3 throughGlass(ivec2 p, vec3 c) {
+  vec4 glass = imageLoad(glassImage, p);
+  if (glass.a >= 1.0 && glass.rgb == vec3(0.0)) {
+    return c;
+  }
+  vec2 bend = imageLoad(glassBendImage, p).xy;
+  vec3 behind = dot(bend, bend) < 0.25 ? c : displayAt(p + ivec2(round(bend)));
+  return behind * glass.a + tonemap(glass.rgb);
+}
 
 vec4 readFilter(ivec2 q) {
   return (pc.pass & 1) == 0 ? imageLoad(filterA, q) : imageLoad(filterB, q);
@@ -1187,8 +1214,7 @@ void main() {
         writeOutput(p, mix(sky, tonemap(u.skyAmbient.rgb * vec3(0.12, 0.42, 0.5)), 0.9));
         return;
       }
-      vec4 glass = imageLoad(glassImage, p);
-      sky = sky * glass.a + tonemap(glass.rgb);
+      sky = throughGlass(p, sky);
       writeOutput(p, precipitation(swampMist(smokePlumes(ambientLife(sky, p, dir, -1.0), p, dir, -1.0), p, dir, -1.0), p, -1.0));
     }
     return;
@@ -1266,8 +1292,7 @@ void main() {
     // Ray Reconstruction denoises the colour with the albedo already in it.
     vec3 albedo = u.lens.w > 0.0 ? vec3(1.0) : imageLoad(albedoImage, p).rgb;
     float depth = imageLoad(currPos, p).w;
-    vec4 glass = imageLoad(glassImage, p);
-    vec3 hdr = aerialPerspective(albedo * result.rgb * glass.a + glass.rgb + lightShafts(p) + (pathGlow(position.xyz, normal) + markerGlow(position.xyz, normal)) / u.params.y, cameraRay(p), depth);
+    vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p) + (pathGlow(position.xyz, normal) + markerGlow(position.xyz, normal)) / u.params.y, cameraRay(p), depth);
     bool underwater = (u.misc.y & 33554432u) != 0u;
     if (underwater) {
       // Under water: red goes first, then green, until only the deep colour is left.
@@ -1301,6 +1326,7 @@ void main() {
     c = ambientLife(c, p, cameraRay(p), depth);
     c = smokePlumes(c, p, cameraRay(p), depth);
     c = swampMist(c, p, cameraRay(p), depth);
+    c = throughGlass(p, c);
     writeOutput(p, precipitation(c, p, depth));
   }
 }

@@ -57,6 +57,10 @@ layout(set = 0, binding = 60, r8) uniform readonly image2D uiMask;
 // The chrome's glass over each pixel: what it adds, and in w how much of the frame it lets
 // through. Written every frame and laid over the frame after denoising, never accumulated.
 layout(set = 0, binding = 61, rgba16f) uniform writeonly image2D glassImage;
+// How far the slab bends what is seen through each pixel, in traced pixels, applied to the
+// finished frame rather than to the ray, so the world behind the glass is traced straight and
+// reprojects, upscales and denoises as scene.
+layout(set = 0, binding = 62, rg16f) uniform writeonly image2D glassBendImage;
 // World units of height the full range of a relief map stands for at full strength.
 const float RELIEF_DEPTH = 24.0;
 layout(std430, set = 0, binding = 24) readonly buffer TexAnim { vec2 v[]; } texAnim;
@@ -1566,10 +1570,13 @@ void main() {
     dir = normalize(focal - origin);
   }
 
-  // The chrome's glass: where the interface will lay a pane over this pixel, the ray meets the
-  // slab first. It reflects the world by Fresnel, takes the sun's glint and the lamps' where the
-  // camera stands in their light, bends into the slab and out of its flat back, and carries on
-  // into the world from there; what it finds is tinted and dimmed by the glass on the way back.
+  // The chrome's glass: where the interface will lay a pane over this pixel, a slab of glass
+  // stands a step in front of the camera. Its surface reflects the world by Fresnel and takes
+  // the sun's glint and the lamps' where the camera stands in their light, and its rounded rim
+  // bends what lies beyond. The ray into the world is not bent here: the bend is recorded and
+  // applied to the finished frame, so what lies behind the glass is traced straight and stays
+  // consistent for reprojection, upscaling and denoising. The glass itself is fixed to the
+  // screen and is worked out from the pixel's centre, never from the jittered sample.
   bool glassPixel = false;
   float glassFresnel = 0.0;
   float glassRim = 0.0;
@@ -1577,47 +1584,42 @@ void main() {
   vec3 glassSpecular = vec3(0.0);
   vec3 glassNormal = vec3(0.0);
   vec3 glassSun = vec3(0.0);
+  vec2 glassBend = vec2(0.0);
   if (u.glass0.z > 0.5) {
-    // The pane is read at the pixel's centre, not its jittered sample: the glass is a fixed
-    // thing in front of the camera, and a slab whose shape moved with the sample would shimmer.
     vec2 uiPx = u.glass1.xy + (vec2(px) + 0.5) / vec2(float(w), float(h)) * u.glass1.zw;
     float nearest;
     vec2 outward;
     if (glassEdge(uiPx, nearest, outward)) {
       glassPixel = true;
-      // The slab is fixed to the screen, so its rays leave from the pixel's centre: a sample
-      // that moved within the pixel each frame would be thrown several pixels by the bend at
-      // the rim, and the world behind the rim would never settle.
       vec3 centreView = vec3((float(px.x) + 0.5 - float(w) * 0.5) / zoom, (float(px.y) + 0.5 - float(h) * 0.5) / zoom, 1.0);
-      dir = normalize(vec3(dot(row0, centreView), dot(row1, centreView), dot(row2, centreView)));
-      origin = camPos;
+      vec3 gDir = normalize(vec3(dot(row0, centreView), dot(row1, centreView), dot(row2, centreView)));
       float t = clamp(nearest / GLASS_RIM, 0.0, 1.0);
       float height = sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0));
       float slope = t < 1.0 ? (1.0 - t) / max(height, 0.05) : 0.0;
       vec3 nView = normalize(vec3(outward * slope, -1.0));
       glassNormal = normalize(vec3(dot(row0, nView), dot(row1, nView), dot(row2, nView)));
       vec3 forward = normalize(vec3(row0.z, row1.z, row2.z));
-      vec3 pane = origin + dir * (GLASS_DISTANCE * length(centreView));
+      vec3 pane = camPos + gDir * (GLASS_DISTANCE * length(centreView));
       glassRim = 1.0 - smoothstep(1.5, 3.0, nearest);
       // Reflectance rises toward the rim but is held short of a mirror: a sharp mirror of a
       // moving world on every edge reads as a shimmer, not as glass.
-      float cosI = clamp(dot(-dir, glassNormal), 0.0, 1.0);
+      float cosI = clamp(dot(-gDir, glassNormal), 0.0, 1.0);
       glassFresnel = 0.04 + 0.56 * pow(1.0 - cosI, 5.0);
       // The world in the glass.
-      vec3 reflected = reflect(dir, glassNormal);
+      vec3 reflected = reflect(gDir, glassNormal);
       Hit mirror;
       if (trace(pane, reflected, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_VISIBLE, seed, mirror)) {
         glassReflection = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, u.sun.xyz, (flags & FLAG_SHADOWS) != 0u, seed) + 0.5 * skyRadiance(mirror.n));
       } else {
         glassReflection = skyBackground(reflected);
       }
-      // The sun and the lamps on the surface, shadowed as the camera's own spot is.
+      // The sun and the lamps on the surface, shadowed as the camera's own spot is; every lamp
+      // in reach exactly, since the glass is never accumulated and nothing about it may be left
+      // to chance.
       vec4 glassMaterial = vec4(0.06, 400.0, 0.0, 1.0);
       bool lit = u.sun.w > 0.0 && !((flags & FLAG_SHADOWS) != 0u && occluded(pane, u.sun.xyz, seed));
       glassSun = lit ? u.sunColor.rgb * (u.sun.w * cloudShadow(pane)) : vec3(0.0);
-      glassSpecular = specularOf(glassMaterial, glassNormal, -dir, u.sun.xyz, glassSun);
-      // Every lamp in reach, exactly: the glass is never accumulated, so nothing about it may
-      // be left to chance.
+      glassSpecular = specularOf(glassMaterial, glassNormal, -gDir, u.sun.xyz, glassSun);
       Hit paneHit;
       paneHit.surface = pane;
       paneHit.p = pane + glassNormal * RAY_EPS;
@@ -1636,25 +1638,27 @@ void main() {
         if (e == vec3(0.0) || occludedWithin(paneHit.p, l, d - 2.0)) {
           continue;
         }
-        glassSpecular += specularOf(glassMaterial, glassNormal, -dir, l, color);
+        glassSpecular += specularOf(glassMaterial, glassNormal, -gDir, l, color);
       }
-      // Into the slab and out of its flat back: a thick rounded edge bends what lies beyond it.
-      vec3 inside = refract(dir, glassNormal, 1.0 / 1.5);
+      // Into the slab and out of its flat back: where the bent ray would leave, as a shift of
+      // the frame in pixels, for the final pass to apply.
+      vec3 inside = refract(gDir, glassNormal, 1.0 / 1.5);
       if (dot(inside, inside) < 0.5) {
-        inside = dir;
+        inside = gDir;
       }
-      vec3 back = pane + inside * (GLASS_THICKNESS / max(dot(inside, forward), 0.2));
       vec3 outward3 = refract(inside, -forward, 1.5);
       if (dot(outward3, outward3) < 0.5) {
         outward3 = inside;
       }
-      origin = back;
-      dir = normalize(outward3);
+      vec3 bentView = vec3(dot(vec3(row0.x, row1.x, row2.x), outward3), dot(vec3(row0.y, row1.y, row2.y), outward3), dot(vec3(row0.z, row1.z, row2.z), outward3));
+      vec2 bentPixel = bentView.xy / max(bentView.z, 1e-3) * zoom + vec2(float(w), float(h)) * 0.5;
+      glassBend = bentPixel - (vec2(px) + 0.5);
     }
   }
 
   // Written now, whatever path the pixel takes from here, since it is laid over the frame later.
   imageStore(glassImage, ivec2(px), glassOverlay(glassPixel, glassFresnel, glassRim, glassReflection, glassSpecular, glassNormal, glassSun));
+  imageStore(glassBendImage, ivec2(px), vec4(glassBend, 0.0, 0.0));
 
   uint primaryFlags = (flags & FLAG_CULL) != 0u ? gl_RayFlagsCullBackFacingTrianglesEXT : gl_RayFlagsNoneEXT;
 
