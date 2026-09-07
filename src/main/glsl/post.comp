@@ -21,6 +21,9 @@ layout(set = 0, binding = 17, rgba16f) uniform readonly image2D filterA;
 layout(set = 0, binding = 18, rgba16f) uniform readonly image2D filterB;
 layout(set = 0, binding = 30, rgba16f) uniform readonly image2D bloomBlur;
 layout(set = 0, binding = 35, rgba16f) uniform readonly image2D diffuseBlur;
+// The chrome's glass over each traced pixel: a pane is exempt from the lens's aberration, since
+// it sits at the screen rather than in the world the lens is looking at.
+layout(set = 0, binding = 61, rgba16f) uniform readonly image2D glassImage;
 layout(std430, set = 0, binding = 39) readonly buffer Plumes { vec4 v[]; } plumes;
 
 const float MAX_COC = 20.0;
@@ -144,6 +147,14 @@ vec3 aberrated(ivec2 p, ivec2 size) {
   return vec3(readColorAt(pos + offset, size).r, readColor(p).g, readColorAt(pos - offset, size).b);
 }
 
+// Whether a pane of the chrome lies over this output pixel; the glass is kept at traced size.
+bool underGlass(ivec2 p, ivec2 size) {
+  ivec2 traced = imageSize(glassImage);
+  ivec2 q = clamp(ivec2((vec2(p) + 0.5) * vec2(traced) / vec2(size)), ivec2(0), traced - 1);
+  vec4 glass = imageLoad(glassImage, q);
+  return glass.a < 1.0 || glass.rgb != vec3(0.0);
+}
+
 // Grain that changes every frame, heaviest in the shadows and fading out in the highlights.
 vec3 grain(ivec2 p, vec3 c) {
   vec3 seed = vec3(vec2(p), float(u.misc.x & 1023u));
@@ -263,7 +274,7 @@ void main() {
   if (p.x >= size.x || p.y >= size.y) {
     return;
   }
-  vec3 c = u.post2.y > 0.0 ? aberrated(p, size) : readColor(p);
+  vec3 c = u.post2.y > 0.0 && !underGlass(p, size) ? aberrated(p, size) : readColor(p);
   if ((u.misc.y & FLAG_SHIMMER) != 0u) {
     vec2 s = shimmer(p, size);
     if (dot(s, s) > 0.0) {
