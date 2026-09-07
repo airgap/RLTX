@@ -1703,6 +1703,13 @@ void main() {
     sample_ *= hit.albedo;
     hit.albedo = vec3(1.0);
   }
+  // The sample is stored in half floats: a radiance beyond their range would become infinite
+  // there and spread through the filters as nothing. A sample that is already not a number
+  // marks a fault upstream and is shown as loud magenta rather than hidden.
+  if (any(isnan(sample_)) || any(isinf(sample_))) {
+    sample_ = vec3(3.0e4, 0.0, 3.0e4);
+  }
+  sample_ = min(sample_, vec3(3.0e4));
   // Rippling wet ground keeps the short history too, so its reflections move with the rain
   // instead of averaging into a blur.
   imageStore(sampleImage, ivec2(px), vec4(sample_, (stable.dyn || waterPixel || wetRippling) ? -cosine : cosine));

@@ -1011,7 +1011,9 @@ void main() {
   vec3 normal = imageLoad(normalImage, p).xyz;
   float lum = luminance(center.rgb);
   vec4 sample_ = imageLoad(sampleImage, p);
-  float footprint = position.w / u.cam.w / max(abs(sample_.a), 0.1);
+  // A sky pixel of a held frame carries no depth; its footprint is taken as tiny so its
+  // distance to any surface counts as far, rather than as a negative that would blow up.
+  float footprint = abs(position.w) / u.cam.w / max(abs(sample_.a), 0.1);
 
   // A small blur of the variance stabilises the luminance weight.
   float variance = 0.0;
