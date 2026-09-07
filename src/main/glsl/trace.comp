@@ -1455,8 +1455,20 @@ bool glassEdge(vec2 uiPx, out float nearest, out vec2 outward) {
         s += 4;
         continue;
       }
-      nearest = min(nearest, dist);
-      toEdge += d / dist;
+      // The edge lies within the last step; it is placed to a quarter pixel so the slab's
+      // shape does not jump as the pane or the pixel grid shifts beneath it.
+      float lo = dist - STEP;
+      float hi = dist;
+      for (int k = 0; k < 3; ++k) {
+        float mid = 0.5 * (lo + hi);
+        if (glassAt(uiPx + d * mid)) {
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+      nearest = min(nearest, hi);
+      toEdge += d / hi;
       break;
     }
   }
@@ -1538,7 +1550,9 @@ void main() {
   vec3 glassNormal = vec3(0.0);
   vec3 glassSun = vec3(0.0);
   if (u.glass0.z > 0.5) {
-    vec2 uiPx = u.glass1.xy + (vec2(px) + jitter) / vec2(float(w), float(h)) * u.glass1.zw;
+    // The pane is read at the pixel's centre, not its jittered sample: the glass is a fixed
+    // thing in front of the camera, and a slab whose shape moved with the sample would shimmer.
+    vec2 uiPx = u.glass1.xy + (vec2(px) + 0.5) / vec2(float(w), float(h)) * u.glass1.zw;
     float nearest;
     vec2 outward;
     if (glassEdge(uiPx, nearest, outward)) {
