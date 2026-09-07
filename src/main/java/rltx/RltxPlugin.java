@@ -1156,6 +1156,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		footprints.track(renderer, cells);
 		renderer.setCells(cells.bits);
 		frame.textureDisplacement = config.textureDisplacement();
+		frame.glassChrome = config.chrome() == RltxConfig.Chrome.GLASS;
+		frame.glassTint = 1f - config.chromeTransparency() / 100f;
+		frame.viewportX = client.getViewportXOffset();
+		frame.viewportY = client.getViewportYOffset();
+		frame.viewportWidth = client.getViewportWidth();
+		frame.viewportHeight = client.getViewportHeight();
 		fillUnderwater();
 		fillRunoff();
 		if (photo.takeQuad())
@@ -1936,6 +1942,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int canvasHeight = client.getCanvasHeight();
 		BufferProvider bufferProvider = client.getBufferProvider();
 		compositor.updateUiTexture(bufferProvider.getPixels(), bufferProvider.getWidth(), bufferProvider.getHeight(), canvasWidth, canvasHeight);
+		if (config.chrome() == RltxConfig.Chrome.GLASS && gameState == GameState.LOGGED_IN && renderer != null)
+		{
+			// The panes of this frame's interface become the glass the next frame traces.
+			renderer.setUiMask(bufferProvider.getPixels(), bufferProvider.getWidth(), bufferProvider.getHeight(), Chrome.GLASS_KEY);
+		}
 
 		glBindFramebuffer(GL_FRAMEBUFFER, awtContext.getFramebuffer(false));
 		glClearColor(0, 0, 0, 1);

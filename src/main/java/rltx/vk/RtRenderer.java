@@ -99,7 +99,7 @@ public final class RtRenderer
 	private static final int OUTPUT_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
 	private static final int HISTORY_COLOR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 	private static final int HISTORY_POS_FORMAT = VK_FORMAT_R32G32B32A32_SFLOAT;
-	private static final int FRAME_UBO_SIZE = 1024;
+	private static final int FRAME_UBO_SIZE = 1056;
 
 	private static final int FLAG_CULL = 1;
 	private static final int FLAG_SHADOWS = 2;
@@ -191,7 +191,8 @@ public final class RtRenderer
 	private static final int BINDING_STATIC_NRM = 57;
 	private static final int BINDING_DYNAMIC_NRM = 58;
 	private static final int BINDING_RELIEF = 59;
-	private static final int BINDING_COUNT = 60;
+	private static final int BINDING_UI_MASK = 60;
+	private static final int BINDING_COUNT = 61;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -386,6 +387,15 @@ public final class RtRenderer
 	private long skyboxSampler;
 	private Img gameTextures;
 	private Img reliefMaps;
+	/** Where the interface lays glass, one byte per interface pixel; the frame before's interface, since it is drawn after the trace. */
+	private Img uiMask;
+	private VkBuf uiMaskStaging;
+	private int uiMaskWidth = 1, uiMaskHeight = 1;
+	private boolean uiMaskUninitialized = true;
+	private boolean uiMaskCopyPending;
+	private byte[] pendingUiMask = new byte[0];
+	private int pendingUiMaskWidth, pendingUiMaskHeight;
+	private boolean uiMaskDirty;
 	private long textureSampler;
 	private VkBuf textureAnimation;
 	private VkBuf waterTypes;
@@ -517,6 +527,12 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		waterMaskBuffer = ctx.createBuffer((long) WATER_MASK_WORDS * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		uiMask = createImage(1, 1, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+		uiMaskStaging = ctx.createBuffer(4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		for (long set : descriptorSets)
+		{
+			writeImageDescriptor(set, BINDING_UI_MASK, uiMask.view);
+		}
 		rippleA = createImage(RIPPLE_CELLS, RIPPLE_CELLS, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, false);
 		rippleB = createImage(RIPPLE_CELLS, RIPPLE_CELLS, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, false);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -785,6 +801,7 @@ public final class RtRenderer
 			types[BINDING_STATIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_RELIEF] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			types[BINDING_UI_MASK] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_TEXTURES] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_TEX_ANIM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -821,7 +838,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(56);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(58);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(54);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(14);
@@ -1557,6 +1574,82 @@ public final class RtRenderer
 	public void setRipples(float[] packed, int floats)
 	{
 		pendingRipples.set(packed, Math.min(floats, RIPPLE_PARAM_FLOATS));
+	}
+
+	/**
+	 * Where the interface will lay glass: every interface pixel of the key colour, from the
+	 * interface as drawn this frame, for the next frame's trace. Any thread that owns the pixels.
+	 */
+	public void setUiMask(int[] pixels, int width, int height, int keyRgb)
+	{
+		int n = width * height;
+		if (pendingUiMask.length < n)
+		{
+			pendingUiMask = new byte[n];
+		}
+		for (int i = 0; i < n; ++i)
+		{
+			pendingUiMask[i] = (pixels[i] & 0xffffff) == keyRgb ? (byte) 0xff : 0;
+		}
+		pendingUiMaskWidth = width;
+		pendingUiMaskHeight = height;
+		uiMaskDirty = true;
+	}
+
+	// After the wait on the frame before: the mask goes to its staging buffer, the image remade
+	// at the interface's size when that has changed, and the copy is left for the command buffer.
+	private void flushUiMask()
+	{
+		if (!uiMaskDirty)
+		{
+			return;
+		}
+		uiMaskDirty = false;
+		int width = pendingUiMaskWidth, height = pendingUiMaskHeight;
+		if (width != uiMaskWidth || height != uiMaskHeight)
+		{
+			destroyImage(uiMask);
+			ctx.destroyBuffer(uiMaskStaging);
+			uiMask = createImage(width, height, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+			uiMaskStaging = ctx.createBuffer((long) width * height, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			uiMaskWidth = width;
+			uiMaskHeight = height;
+			uiMaskUninitialized = true;
+			for (long set : descriptorSets)
+			{
+				writeImageDescriptor(set, BINDING_UI_MASK, uiMask.view);
+			}
+		}
+		uiMaskStaging.mapped.position(0);
+		uiMaskStaging.mapped.put(pendingUiMask, 0, width * height);
+		uiMaskStaging.mapped.position(0);
+		uiMaskCopyPending = true;
+	}
+
+	// The mask's copy into its image, before anything reads it this frame.
+	private void recordUiMask(VkCommandBuffer cmd)
+	{
+		if (uiMaskUninitialized)
+		{
+			uiMaskUninitialized = false;
+			imageBarrier(cmd, uiMask.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+				VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+		}
+		if (!uiMaskCopyPending)
+		{
+			return;
+		}
+		uiMaskCopyPending = false;
+		memoryBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+		try (MemoryStack stack = stackPush())
+		{
+			VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
+			region.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0);
+			region.get(0).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(0).baseArrayLayer(0).layerCount(1);
+			region.get(0).imageExtent().width(uiMaskWidth).height(uiMaskHeight).depth(1);
+			vkCmdCopyBufferToImage(cmd, uiMaskStaging.buffer, uiMask.image, VK_IMAGE_LAYOUT_GENERAL, region);
+		}
+		memoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 	}
 
 	/** One bit per tile of the loaded scene, row-major over the extended tiles, set where the tile is water. */
@@ -2406,6 +2499,7 @@ public final class RtRenderer
 		}
 		waitPreviousFrame();
 		flushPending();
+		flushUiMask();
 		prepareZoneUpdates();
 		if (dlssFeature != 0 || rrFeature != 0)
 		{
@@ -2461,6 +2555,7 @@ public final class RtRenderer
 				VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT);
 			recordZoneUpdates(cmd);
+			recordUiMask(cmd);
 			if (params.ripples)
 			{
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
@@ -3088,6 +3183,8 @@ public final class RtRenderer
 		float mipBias = (float) (Math.log((double) internalWidth / outputWidth) / Math.log(2.0)) - 1f;
 		b.putInt(flags2).putInt(p.textureSize).putFloat(mipBias).putFloat(p.groundRelief);
 		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
+		b.putFloat(uiMaskWidth).putFloat(uiMaskHeight).putFloat(p.glassChrome && !uiMaskUninitialized ? 1f : 0f).putFloat(p.glassTint);
+		b.putFloat(p.viewportX).putFloat(p.viewportY).putFloat(Math.max(p.viewportWidth, 1)).putFloat(Math.max(p.viewportHeight, 1));
 		if (b.position() > FRAME_UBO_SIZE)
 		{
 			throw new IllegalStateException("Frame uniforms exceed the buffer: " + b.position() + " of " + FRAME_UBO_SIZE + " bytes");
@@ -3142,6 +3239,8 @@ public final class RtRenderer
 		{
 			destroyImage(reliefMaps);
 		}
+		destroyImage(uiMask);
+		ctx.destroyBuffer(uiMaskStaging);
 		vkDestroySampler(device, textureSampler, null);
 		ctx.destroyBuffer(frameUbo);
 		ctx.destroyBuffer(textureAnimation);

@@ -43,4 +43,6 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
   uvec4 flags2;    // x: flags once misc.y is full, bit 0 sampled local lights, bit 1 mist indoors, bit 3 ripples, bit 4 cloth on characters; y: texture size in texels; z: mip bias as float bits; w: ground relief height in units as float bits
   vec4 lens;       // this frame's jitter x and y in traced pixels, whether DLSS upscales, whether Ray Reconstruction denoises
+  vec4 glass0;     // interface mask width and height in interface pixels, whether the chrome is traced as glass, its tint
+  vec4 glass1;     // the traced viewport's x, y, width and height in interface pixels
 } u;

@@ -52,6 +52,8 @@ layout(std430, set = 0, binding = 58) readonly buffer DynNrm { uint n[]; } dynNr
 layout(set = 0, binding = 23) uniform sampler2DArray gameTextures;
 // Relief height of every texture, one channel, laid out like the colour array.
 layout(set = 0, binding = 59) uniform sampler2DArray reliefMaps;
+// Where the interface lays a pane of glass, one byte per interface pixel, from the frame before.
+layout(set = 0, binding = 60, r8) uniform readonly image2D uiMask;
 // World units of height the full range of a relief map stands for at full strength.
 const float RELIEF_DEPTH = 24.0;
 layout(std430, set = 0, binding = 24) readonly buffer TexAnim { vec2 v[]; } texAnim;
@@ -1412,6 +1414,56 @@ vec3 directSun(Hit hit, vec3 sunDir, bool shadows, inout uint seed) {
   return u.sunColor.rgb * (u.sun.w * ndl * cloudShadow(hit.p));
 }
 
+// Interface glass: the chrome's panes, traced as a slab of glass a step in front of the camera.
+// The slab is flat in the middle and rounds off over the last stretch to its edge, so its normal
+// leans outward toward the rim. Text and icons lie on the pane, so the march to the edge steps
+// over anything that glass resumes just behind.
+const float GLASS_DISTANCE = 24.0;
+const float GLASS_THICKNESS = 6.0;
+const float GLASS_RIM = 14.0;
+
+bool glassAt(vec2 uiPx) {
+  ivec2 p = ivec2(floor(uiPx));
+  if (p.x < 0 || p.y < 0 || p.x >= int(u.glass0.x) || p.y >= int(u.glass0.y)) {
+    return false;
+  }
+  return imageLoad(uiMask, p).r > 0.5;
+}
+
+// The distance to the pane's edge in interface pixels and the direction to it, or nothing when
+// the pixel is not on a pane.
+bool glassEdge(vec2 uiPx, out float nearest, out vec2 outward) {
+  if (!glassAt(uiPx)) {
+    return false;
+  }
+  const int DIRECTIONS = 12;
+  const int STEPS = 12;
+  const float STEP = 2.0;
+  nearest = float(STEPS) * STEP;
+  vec2 toEdge = vec2(0.0);
+  for (int i = 0; i < DIRECTIONS; ++i) {
+    float a = float(i) * (6.2831853 / float(DIRECTIONS));
+    vec2 d = vec2(cos(a), sin(a));
+    int s = 1;
+    while (s <= STEPS) {
+      float dist = float(s) * STEP;
+      if (glassAt(uiPx + d * dist)) {
+        ++s;
+        continue;
+      }
+      if (glassAt(uiPx + d * (dist + 3.0)) || glassAt(uiPx + d * (dist + 6.0))) {
+        s += 4;
+        continue;
+      }
+      nearest = min(nearest, dist);
+      toEdge += d / dist;
+      break;
+    }
+  }
+  outward = length(toEdge) > 1e-4 ? normalize(toEdge) : vec2(0.0);
+  return true;
+}
+
 void main() {
   uvec2 px = gl_GlobalInvocationID.xy;
   uint w = u.misc.z;
@@ -1474,6 +1526,71 @@ void main() {
     dir = normalize(focal - origin);
   }
 
+  // The chrome's glass: where the interface will lay a pane over this pixel, the ray meets the
+  // slab first. It reflects the world by Fresnel, takes the sun's glint and the lamps' where the
+  // camera stands in their light, bends into the slab and out of its flat back, and carries on
+  // into the world from there; what it finds is tinted and dimmed by the glass on the way back.
+  bool glassPixel = false;
+  float glassFresnel = 0.0;
+  float glassRim = 0.0;
+  vec3 glassReflection = vec3(0.0);
+  vec3 glassSpecular = vec3(0.0);
+  vec3 glassNormal = vec3(0.0);
+  vec3 glassSun = vec3(0.0);
+  if (u.glass0.z > 0.5) {
+    vec2 uiPx = u.glass1.xy + (vec2(px) + jitter) / vec2(float(w), float(h)) * u.glass1.zw;
+    float nearest;
+    vec2 outward;
+    if (glassEdge(uiPx, nearest, outward)) {
+      glassPixel = true;
+      float t = clamp(nearest / GLASS_RIM, 0.0, 1.0);
+      float height = sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0));
+      float slope = t < 1.0 ? (1.0 - t) / max(height, 0.05) : 0.0;
+      vec3 nView = normalize(vec3(outward * slope, -1.0));
+      glassNormal = normalize(vec3(dot(row0, nView), dot(row1, nView), dot(row2, nView)));
+      vec3 forward = normalize(vec3(row0.z, row1.z, row2.z));
+      vec3 pane = origin + dir * (GLASS_DISTANCE * length(viewDir));
+      glassRim = 1.0 - smoothstep(1.5, 3.0, nearest);
+      float cosI = clamp(dot(-dir, glassNormal), 0.0, 1.0);
+      glassFresnel = 0.04 + 0.96 * pow(1.0 - cosI, 5.0);
+      // The world in the glass.
+      vec3 reflected = reflect(dir, glassNormal);
+      Hit mirror;
+      if (trace(pane, reflected, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_VISIBLE, seed, mirror)) {
+        glassReflection = mirror.albedo * (vec3(u.sky.w) + directSun(mirror, u.sun.xyz, (flags & FLAG_SHADOWS) != 0u, seed) + 0.5 * skyRadiance(mirror.n));
+      } else {
+        glassReflection = skyBackground(reflected);
+      }
+      // The sun and the lamps on the surface, shadowed as the camera's own spot is.
+      vec4 glassMaterial = vec4(0.06, 400.0, 0.0, 1.0);
+      bool lit = u.sun.w > 0.0 && !((flags & FLAG_SHADOWS) != 0u && occluded(pane, u.sun.xyz, seed));
+      glassSun = lit ? u.sunColor.rgb * (u.sun.w * cloudShadow(pane)) : vec3(0.0);
+      glassSpecular = specularOf(glassMaterial, glassNormal, -dir, u.sun.xyz, glassSun);
+      Hit paneHit;
+      paneHit.surface = pane;
+      paneHit.p = pane + glassNormal * RAY_EPS;
+      paneHit.n = glassNormal;
+      paneHit.gn = glassNormal;
+      paneHit.material = glassMaterial;
+      paneHit.albedo = vec3(0.0);
+      paneHit.relief = 1.0;
+      paneHit.fabric = false;
+      directLocalSpecular(paneHit, -dir, glassSpecular, seed);
+      // Into the slab and out of its flat back: a thick rounded edge bends what lies beyond it.
+      vec3 inside = refract(dir, glassNormal, 1.0 / 1.5);
+      if (dot(inside, inside) < 0.5) {
+        inside = dir;
+      }
+      vec3 back = pane + inside * (GLASS_THICKNESS / max(dot(inside, forward), 0.2));
+      vec3 outward3 = refract(inside, -forward, 1.5);
+      if (dot(outward3, outward3) < 0.5) {
+        outward3 = inside;
+      }
+      origin = back;
+      dir = normalize(outward3);
+    }
+  }
+
   uint primaryFlags = (flags & FLAG_CULL) != 0u ? gl_RayFlagsCullBackFacingTrianglesEXT : gl_RayFlagsNoneEXT;
 
   Hit hit;
@@ -1497,6 +1614,11 @@ void main() {
     // A ray heading downward ran out of loaded scene. The sky carries on below the horizon for
     // a while, then gives way to the fog colour of that direction, as the distance fade does.
     vec3 background = dir.y > 0.02 ? mix(skyBackground(dir), horizonAt(dir), smoothstep(0.15, 0.6, dir.y)) : skyBackground(dir);
+    if (glassPixel) {
+      vec3 tint = mix(vec3(1.0), vec3(0.42, 0.44, 0.50), u.glass0.w);
+      background = background * tint * (1.0 - glassFresnel) + glassReflection * glassFresnel + glassSpecular;
+      background = mix(background, vec3(0.88, 0.74, 0.44) * (u.sky.w + glassSun * max(dot(glassNormal, u.sun.xyz), 0.0)) + glassSpecular, glassRim);
+    }
     if ((flags & FLAG_STILL) != 0u) {
       // Held frames accumulate the sky like everything else, so it is stored as the radiance
       // the final tone curve maps back to its painted colour.
@@ -1698,6 +1820,20 @@ void main() {
     float rim = pow(1.0 - max(dot(hit.n, -dir), 0.0), 2.5);
     hit.albedo = mix(hit.albedo, u.highlight[hit.highlight].rgb, rim);
     light += vec3(rim * 3.0 * u.marks.z / u.params.y);
+  }
+
+  if (glassPixel) {
+    // Seen through the slab: dimmed by what the surface reflected away and tinted by the glass,
+    // with the reflection and the glints laid over; the rim is a fine gold edge, opaque.
+    vec3 tint = mix(vec3(1.0), vec3(0.42, 0.44, 0.50), u.glass0.w);
+    hit.albedo *= tint;
+    light *= 1.0 - glassFresnel;
+    specular = specular * (1.0 - glassFresnel) + glassReflection * glassFresnel + glassSpecular;
+    if (glassRim > 0.0) {
+      hit.albedo = mix(hit.albedo, vec3(0.88, 0.74, 0.44), glassRim);
+      light = mix(light, vec3(u.sky.w) + glassSun * max(dot(glassNormal, u.sun.xyz), 0.0), glassRim);
+      specular = mix(specular, glassSpecular * 2.0, glassRim);
+    }
   }
 
   Hit stable = hit;
