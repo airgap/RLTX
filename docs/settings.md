@@ -133,7 +133,9 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Focus peaking | false | Paints the edges of whatever the lens holds sharp red, to see the plane of focus while framing. Photos never show it. |
 | Save linear HDR too | false | Saves each photo's accumulated light as a Radiance .hdr file beside the PNG, linear and unclipped, for editing elsewhere. |
 | Control panel key | F8 | Opens or hides a floating window holding every RLTX setting, for adjusting them while the sidebar is out of the way. |
+| Showcase | false | Every quality setting at its top, for showing the renderer off: four bounces, the longest history and the most denoiser passes, exact local lights, textures, relief, DLAA, the widest foliage sway and the full draw distance. Your own values come back when it goes off, and after a restart if the client closed with it on. Looks such as bloom, glow and colours are left as you set them. |
 | Quad-resolution photo key | F9 | Takes a photo at twice the width and height of the view, accumulated like any photo, whether or not the interface is hidden. The game pauses while it renders, about four times as long as a normal photo. |
+| Showcase key | F7 | Toggles the showcase. |
 
 ## Surfaces
 

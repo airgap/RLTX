@@ -115,7 +115,8 @@ holds three tabs the sidebar cannot: Presets save every setting to a file or the
 load them back; Areas bind settings to places, bounded by polygons walked corner by corner or by
 misty ground, applied when you enter and undone when you leave, with starter areas for
 Lumbridge bundled; Cinema records, previews, saves and renders camera paths. Keys, all
-rebindable: F11 photo mode, F9 quad-resolution photo, F8 settings panel, F10 free camera, and
+rebindable: F11 photo mode, F9 quad-resolution photo, F8 settings panel, F7 showcase, which puts
+every quality setting at its top until pressed again, F10 free camera, and
 with the free camera on, Ctrl+K, Ctrl+Shift+K, Ctrl+Alt+K and Ctrl+Alt+P to record, clear, render
 and preview a cinema path.
 

@@ -1084,6 +1084,30 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "showcase",
+		name = "Showcase",
+		description = "Every quality setting at its top, for showing the renderer off: four bounces, the longest history and the most denoiser passes, exact local lights, textures, relief, DLAA, the widest foliage sway and the full draw distance. Your own values come back when it goes off, and after a restart if the client closed with it on. Looks such as bloom, glow and colours are left as you set them.",
+		section = cameraSection,
+		position = 39
+	)
+	default boolean showcase()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "showcaseKey",
+		name = "Showcase key",
+		description = "Toggles the showcase.",
+		section = cameraSection,
+		position = 40
+	)
+	default Keybind showcaseKey()
+	{
+		return new Keybind(KeyEvent.VK_F7, 0);
+	}
+
+	@ConfigItem(
 		keyName = "quadPhotoKey",
 		name = "Quad-resolution photo key",
 		description = "Takes a photo at twice the width and height of the view, accumulated like any photo, whether or not the interface is hidden. The game pauses while it renders, about four times as long as a normal photo.",

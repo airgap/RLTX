@@ -150,6 +150,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private ControlPanel controlPanel;
 	private Presets presets;
 	private AreaRules areaRules;
+	private Showcase showcase;
 	private volatile WorldPoint currentPosition;
 
 	private final HotkeyListener controlPanelKey = new HotkeyListener(() -> config.controlPanelKey())
@@ -158,6 +159,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		public void hotkeyPressed()
 		{
 			controlPanel.toggle();
+		}
+	};
+
+	private final HotkeyListener showcaseKey = new HotkeyListener(() -> config.showcaseKey())
+	{
+		@Override
+		public void hotkeyPressed()
+		{
+			configManager.setConfiguration(RltxConfig.GROUP, "showcase", !config.showcase());
 		}
 	};
 
@@ -411,6 +421,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	protected void startUp()
 	{
 		presets = new Presets(configManager, config, gson);
+		showcase = new Showcase(presets, configManager, gson);
+		showcase.recover();
 		areaRules = new AreaRules(presets, gson);
 		try
 		{
@@ -432,6 +444,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		ripples = new Ripples(client, config, frame);
 		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
 		keyManager.registerKeyListener(controlPanelKey);
+		keyManager.registerKeyListener(showcaseKey);
 		photo.register(keyManager, mouseManager);
 		freeCamera.register(keyManager, mouseManager);
 		cinema.register(keyManager);
@@ -513,8 +526,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	protected void shutDown()
 	{
 		keyManager.unregisterKeyListener(controlPanelKey);
+		keyManager.unregisterKeyListener(showcaseKey);
 		controlPanel.dispose();
 		areaRules.reset();
+		showcase.set(false);
 		cinema.shutDown();
 		cinema.unregister(keyManager);
 		photo.unregister(keyManager, mouseManager);
@@ -584,6 +599,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		if (controlPanel != null)
 		{
 			controlPanel.refresh(event.getKey());
+		}
+		if ("showcase".equals(event.getKey()))
+		{
+			showcase.set(config.showcase());
+			say(config.showcase() ? "RLTX: showcase on" : "RLTX: showcase off, your settings are back");
 		}
 		if ("heldTorch".equals(event.getKey()) && !config.heldTorch())
 		{
