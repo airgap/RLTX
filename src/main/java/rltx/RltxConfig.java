@@ -1313,6 +1313,18 @@ public interface RltxConfig extends Config
 		return 15;
 	}
 
+	@ConfigItem(
+		keyName = "clothActors",
+		name = "Cloth on characters",
+		description = "Untextured parts of players and NPCs are shaded as fabric: no sheen or reflections, only a soft glow where the light grazes the weave.",
+		section = surfacesSection,
+		position = 4
+	)
+	default boolean clothActors()
+	{
+		return true;
+	}
+
 	@Range(max = 100)
 	@Units(Units.PERCENT)
 	@ConfigItem(

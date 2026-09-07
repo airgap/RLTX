@@ -930,8 +930,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		boolean torch = lights.torchCarried && renderable == client.getLocalPlayer();
 		framePusher.flames = torch || lights.lit(tileObject, renderable);
 		framePusher.highlight = renderable instanceof NPC ? glow.highlight((NPC) renderable) : 0;
+		framePusher.actor = renderable instanceof Actor;
 		framePusher.push(model, orientation, x, y, z, transform, palette(), dynamic, dynamicTranslucent);
 		framePusher.flames = false;
+		framePusher.actor = false;
 		framePusher.highlight = 0;
 		if (torch)
 		{
@@ -1016,7 +1018,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int height = Perspective.getTileHeight(client, lp, plane) - actor.getAnimationHeightOffset();
 		int opaqueStart = dynamic.faces();
 		int translucentStart = dynamicTranslucent.faces();
+		framePusher.actor = true;
 		framePusher.push(model, actor.getCurrentOrientation(), lp.getX(), height, lp.getY(), null, palette(), dynamic, dynamicTranslucent);
+		framePusher.actor = false;
 		motion.record(actor, dynamic, opaqueStart, dynamicTranslucent, translucentStart);
 		++statOffscreen;
 	}

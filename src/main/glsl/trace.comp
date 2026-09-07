@@ -98,6 +98,7 @@ bool primaryRay = false;
 const uint WATER_BIT = 0x80000000u;
 const uint TERRAIN_BIT = 0x40000000u;
 const uint FLAME_BIT = 0x20000000u;
+const uint ACTOR_BIT = 0x10000000u;
 const uint FLAG_SKYBOX = 32u;
 const uint DYN_BIT = 0x800000u;
 const float RAY_EPS = 0.25;
@@ -133,6 +134,7 @@ struct Hit {
   bool flame;       // a flame face of a light-bearing object
   uint highlight;   // index into the highlight palette, 0 for none
   float relief;     // the share of sunlight the surface's own relief lets through
+  bool fabric;      // an untextured face of a character, shaded as cloth
 };
 
 // A texture's material, or the global sheen for faces whose texture defines no specular.
@@ -643,6 +645,12 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
   hit.terrain = (texField & TERRAIN_BIT) != 0u;
   hit.flame = (texField & FLAME_BIT) != 0u;
   hit.highlight = (texField >> 24) & 0xFu;
+  // Cloth has no clear coat: its specular strength goes to nothing, which also keeps the glossy
+  // reflection ray away, and the shading adds its own soft sheen where light grazes the weave.
+  hit.fabric = (texField & ACTOR_BIT) != 0u && tex == 0u && (u.flags2.x & 16u) != 0u;
+  if (hit.fabric) {
+    hit.material.x = 0.0;
+  }
   if (hit.terrain) {
     if ((u.misc.y & FLAG_SMOOTH_TERRAIN) != 0u) {
       // The three vertex colours ride in the UV slots as raw bits.
@@ -1577,6 +1585,11 @@ void main() {
     sunLight *= 0.45 + pow(n1 * n2, 3.0) * 6.0;
   }
   specular += specularOf(hit.material, hit.n, toEye, sunDir, sunLight);
+  if (hit.fabric) {
+    // Fibres catch light at grazing angles: a broad, faint rim rather than a highlight.
+    float rim = pow(1.0 - max(dot(hit.n, toEye), 0.0), 3.0);
+    specular += sunLight * (0.08 * sunNdl * rim);
+  }
   vec3 light = vec3(u.sky.w) + sunLight * sunNdl + directLocalSpecular(hit, toEye, specular, seed);
   if (hit.flame && u.material.x > 0.0) {
     // Flames glow with their own colour and flicker, brightest at the top of the fire.

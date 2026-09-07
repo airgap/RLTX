@@ -22,6 +22,10 @@ public final class ModelPusher
 	private static final float BIAS_OFFSET = 0.6f;
 	/** Marks a face as flame: it glows with its own colour and flickers. */
 	public static final int FLAME_BIT = 1 << 29;
+	/** Marks a face of a player or NPC, whose untextured faces can be shaded as cloth. */
+	public static final int ACTOR_BIT = 1 << 28;
+	/** Whether the models being pushed are players or NPCs. */
+	public boolean actor;
 	/** Whether hot-coloured faces of the models being pushed are flames of a light-bearing object. */
 	public boolean flames;
 	/** Horizontal centre and highest point, in world space, of the flame faces the last push marked. */
@@ -143,6 +147,7 @@ public final class ModelPusher
 		final int modelTransparency = m.getTransparency() & 0xff;
 		final boolean undo = palette.undoShading && unlit == null && normals;
 
+		final int stamp = highlight << 24 | (actor ? ACTOR_BIT : 0);
 		opaque.ensure(faceCount);
 		for (int f = 0; f < faceCount; ++f)
 		{
@@ -190,7 +195,7 @@ public final class ModelPusher
 			{
 				faceUvs(vx, vy, vz, a, b, c, textureFaces, t1, t2, t3, f);
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
-					palette.texture(textures[f]) & 0xffffff | opacity, WaterTextures.encode(textures[f]) | highlight << 24, u[0], v[0], u[1], v[1], u[2], v[2]);
+					palette.texture(textures[f]) & 0xffffff | opacity, WaterTextures.encode(textures[f]) | stamp, u[0], v[0], u[1], v[1], u[2], v[2]);
 				if (smooth)
 				{
 					out.lastNormals(pn[a], pn[b], pn[c]);
@@ -215,7 +220,7 @@ public final class ModelPusher
 			if (flame)
 			{
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
-					rgb | opacity, FLAME_BIT | highlight << 24, 0f, 0f, 0f, 0f, 0f, 0f);
+					rgb | opacity, FLAME_BIT | stamp, 0f, 0f, 0f, 0f, 0f, 0f);
 				if (smooth)
 				{
 					out.lastNormals(pn[a], pn[b], pn[c]);
@@ -226,10 +231,10 @@ public final class ModelPusher
 				++flameFaces;
 				continue;
 			}
-			if (highlight != 0)
+			if (stamp != 0)
 			{
 				out.face(tx[a] + ox, ty[a] + oy, tz[a] + oz, tx[b] + ox, ty[b] + oy, tz[b] + oz, tx[c] + ox, ty[c] + oy, tz[c] + oz,
-					rgb | opacity, highlight << 24, 0f, 0f, 0f, 0f, 0f, 0f);
+					rgb | opacity, stamp, 0f, 0f, 0f, 0f, 0f, 0f);
 				if (smooth)
 				{
 					out.lastNormals(pn[a], pn[b], pn[c]);

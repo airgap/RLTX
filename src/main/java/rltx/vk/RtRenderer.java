@@ -3082,7 +3082,7 @@ public final class RtRenderer
 		{
 			b.putFloat(c);
 		}
-		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0) | (p.ripples ? 8 : 0);
+		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0) | (p.ripples ? 8 : 0) | (p.clothActors ? 16 : 0);
 		// Textures are sampled a level finer than their footprint, and finer again by how much
 		// smaller the traced frame is than the view, so an upscaler has detail to rebuild from.
 		float mipBias = (float) (Math.log((double) internalWidth / outputWidth) / Math.log(2.0)) - 1f;
