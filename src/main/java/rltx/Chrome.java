@@ -7,6 +7,7 @@ import net.runelite.api.Client;
 import net.runelite.api.SpritePixels;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetType;
+import net.runelite.api.widgets.WidgetUtil;
 
 /**
  * The interface chrome in the renderer's palette: the client's own sprites for the chatbox,
@@ -48,10 +49,15 @@ final class Chrome
 		}
 	}
 
+	/** The layout interfaces whose graphic widgets are chrome: the viewports, the chatbox and the minimap. */
+	private static final Set<Integer> LAYOUTS = new HashSet<>(Arrays.asList(160, 161, 162, 164, 548));
+
 	private final Client client;
 	private final RltxConfig config;
 	private RltxConfig.Chrome applied = RltxConfig.Chrome.OFF;
 	private final Set<Integer> installed = new HashSet<>();
+	/** Sprites found on the layouts' own widgets beyond the named set: border strips and panels by shape. */
+	private final Set<Integer> discovered = new HashSet<>();
 	private int appliedOpacity;
 
 	Chrome(Client client, RltxConfig config)
@@ -69,23 +75,33 @@ final class Chrome
 			remove();
 			applied = skin;
 		}
-		// Glass carries its own translucency in the compositor; the other skins fade their widgets.
-		int opacity = skin == RltxConfig.Chrome.OFF || skin == RltxConfig.Chrome.GLASS ? 0 : Math.round(255f * config.chromeTransparency() / 100f);
-		// The client rebuilds interfaces as they open, so the widgets are revisited every tick.
-		if (opacity != 0 || appliedOpacity != 0)
+		// Glass carries its own translucency in the compositor and needs its key colour to arrive
+		// intact, so its widgets are held solid, the client's transparent chatbox included; the
+		// other skins fade their widgets. The client rebuilds interfaces as they open, so the
+		// widgets are revisited every tick, and glass also learns the layouts' own border and
+		// panel sprites from their shape as it goes.
+		boolean glass = skin == RltxConfig.Chrome.GLASS;
+		int opacity = skin == RltxConfig.Chrome.OFF || glass ? 0 : Math.round(255f * config.chromeTransparency() / 100f);
+		if (skin != RltxConfig.Chrome.OFF || appliedOpacity != 0)
 		{
 			for (Widget root : client.getWidgetRoots())
 			{
-				fade(root, opacity);
+				visit(root, opacity, glass);
 			}
 			appliedOpacity = opacity;
 		}
-		if (skin == RltxConfig.Chrome.OFF || installed.size() == SPRITES.length)
+		if (skin == RltxConfig.Chrome.OFF)
 		{
 			return;
 		}
 		boolean changed = false;
+		java.util.List<Integer> wanted = new java.util.ArrayList<>(SPRITES.length + discovered.size());
 		for (int id : SPRITES)
+		{
+			wanted.add(id);
+		}
+		wanted.addAll(discovered);
+		for (int id : wanted)
 		{
 			if (installed.contains(id))
 			{
@@ -121,7 +137,7 @@ final class Chrome
 		{
 			for (Widget root : client.getWidgetRoots())
 			{
-				fade(root, 0);
+				visit(root, 0, false);
 			}
 			appliedOpacity = 0;
 		}
@@ -137,16 +153,27 @@ final class Chrome
 		client.getWidgetSpriteCache().reset();
 	}
 
-	// Sets the opacity of every graphic widget drawing a chrome sprite under this one.
-	private static void fade(Widget widget, int opacity)
+	// Sets the opacity of every graphic widget drawing a chrome sprite under this one; for glass,
+	// a layout's own graphic that is shaped like a border strip or a panel counts as chrome too.
+	private void visit(Widget widget, int opacity, boolean glass)
 	{
 		if (widget == null)
 		{
 			return;
 		}
-		if (widget.getType() == WidgetType.GRAPHIC && SPRITE_SET.contains(widget.getSpriteId()))
+		if (widget.getType() == WidgetType.GRAPHIC)
 		{
-			widget.setOpacity(opacity);
+			int id = widget.getSpriteId();
+			boolean chrome = SPRITE_SET.contains(id) || discovered.contains(id);
+			if (!chrome && glass && id > 0 && LAYOUTS.contains(WidgetUtil.componentToInterface(widget.getId())) && frameShaped(widget))
+			{
+				discovered.add(id);
+				chrome = true;
+			}
+			if (chrome)
+			{
+				widget.setOpacity(opacity);
+			}
 		}
 		for (Widget[] group : Arrays.asList(widget.getStaticChildren(), widget.getDynamicChildren(), widget.getNestedChildren()))
 		{
@@ -156,9 +183,17 @@ final class Chrome
 			}
 			for (Widget child : group)
 			{
-				fade(child, opacity);
+				visit(child, opacity, glass);
 			}
 		}
+	}
+
+	// A thin strip along one axis, or a large panel; icons are small and near square.
+	private static boolean frameShaped(Widget widget)
+	{
+		int w = widget.getWidth();
+		int h = widget.getHeight();
+		return (w >= 24 && h <= 8) || (h >= 24 && w <= 8) || (w >= 40 && h >= 40);
 	}
 
 	// Each opaque pixel is drawn toward grey, pushed through a contrast curve about the middle,
