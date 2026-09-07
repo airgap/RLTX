@@ -1215,11 +1215,16 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		// accumulate in different units from live ones, so the history is dropped on either side.
 		frame.still = true;
 		frame.thinLens = frame.aperture > 0f;
+		// The burst is one instant: the wave clock already stands still across it, and the
+		// ripple field is held too, or its rings would run on through every frame and average away.
+		int rippleSteps = frame.rippleSteps;
+		frame.rippleSteps = 0;
 		renderer.resetHistory();
 		for (int i = 0; i <= frames; ++i)
 		{
 			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, i == 0 && glSignalPending, present && i == frames);
 		}
+		frame.rippleSteps = rippleSteps;
 		frame.still = false;
 		frame.thinLens = false;
 		renderer.resetHistory();
