@@ -37,6 +37,9 @@ layout(set = 0, binding = 10, rgba32f) uniform writeonly image2D currPos;
 layout(set = 0, binding = 11, rgba16f) uniform writeonly image2D sampleImage;
 layout(set = 0, binding = 13, rgba8) uniform writeonly image2D albedoImage;
 layout(set = 0, binding = 14, rgba16f) uniform writeonly image2D normalImage;
+// For Ray Reconstruction: the noisy colour with the albedo in, and the specular reflectance.
+layout(set = 0, binding = 49, rgba16f) uniform writeonly image2D noisyImage;
+layout(set = 0, binding = 50, rgba8) uniform writeonly image2D specularAlbedoImage;
 layout(std430, set = 0, binding = 19) readonly buffer StaticTex { uint t[]; } staticTex;
 layout(std430, set = 0, binding = 20) readonly buffer StaticUv { float v[]; } staticUv;
 layout(std430, set = 0, binding = 21) readonly buffer DynTex { uint t[]; } dynTex;
@@ -128,6 +131,23 @@ vec4 materialOf(uint tex) {
 }
 
 vec3 smoothTerrainNormal(vec3 p, vec3 fallback);
+
+// The average specular reflectance a surface returns toward the viewer, for Ray Reconstruction
+// to divide its specular light by: the fit from Ray Tracing Gems chapter 32, as NVIDIA's
+// integration guide gives it, with the Blinn-Phong exponent turned into a roughness.
+vec3 specularAlbedo(vec3 f0, float roughness, float nov) {
+  float alpha = roughness * roughness;
+  vec4 x = vec4(1.0, nov, nov * nov, nov * nov * nov);
+  vec4 y = vec4(1.0, alpha, alpha * alpha, alpha * alpha * alpha);
+  mat2 m1 = mat2(0.99044, 1.29678, -1.28514, -0.755907);
+  mat3 m2 = mat3(1.0, 20.3225, 121.563, 2.92338, -27.0302, 626.13, 59.4188, 222.592, 316.627);
+  mat2 m3 = mat2(0.0365463, 9.0632, 3.32707, -9.04756);
+  mat3 m4 = mat3(1.0, 9.04401, 5.56589, 3.59685, -16.3174, 19.7886, -1.36772, 9.22949, -20.2123);
+  float bias = dot(m1 * x.xy, y.xy) / dot(m2 * x.xyw, y.xyw);
+  float scale = dot(m3 * x.xy, y.xy) / dot(m4 * x.xzw, y.xyw);
+  bias *= clamp(f0.g * 50.0, 0.0, 1.0);
+  return f0 * max(scale, 0.0) + max(bias, 0.0);
+}
 
 // Specular highlight of a light with a Blinn-Phong lobe, as 117 HD shades it.
 vec3 specularOf(vec4 material, vec3 n, vec3 viewDir, vec3 lightDir, vec3 lightColor) {
@@ -1322,6 +1342,8 @@ void main() {
     imageStore(sampleImage, ivec2(px), vec4(background, 0.0));
     imageStore(albedoImage, ivec2(px), vec4(1.0));
     imageStore(normalImage, ivec2(px), vec4(0.0));
+    imageStore(noisyImage, ivec2(px), vec4(background, 1.0));
+    imageStore(specularAlbedoImage, ivec2(px), vec4(0.5, 0.5, 0.5, 1.0));
     imageStore(currPos, ivec2(px), vec4(0.0, 0.0, 0.0, -1.0));
     return;
   }
@@ -1524,6 +1546,10 @@ void main() {
   // instead of averaging into a blur.
   imageStore(sampleImage, ivec2(px), vec4(sample_, (stable.dyn || waterPixel || wetRippling) ? -cosine : cosine));
   imageStore(albedoImage, ivec2(px), vec4(hit.albedo, 1.0));
-  imageStore(normalImage, ivec2(px), vec4(stable.gn, 0.0));
+  // A Blinn-Phong exponent e is about the roughness 1 / sqrt(e); its strength stands in for F0.
+  float roughness = hit.material.x > 0.0 ? clamp(inversesqrt(max(hit.material.y, 1.0)), 0.02, 1.0) : 1.0;
+  imageStore(normalImage, ivec2(px), vec4(stable.gn, roughness));
+  imageStore(noisyImage, ivec2(px), vec4(hit.albedo * sample_, 1.0));
+  imageStore(specularAlbedoImage, ivec2(px), vec4(specularAlbedo(vec3(clamp(hit.material.x, 0.0, 1.0)), roughness, cosine), 1.0));
   imageStore(currPos, ivec2(px), vec4(stable.surface, stable.t));
 }

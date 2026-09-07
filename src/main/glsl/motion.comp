@@ -12,6 +12,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 10, rgba32f) uniform readonly image2D currPos;
 layout(set = 0, binding = 47, rg16f) uniform writeonly image2D motion;
 layout(set = 0, binding = 48, r32f) uniform writeonly image2D viewDepth;
+layout(set = 0, binding = 51, r32f) uniform writeonly image2D linearDepth;
 
 const float SKY_DISTANCE = 1.0e6;
 const float FAR_PLANE = 65536.0;
@@ -45,6 +46,8 @@ void main() {
   imageStore(motion, p, vec4(mv, 0.0, 0.0));
   // DLSS assumes depth runs from 0 at the near plane to 1 at the far plane. The current forward
   // rotation's third row is the third column of the inverse rotation.
-  float depth = position.w < 0.0 ? 1.0 : clamp(dot(vec3(u.r0.z, u.r1.z, u.r2.z), world - u.cam.xyz) / FAR_PLANE, 0.0, 1.0);
-  imageStore(viewDepth, p, vec4(depth, 0.0, 0.0, 0.0));
+  float viewZ = position.w < 0.0 ? FAR_PLANE : dot(vec3(u.r0.z, u.r1.z, u.r2.z), world - u.cam.xyz);
+  imageStore(viewDepth, p, vec4(clamp(viewZ / FAR_PLANE, 0.0, 1.0), 0.0, 0.0, 0.0));
+  // Ray Reconstruction takes the view depth itself, in world units.
+  imageStore(linearDepth, p, vec4(viewZ, 0.0, 0.0, 0.0));
 }

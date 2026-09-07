@@ -42,5 +42,5 @@ layout(std140, set = 0, binding = 6) uniform Frame {
   vec4 ground;   // footprint count, footprint strength, water surface height over the camera, bare earth texture layer
   vec4 horizon[8]; // fog colour by eighth of the compass, from north through east
   uvec4 flags2;    // further feature flags once misc.y is full: bit 0 samples the local lights
-  vec4 lens;       // this frame's jitter x and y in traced pixels, whether DLSS is running, unused
+  vec4 lens;       // this frame's jitter x and y in traced pixels, whether DLSS upscales, whether Ray Reconstruction denoises
 } u;

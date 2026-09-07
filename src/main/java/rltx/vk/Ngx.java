@@ -166,6 +166,19 @@ public final class Ngx
 		long motionImage, long motionView, int motionFormat,
 		float jitterX, float jitterY, boolean reset);
 
+	/** A Ray Reconstruction feature denoising at one size; flags as for DLSS. */
+	static native long createDenoiser(long device, long cmd, int width, int height, int flags);
+
+	static native int evaluateDenoiser(long cmd, long feature,
+		long colorImage, long colorView, int colorFormat, int width, int height,
+		long albedoImage, long albedoView, int albedoFormat,
+		long specularImage, long specularView, int specularFormat,
+		long normalImage, long normalView, int normalFormat,
+		long depthImage, long depthView, int depthFormat,
+		long motionImage, long motionView, int motionFormat,
+		long outImage, long outView, int outFormat,
+		float jitterX, float jitterY, boolean reset);
+
 	static native void releaseFeature(long feature);
 
 	static native void shutdown(long device);

@@ -178,7 +178,10 @@ public final class RtRenderer
 	private static final int BINDING_PRESENTED = 46;
 	private static final int BINDING_MOTION = 47;
 	private static final int BINDING_DEPTH = 48;
-	private static final int BINDING_COUNT = 49;
+	private static final int BINDING_NOISY = 49;
+	private static final int BINDING_SPECULAR_ALBEDO = 50;
+	private static final int BINDING_LINEAR_DEPTH = 51;
+	private static final int BINDING_COUNT = 52;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -398,6 +401,15 @@ public final class RtRenderer
 	private Img motionImage;
 	private Img depthImage;
 	private long dlssFeature;
+	// Ray Reconstruction as the denoiser, at the traced size: the noisy colour with the albedo in,
+	// the specular reflectance and the view depth it reads, and the feature.
+	private static final int NOISY_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+	private static final int SPECULAR_ALBEDO_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
+	private Img noisyImage;
+	private Img specularAlbedoImage;
+	private Img linearDepthImage;
+	private long rrFeature;
+	private boolean rrOn;
 	/** The DLSS quality the images and feature were made for, -1 for none. */
 	private int dlssQuality = -1;
 	private boolean dlssReady;
@@ -662,6 +674,9 @@ public final class RtRenderer
 			types[BINDING_PRESENTED] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_MOTION] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_DEPTH] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_NOISY] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_SPECULAR_ALBEDO] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_LINEAR_DEPTH] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_STATIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_COL] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -719,7 +734,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(44);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(50);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(48);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
@@ -1921,9 +1936,10 @@ public final class RtRenderer
 	 * chooses the traced size for that quality and reconstructs the view from it. Returns whether
 	 * the presented image was recreated, so OpenGL must import it again.
 	 */
-	public boolean ensureOutput(int width, int height, float scale, int dlss)
+	public boolean ensureOutput(int width, int height, float scale, int dlss, boolean rayReconstruction)
 	{
 		int quality = dlssReady ? dlss : -1;
+		boolean rr = dlssReady && rayReconstruction;
 		int[] optimal = quality >= 0 ? Ngx.optimalSettings(width, height, quality) : null;
 		int traceWidth;
 		int traceHeight;
@@ -1939,7 +1955,7 @@ public final class RtRenderer
 			traceHeight = optimal[1];
 		}
 		boolean presentedChanged = presented == null || outputWidth != width || outputHeight != height;
-		if (!presentedChanged && internalWidth == traceWidth && internalHeight == traceHeight && dlssQuality == quality)
+		if (!presentedChanged && internalWidth == traceWidth && internalHeight == traceHeight && dlssQuality == quality && rrOn == rr)
 		{
 			return false;
 		}
@@ -1956,9 +1972,12 @@ public final class RtRenderer
 		output = quality < 0 && traceWidth == width && traceHeight == height ? presented : createImage(traceWidth, traceHeight, OUTPUT_FORMAT, fedUsage, false);
 		motionImage = createImage(traceWidth, traceHeight, MOTION_FORMAT, fedUsage, false);
 		depthImage = createImage(traceWidth, traceHeight, DEPTH_FORMAT, fedUsage, false);
+		noisyImage = createImage(traceWidth, traceHeight, NOISY_FORMAT, fedUsage, false);
+		specularAlbedoImage = createImage(traceWidth, traceHeight, SPECULAR_ALBEDO_FORMAT, fedUsage, false);
+		linearDepthImage = createImage(traceWidth, traceHeight, DEPTH_FORMAT, fedUsage, false);
 		sample = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
-		albedo = createImage(traceWidth, traceHeight, OUTPUT_FORMAT, scratchUsage, false);
-		normal = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
+		albedo = createImage(traceWidth, traceHeight, OUTPUT_FORMAT, fedUsage, false);
+		normal = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, fedUsage, false);
 		shafts = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		bloomSource = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		for (int i = 0; i < 2; ++i)
@@ -1990,6 +2009,9 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_PRESENTED, presented.view);
 			writeImageDescriptor(handle, BINDING_MOTION, motionImage.view);
 			writeImageDescriptor(handle, BINDING_DEPTH, depthImage.view);
+			writeImageDescriptor(handle, BINDING_NOISY, noisyImage.view);
+			writeImageDescriptor(handle, BINDING_SPECULAR_ALBEDO, specularAlbedoImage.view);
+			writeImageDescriptor(handle, BINDING_LINEAR_DEPTH, linearDepthImage.view);
 			writeImageDescriptor(handle, BINDING_SAMPLE, sample.view);
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
@@ -2009,6 +2031,18 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_CURR_POS, historyPos[1 - set].view);
 		}
 		dlssQuality = quality;
+		rrOn = rr;
+		if (rr)
+		{
+			VkCommandBuffer setup = ctx.beginOneTime();
+			rrFeature = Ngx.createDenoiser(device.address(), setup.address(), traceWidth, traceHeight, Ngx.FLAG_HDR | Ngx.FLAG_MV_LOW_RES);
+			ctx.endOneTimeAndWait(setup);
+			if (rrFeature == 0)
+			{
+				log.warn("Ray Reconstruction feature creation failed with NGX result 0x{}; denoising as before", Integer.toHexString(Ngx.lastResult()));
+				rrOn = false;
+			}
+		}
 		if (quality >= 0)
 		{
 			// The feature records its own setup, which must have run before the first evaluate.
@@ -2020,11 +2054,11 @@ public final class RtRenderer
 				// The traced images are the wrong size for the plain upscale as well, so start over without DLSS.
 				log.warn("DLSS feature creation failed with NGX result 0x{}; using the render scale instead", Integer.toHexString(Ngx.lastResult()));
 				dlssReady = false;
-				ensureOutput(width, height, scale, -1);
+				ensureOutput(width, height, scale, -1, false);
 				return presentedChanged;
 			}
 		}
-		log.debug("Output image {}x{} traced at {}x{}{} ({} bytes)", width, height, traceWidth, traceHeight, quality >= 0 ? " for DLSS" : "", presented.allocationSize);
+		log.debug("Output image {}x{} traced at {}x{}{}{} ({} bytes)", width, height, traceWidth, traceHeight, quality >= 0 ? " for DLSS" : "", rrOn ? " with Ray Reconstruction" : "", presented.allocationSize);
 		return presentedChanged;
 	}
 
@@ -2155,10 +2189,21 @@ public final class RtRenderer
 			Ngx.releaseFeature(dlssFeature);
 			dlssFeature = 0;
 		}
+		if (rrFeature != 0)
+		{
+			Ngx.releaseFeature(rrFeature);
+			rrFeature = 0;
+		}
 		destroyImage(motionImage);
 		destroyImage(depthImage);
+		destroyImage(noisyImage);
+		destroyImage(specularAlbedoImage);
+		destroyImage(linearDepthImage);
 		motionImage = null;
 		depthImage = null;
+		noisyImage = null;
+		specularAlbedoImage = null;
+		linearDepthImage = null;
 		if (output != presented)
 		{
 			destroyImage(output);
@@ -2226,11 +2271,12 @@ public final class RtRenderer
 		waitPreviousFrame();
 		flushPending();
 		prepareZoneUpdates();
-		if (dlssFeature != 0)
+		if (dlssFeature != 0 || rrFeature != 0)
 		{
-			// Halton points, cycling through eight phases for every output pixel a traced pixel covers.
+			// Halton points, cycling through eight phases for every output pixel a traced pixel
+			// covers, and at least thirty-two for Ray Reconstruction.
 			double ratio = (double) outputWidth / internalWidth;
-			int phases = (int) Math.ceil(8.0 * ratio * ratio);
+			int phases = Math.max(rrFeature != 0 ? 32 : 1, (int) Math.ceil(8.0 * ratio * ratio));
 			int index = frameIndex % phases + 1;
 			jitterX = (float) (Ngx.halton(index, 2) - 0.5);
 			jitterY = (float) (Ngx.halton(index, 3) - 0.5);
@@ -2263,6 +2309,7 @@ public final class RtRenderer
 
 		try (MemoryStack stack = stackPush())
 		{
+			motionRecorded = false;
 			check(vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
 			VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
 				.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
@@ -2348,14 +2395,10 @@ public final class RtRenderer
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
 			}
-			if (dlssFeature != 0)
+			int firstLayout = outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
+			for (Img fed : new Img[]{motionImage, depthImage, noisyImage, specularAlbedoImage, linearDepthImage})
 			{
-				imageBarrier(cmd, motionImage.image,
-					outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
-					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-				imageBarrier(cmd, depthImage.image,
-					outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+				imageBarrier(cmd, fed.image, firstLayout,
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
 			}
@@ -2382,16 +2425,54 @@ public final class RtRenderer
 				// The post pass gathers over the finished image, so the last denoiser pass leaves
 				// its result in the filter image for it instead of writing the output.
 				ByteBuffer push = stack.malloc(PUSH_CONSTANT_SIZE);
-				computeBarrier(cmd);
-				pushPass(cmd, push, 0, 1, 0, passes);
-				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
-				vkCmdDispatch(cmd, groupsX, groupsY, 1);
-				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, atrousPipeline);
-				for (int pass = 0; pass < passes; ++pass)
+				if (rrFeature != 0)
+				{
+					// Ray Reconstruction takes the place of the accumulation and the filter passes:
+					// it denoises the noisy colour into the first filter image, and one composite
+					// pass with a zero step, which filters nothing, lays the effects over it.
+					passes = 1;
+					recordMotion(cmd, groupsX, groupsY);
+					Img[] fed = {noisyImage, albedo, normal, specularAlbedoImage, linearDepthImage, motionImage};
+					for (Img image : fed)
+					{
+						readOnlyForDlss(cmd, image.image);
+					}
+					int result = Ngx.evaluateDenoiser(cmd.address(), rrFeature,
+						noisyImage.image, noisyImage.view, NOISY_FORMAT, internalWidth, internalHeight,
+						albedo.image, albedo.view, OUTPUT_FORMAT,
+						specularAlbedoImage.image, specularAlbedoImage.view, SPECULAR_ALBEDO_FORMAT,
+						normal.image, normal.view, HISTORY_COLOR_FORMAT,
+						linearDepthImage.image, linearDepthImage.view, DEPTH_FORMAT,
+						motionImage.image, motionImage.view, MOTION_FORMAT,
+						filter[0].image, filter[0].view, HISTORY_COLOR_FORMAT,
+						-jitterX, -jitterY, !hasHistory);
+					if (result != 1 && !warnedRr)
+					{
+						warnedRr = true;
+						log.warn("Ray Reconstruction evaluate failed with NGX result 0x{}", Integer.toHexString(result));
+					}
+					for (Img image : fed)
+					{
+						generalAfterDlss(cmd, image.image);
+					}
+					computeBarrier(cmd);
+					pushPass(cmd, push, 0, 0, 2, 1);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, atrousPipeline);
+					vkCmdDispatch(cmd, groupsX, groupsY, 1);
+				}
+				else
 				{
 					computeBarrier(cmd);
-					pushPass(cmd, push, pass, 1 << pass, pass == passes - 1 ? 2 : 0, passes);
+					pushPass(cmd, push, 0, 1, 0, passes);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
 					vkCmdDispatch(cmd, groupsX, groupsY, 1);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, atrousPipeline);
+					for (int pass = 0; pass < passes; ++pass)
+					{
+						computeBarrier(cmd);
+						pushPass(cmd, push, pass, 1 << pass, pass == passes - 1 ? 2 : 0, passes);
+						vkCmdDispatch(cmd, groupsX, groupsY, 1);
+					}
 				}
 				stamp(cmd, 6);
 				if (passes > 0)
@@ -2440,9 +2521,7 @@ public final class RtRenderer
 			stamp(cmd, 9);
 			if (dlssFeature != 0)
 			{
-				computeBarrier(cmd);
-				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, motionPipeline);
-				vkCmdDispatch(cmd, groupsX, groupsY, 1);
+				recordMotion(cmd, groupsX, groupsY);
 				// DLSS reads its inputs in the shader-read-only layout and leaves them there; the
 				// presented image it writes stays general. It also disturbs the bound pipeline and
 				// descriptors, so nothing but barriers follows it.
@@ -2525,6 +2604,21 @@ public final class RtRenderer
 	}
 
 	private boolean warnedDlss;
+	private boolean warnedRr;
+	private boolean motionRecorded;
+
+	// The motion vectors and depths DLSS and Ray Reconstruction read, once per frame however many ask.
+	private void recordMotion(VkCommandBuffer cmd, int groupsX, int groupsY)
+	{
+		if (motionRecorded)
+		{
+			return;
+		}
+		motionRecorded = true;
+		computeBarrier(cmd);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, motionPipeline);
+		vkCmdDispatch(cmd, groupsX, groupsY, 1);
+	}
 
 	private void readOnlyForDlss(VkCommandBuffer commandBuffer, long image)
 	{
@@ -2798,7 +2892,7 @@ public final class RtRenderer
 		}
 		int flags2 = p.sampledLights ? 1 : 0;
 		b.putInt(flags2).putInt(0).putInt(0).putInt(0);
-		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(0f);
+		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
 		if (b.position() > FRAME_UBO_SIZE)
 		{
 			throw new IllegalStateException("Frame uniforms exceed the buffer: " + b.position() + " of " + FRAME_UBO_SIZE + " bytes");

@@ -512,11 +512,23 @@ public interface RltxConfig extends Config
 		name = "DLSS",
 		description = "NVIDIA's DLSS super resolution reconstructs the view from a frame traced at the size its quality mode chooses, taking over antialiasing; it overrides the render scale. Needs an RTX GPU and the client started by the launch script, which builds the bridge to it. When unavailable the log says why and this does nothing.",
 		section = temporalSection,
-		position = -2
+		position = -3
 	)
 	default DlssMode dlss()
 	{
 		return DlssMode.OFF;
+	}
+
+	@ConfigItem(
+		keyName = "rayReconstruction",
+		name = "Ray Reconstruction",
+		description = "NVIDIA's DLSS Ray Reconstruction denoises the traced frame in place of the temporal accumulation and the wavelet filter, using the albedo, normals, roughness, depth and motion vectors. Needs what DLSS needs; combines with DLSS or the render scale for the upscale.",
+		section = temporalSection,
+		position = -2
+	)
+	default boolean rayReconstruction()
+	{
+		return false;
 	}
 
 	@Range(min = 50, max = 100)

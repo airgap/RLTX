@@ -1064,7 +1064,8 @@ void main() {
   }
 
   if (pc.last != 0) {
-    vec3 albedo = imageLoad(albedoImage, p).rgb;
+    // Ray Reconstruction denoises the colour with the albedo already in it.
+    vec3 albedo = u.lens.w > 0.0 ? vec3(1.0) : imageLoad(albedoImage, p).rgb;
     float depth = imageLoad(currPos, p).w;
     vec3 hdr = aerialPerspective(albedo * result.rgb + lightShafts(p) + (pathGlow(position.xyz, normal) + markerGlow(position.xyz, normal)) / u.params.y, cameraRay(p), depth);
     bool underwater = (u.misc.y & 33554432u) != 0u;

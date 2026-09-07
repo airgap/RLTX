@@ -12,6 +12,8 @@
 #include <vulkan/vulkan.h>
 #include "nvsdk_ngx_helpers.h"
 #include "nvsdk_ngx_helpers_vk.h"
+#include "nvsdk_ngx_helpers_dlssd.h"
+#include "nvsdk_ngx_helpers_dlssd_vk.h"
 
 // NGX identifies applications without an NVIDIA-issued id by a GUID-like project id.
 static const char PROJECT_ID[] = "5d2f0d0a-6b4e-4c1d-9a3f-7e8b1c2d3e4f";
@@ -221,6 +223,72 @@ JNIEXPORT jint JNICALL Java_rltx_vk_Ngx_evaluate(JNIEnv *env, jclass cls, jlong 
 	eval.InMVScaleX = 1.0f;
 	eval.InMVScaleY = 1.0f;
 	lastResult = NGX_VULKAN_EVALUATE_DLSS_EXT((VkCommandBuffer) (uintptr_t) cmd, (NVSDK_NGX_Handle *) (uintptr_t) feature, params, &eval);
+	return (jint) lastResult;
+}
+
+// Ray Reconstruction as a denoiser at one size: input and output are both the traced size, the
+// roughness rides in the normals' alpha and the depth is linear view depth.
+JNIEXPORT jlong JNICALL Java_rltx_vk_Ngx_createDenoiser(JNIEnv *env, jclass cls, jlong device, jlong cmd, jint width, jint height, jint flags)
+{
+	if (params == NULL)
+	{
+		return 0;
+	}
+	NVSDK_NGX_DLSSD_Create_Params create;
+	memset(&create, 0, sizeof create);
+	create.InDenoiseMode = NVSDK_NGX_DLSS_Denoise_Mode_DLUnified;
+	create.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
+	create.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_Linear;
+	create.InWidth = (unsigned int) width;
+	create.InHeight = (unsigned int) height;
+	create.InTargetWidth = (unsigned int) width;
+	create.InTargetHeight = (unsigned int) height;
+	create.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+	create.InFeatureCreateFlags = (int) flags;
+	create.InEnableOutputSubrects = false;
+	NVSDK_NGX_Handle *handle = NULL;
+	lastResult = NGX_VULKAN_CREATE_DLSSD_EXT1((VkDevice) (uintptr_t) device, (VkCommandBuffer) (uintptr_t) cmd, 1, 1, &handle, params, &create);
+	if (NVSDK_NGX_FAILED(lastResult))
+	{
+		return 0;
+	}
+	return (jlong) (uintptr_t) handle;
+}
+
+JNIEXPORT jint JNICALL Java_rltx_vk_Ngx_evaluateDenoiser(JNIEnv *env, jclass cls, jlong cmd, jlong feature,
+	jlong colorImage, jlong colorView, jint colorFormat, jint width, jint height,
+	jlong albedoImage, jlong albedoView, jint albedoFormat,
+	jlong specularImage, jlong specularView, jint specularFormat,
+	jlong normalImage, jlong normalView, jint normalFormat,
+	jlong depthImage, jlong depthView, jint depthFormat,
+	jlong motionImage, jlong motionView, jint motionFormat,
+	jlong outImage, jlong outView, jint outFormat,
+	jfloat jitterX, jfloat jitterY, jboolean reset)
+{
+	NVSDK_NGX_Resource_VK color = resource(colorView, colorImage, colorFormat, width, height, false);
+	NVSDK_NGX_Resource_VK albedo = resource(albedoView, albedoImage, albedoFormat, width, height, false);
+	NVSDK_NGX_Resource_VK specular = resource(specularView, specularImage, specularFormat, width, height, false);
+	NVSDK_NGX_Resource_VK normals = resource(normalView, normalImage, normalFormat, width, height, false);
+	NVSDK_NGX_Resource_VK depth = resource(depthView, depthImage, depthFormat, width, height, false);
+	NVSDK_NGX_Resource_VK motion = resource(motionView, motionImage, motionFormat, width, height, false);
+	NVSDK_NGX_Resource_VK output = resource(outView, outImage, outFormat, width, height, true);
+	NVSDK_NGX_VK_DLSSD_Eval_Params eval;
+	memset(&eval, 0, sizeof eval);
+	eval.pInDiffuseAlbedo = &albedo;
+	eval.pInSpecularAlbedo = &specular;
+	eval.pInNormals = &normals;
+	eval.pInColor = &color;
+	eval.pInOutput = &output;
+	eval.pInDepth = &depth;
+	eval.pInMotionVectors = &motion;
+	eval.InJitterOffsetX = jitterX;
+	eval.InJitterOffsetY = jitterY;
+	eval.InRenderSubrectDimensions.Width = (unsigned int) width;
+	eval.InRenderSubrectDimensions.Height = (unsigned int) height;
+	eval.InReset = reset ? 1 : 0;
+	eval.InMVScaleX = 1.0f;
+	eval.InMVScaleY = 1.0f;
+	lastResult = NGX_VULKAN_EVALUATE_DLSSD_EXT((VkCommandBuffer) (uintptr_t) cmd, (NVSDK_NGX_Handle *) (uintptr_t) feature, params, &eval);
 	return (jint) lastResult;
 }
 

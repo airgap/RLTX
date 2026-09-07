@@ -1000,7 +1000,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		boolean held = cinema.active() && !cinema.preview() || photo.burstPending();
 		float scale = held ? 1f : config.renderScale() / 100f;
 		int dlss = held ? -1 : dlssQuality(config.dlss());
-		if (renderer.ensureOutput(width, height, scale, dlss))
+		boolean rr = !held && config.rayReconstruction();
+		if (renderer.ensureOutput(width, height, scale, dlss, rr))
 		{
 			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		}
@@ -1132,7 +1133,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float diffusionRadius = frame.diffusionRadius;
 		frame.zoom = zoom * 2f;
 		frame.diffusionRadius = diffusionRadius * 2f;
-		renderer.ensureOutput(width * 2, height * 2, 1f, -1);
+		renderer.ensureOutput(width * 2, height * 2, 1f, -1, false);
 		burst(config.photoBurst(), false);
 		glSignalPending = false;
 		int[] argb = renderer.readbackOutput();
@@ -1140,7 +1141,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float exposure = frame.exposure;
 		frame.zoom = zoom;
 		frame.diffusionRadius = diffusionRadius;
-		renderer.ensureOutput(width, height, 1f, -1);
+		renderer.ensureOutput(width, height, 1f, -1, false);
 		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
 		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
 	}
@@ -1317,7 +1318,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		else if (config.loginPattern() && gameState != GameState.LOGGED_IN && gameState != GameState.LOADING)
 		{
-			if (renderer.ensureOutput(canvasWidth, canvasHeight, 1f, -1))
+			if (renderer.ensureOutput(canvasWidth, canvasHeight, 1f, -1, false))
 			{
 				compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
 			}
