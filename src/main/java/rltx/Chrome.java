@@ -28,6 +28,8 @@ final class Chrome
 		7445, 7446, 7447, 7448, 7449, 7450, 7452, 7453,
 	};
 
+	/** The one colour every glass pane is drawn in, for the compositor to find and render as glass. */
+	static final int GLASS_KEY = 0x0a0b10;
 	private static final Set<Integer> SPRITE_SET = new HashSet<>();
 
 	static
@@ -59,7 +61,8 @@ final class Chrome
 			remove();
 			applied = skin;
 		}
-		int opacity = skin == RltxConfig.Chrome.OFF ? 0 : Math.round(255f * config.chromeTransparency() / 100f);
+		// Glass carries its own translucency in the compositor; the other skins fade their widgets.
+		int opacity = skin == RltxConfig.Chrome.OFF || skin == RltxConfig.Chrome.GLASS ? 0 : Math.round(255f * config.chromeTransparency() / 100f);
 		// The client rebuilds interfaces as they open, so the widgets are revisited every tick.
 		if (opacity != 0 || appliedOpacity != 0)
 		{
@@ -153,7 +156,8 @@ final class Chrome
 	// Each opaque pixel is drawn toward grey, pushed through a contrast curve about the middle,
 	// and tinted; a zero pixel is transparent and stays so, and a result that would be zero is
 	// kept a shade above it for the same reason. Glass reads the stone's own bevels instead: its
-	// lit ridges become gold edges and everything else a dark pane.
+	// lit ridges become gold edges and everything else the key colour the compositor renders as
+	// a pane of liquid glass over the scene.
 	private static void grade(int[] pixels, RltxConfig.Chrome skin)
 	{
 		if (skin == RltxConfig.Chrome.GLASS)
@@ -220,22 +224,18 @@ final class Chrome
 				continue;
 			}
 			float l = (0.299f * (p >> 16 & 0xff) + 0.587f * (p >> 8 & 0xff) + 0.114f * (p & 0xff)) / 255f;
-			float r, g, b;
 			if (l > 0.58f)
 			{
 				float gold = 0.75f + 0.5f * (l - 0.58f);
-				r = Math.min(1f, 0.84f * gold);
-				g = Math.min(1f, 0.70f * gold);
-				b = Math.min(1f, 0.40f * gold);
+				int r = Math.round(Math.min(1f, 0.84f * gold) * 255f);
+				int g = Math.round(Math.min(1f, 0.70f * gold) * 255f);
+				int b = Math.round(Math.min(1f, 0.40f * gold) * 255f);
+				pixels[i] = r << 16 | g << 8 | b;
 			}
 			else
 			{
-				r = 0.07f + 0.14f * l;
-				g = 0.08f + 0.15f * l;
-				b = 0.10f + 0.19f * l;
+				pixels[i] = GLASS_KEY;
 			}
-			int out = Math.round(r * 255f) << 16 | Math.round(g * 255f) << 8 | Math.round(b * 255f);
-			pixels[i] = out == 0 ? 1 : out;
 		}
 	}
 

@@ -33,6 +33,14 @@ public final class GlCompositor
 	private final int quadVbo;
 	private final int uiProgram;
 	private final int uiOverlayLocation;
+	private final int uiSceneRectLocation;
+	private final int uiSizeLocation;
+	private final int uiGlassKeyLocation;
+	private final int uiGlassLookLocation;
+	private boolean glassOn;
+	private float glassKeyR, glassKeyG, glassKeyB;
+	private float glassDarkness, glassBlur, glassBend, glassRim;
+	private float sceneX, sceneY, sceneW, sceneH;
 	private final int sceneProgram;
 	private final int uiTexture;
 	private final int uiPbo;
@@ -63,8 +71,13 @@ public final class GlCompositor
 
 		uiProgram = linkProgram("/rltx/quad.vert", "/rltx/ui.frag");
 		uiOverlayLocation = glGetUniformLocation(uiProgram, "alphaOverlay");
+		uiSceneRectLocation = glGetUniformLocation(uiProgram, "sceneRect");
+		uiSizeLocation = glGetUniformLocation(uiProgram, "uiSize");
+		uiGlassKeyLocation = glGetUniformLocation(uiProgram, "glassKey");
+		uiGlassLookLocation = glGetUniformLocation(uiProgram, "glassLook");
 		glUseProgram(uiProgram);
 		glUniform1i(glGetUniformLocation(uiProgram, "tex"), 0);
+		glUniform1i(glGetUniformLocation(uiProgram, "scene"), 1);
 		sceneProgram = linkProgram("/rltx/quad.vert", "/rltx/scene.frag");
 		glUseProgram(sceneProgram);
 		glUniform1i(glGetUniformLocation(sceneProgram, "tex"), 0);
@@ -205,8 +218,8 @@ public final class GlCompositor
 	}
 
 	/**
-	 * Waits for Vulkan to finish the frame, draws it into the given viewport
-	 * rectangle and hands the image back to Vulkan.
+	 * Waits for Vulkan to finish the frame and draws it into the given viewport rectangle. The
+	 * image stays ours until {@link #releaseScene()}, since the interface pass may read it too.
 	 */
 	public void drawScene(int x, int y, int width, int height)
 	{
@@ -219,7 +232,33 @@ public final class GlCompositor
 		glBindVertexArray(0);
 		glBindTexture(GL_TEXTURE_2D, 0);
 		glUseProgram(0);
+	}
+
+	/** Hands the scene image back to Vulkan once every read of it this frame is recorded. */
+	public void releaseScene()
+	{
 		EXTSemaphore.glSignalSemaphoreEXT(semaphoreGlDone, noBuffers, oneTexture, oneLayout);
+	}
+
+	/**
+	 * Liquid glass for the interface: pixels of the key colour are drawn as glass over the scene,
+	 * which lies at the given rectangle of the interface, in interface pixels. Off, the key colour
+	 * is drawn as it is.
+	 */
+	public void setGlass(boolean on, int keyRgb, float darkness, float blur, float bend, float rim, int x, int y, int width, int height)
+	{
+		glassOn = on;
+		glassKeyR = (keyRgb >> 16 & 0xff) / 255f;
+		glassKeyG = (keyRgb >> 8 & 0xff) / 255f;
+		glassKeyB = (keyRgb & 0xff) / 255f;
+		glassDarkness = darkness;
+		glassBlur = blur;
+		glassBend = bend;
+		glassRim = rim;
+		sceneX = x;
+		sceneY = y;
+		sceneW = Math.max(width, 1);
+		sceneH = Math.max(height, 1);
 	}
 
 	/** Reads the shared scene texture back and returns the RGBA8 texel at (x, y). Debug use only. */
@@ -243,11 +282,28 @@ public final class GlCompositor
 			(overlayColor >> 8 & 0xFF) / 255f,
 			(overlayColor & 0xFF) / 255f,
 			(overlayColor >>> 24) / 255f);
+		glUniform4f(uiSceneRectLocation, sceneX, sceneY, sceneW, sceneH);
+		glUniform2f(uiSizeLocation, uiTextureWidth, uiTextureHeight);
+		boolean glass = glassOn && sceneTexture != 0;
+		glUniform4f(uiGlassKeyLocation, glassKeyR, glassKeyG, glassKeyB, glass ? 1f : 0f);
+		glUniform4f(uiGlassLookLocation, glassDarkness, glassBlur, glassBend, glassRim);
+		if (glass)
+		{
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, sceneTexture);
+			glActiveTexture(GL_TEXTURE0);
+		}
 		glBindTexture(GL_TEXTURE_2D, uiTexture);
 		glBindVertexArray(quadVao);
 		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 		glBindVertexArray(0);
 		glBindTexture(GL_TEXTURE_2D, 0);
+		if (glass)
+		{
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, 0);
+			glActiveTexture(GL_TEXTURE0);
+		}
 		glUseProgram(0);
 		glDisable(GL_BLEND);
 	}

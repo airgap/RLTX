@@ -74,8 +74,15 @@ final class StyledMenu extends Overlay
 
 		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 		g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_OFF);
-		int alpha = Math.round(255f * config.menuOpacity() / 100f);
-		g.setColor(new Color(0x14, 0x12, 0x10, alpha));
+		if (config.chrome() == RltxConfig.Chrome.GLASS)
+		{
+			// The compositor renders this colour as liquid glass over the scene.
+			g.setColor(new Color(Chrome.GLASS_KEY));
+		}
+		else
+		{
+			g.setColor(new Color(0x14, 0x12, 0x10, Math.round(255f * config.menuOpacity() / 100f)));
+		}
 		g.fillRoundRect(x, y, width, height, 6, 6);
 		g.setColor(BORDER);
 		g.drawRoundRect(x, y, width - 1, height - 1, 6, 6);

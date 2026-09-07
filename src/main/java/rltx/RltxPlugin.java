@@ -1947,11 +1947,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int targetWidth = stretched ? stretchedDim.width : canvasWidth;
 		int targetHeight = stretched ? stretchedDim.height : canvasHeight;
 
+		boolean sceneDrawn = false;
 		if (sceneFramePending)
 		{
 			drawSceneQuad(dpi, canvasWidth, canvasHeight, stretched, stretchedDim);
 			sceneFramePending = false;
 			glSignalPending = true;
+			sceneDrawn = true;
 		}
 		else if (config.loginPattern() && gameState != GameState.LOGGED_IN && gameState != GameState.LOADING)
 		{
@@ -1964,6 +1966,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			glSignalPending = false;
 			compositor.drawScene(0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
 			glSignalPending = true;
+			sceneDrawn = true;
 			if (!patternSampled)
 			{
 				patternSampled = true;
@@ -1974,7 +1977,16 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 		if (!photo.chromeHidden)
 		{
+			// Liquid glass reads the scene behind the chrome, so only a frame that drew one this
+			// pass, and so holds the image, may have it; the chrome's panes stay solid otherwise.
+			boolean glass = sceneDrawn && gameState == GameState.LOGGED_IN && config.chrome() == RltxConfig.Chrome.GLASS;
+			compositor.setGlass(glass, Chrome.GLASS_KEY, 1f - config.chromeTransparency() / 100f, 6f, 10f, 1f,
+				client.getViewportXOffset(), client.getViewportYOffset(), client.getViewportWidth(), client.getViewportHeight());
 			compositor.drawUi(overlayColor, 0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
+		}
+		if (sceneDrawn)
+		{
+			compositor.releaseScene();
 		}
 		drawManager.processDrawComplete(PhotoMode::screenshot);
 		if (stockStem != null && gameState == GameState.LOGGED_IN)
