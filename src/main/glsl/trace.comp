@@ -795,6 +795,34 @@ vec3 smoothTerrainNormal(vec3 p, vec3 fallback) {
   return normalize(mix(mix(n[0], n[1], f.x), mix(n[2], n[3], f.x), f.y));
 }
 
+// The height of the tile surface under a point, from the plane nearest it; the point's own
+// height where the grid does not cover it. Water lifted by waves and ripples measures its
+// depth from here, so the bed's colour does not follow every bob of the surface.
+float tileLevel(vec3 p) {
+  int side = int(u.weather3.z);
+  if (side < 3) {
+    return p.y;
+  }
+  vec2 g = p.xz / 128.0 + u.weather3.w;
+  if (g.x < 1.0 || g.y < 1.0 || g.x >= float(side - 2) || g.y >= float(side - 2)) {
+    return p.y;
+  }
+  ivec2 i = ivec2(g);
+  vec2 f = g - vec2(i);
+  float level = p.y;
+  float best = 64.0;
+  for (int c = 0; c < 4; ++c) {
+    float h = mix(mix(heightAt(c, side, i.x, i.y), heightAt(c, side, i.x + 1, i.y), f.x),
+                  mix(heightAt(c, side, i.x, i.y + 1), heightAt(c, side, i.x + 1, i.y + 1), f.x), f.y);
+    float d = abs(h - p.y);
+    if (d < best) {
+      best = d;
+      level = h;
+    }
+  }
+  return level;
+}
+
 // Puddle coverage of the ground under a world position, from the per-scene grid.
 float puddleAt(vec2 xz) {
   int side = int(u.weather3.z);
@@ -1324,7 +1352,7 @@ vec3 shadeWater(Hit hit, vec3 dir, vec3 sunDir, bool shadows, inout uint seed) {
     Hit bed;
     if (dot(refracted, refracted) > 0.0 && trace(hit.surface - hit.gn * RAY_EPS, refracted, RAY_EPS, FAR, gl_RayFlagsNoneEXT, MASK_OPAQUE, seed, bed)) {
       sawBed = true;
-      bedDepth = max(bed.surface.y - hit.surface.y, 0.0);
+      bedDepth = max(bed.surface.y - (hit.dyn ? tileLevel(hit.surface) : hit.surface.y), 0.0);
       vec3 bedSun = directSun(bed, sunDir, shadows, seed);
       if ((u.misc.y & FLAG_CAUSTICS) != 0u) {
         // Light focused by the waves: a web where two drifting noise fields both run high,

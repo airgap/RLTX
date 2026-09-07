@@ -20,17 +20,15 @@ layout(push_constant) uniform Push {
 layout(set = 0, binding = 53, rg32f) uniform image2D rippleA;
 layout(set = 0, binding = 54, rg32f) uniform image2D rippleB;
 // v[0]: window base cell x and z, the base of the frame before; v[1]: cell size, wave term
-// c^2 dt^2 / s^2, rain drops per cell per step, walker count; v[2]: spare; v[3..]: walkers as
-// x, z, amplitude, spare.
+// c^2 dt^2 / s^2, rain drops per cell per step, walker count; v[2]: damping and level restore
+// per step; v[3..]: walkers as x, z, amplitude, spare.
 layout(std430, set = 0, binding = 55) readonly buffer RippleParams { vec4 v[]; } ripple;
 // One bit per tile of the loaded scene, set where the tile is water.
 layout(std430, set = 0, binding = 56) readonly buffer WaterMask { uint v[]; } waterMask;
 
 const int N = 512;
-const float DAMPING = 0.012;
 // The wave equation keeps whatever level the field is given, so every disturbance here is made
 // to move water rather than add or take it, and a slow pull toward rest takes out what is left.
-const float RESTORE = 0.003;
 const float RAIN_DEPTH = 3.5;
 const float WALKER_RADIUS = 22.0;
 const float LIMIT = 12.0;
@@ -98,6 +96,8 @@ void main() {
   float c2 = ripple.v[1].y;
   float rainRate = ripple.v[1].z;
   int walkers = int(ripple.v[1].w);
+  float damping = ripple.v[2].x;
+  float restore = ripple.v[2].y;
   ivec2 cell = cellOf(texel, base);
   vec2 xz = (vec2(cell) + 0.5) * cellSize;
   if (!water(xz)) {
@@ -108,7 +108,7 @@ void main() {
   float h = state.x;
   float neighbours = heightAt(cell + ivec2(1, 0), base, prevBase, cellSize) + heightAt(cell - ivec2(1, 0), base, prevBase, cellSize)
     + heightAt(cell + ivec2(0, 1), base, prevBase, cellSize) + heightAt(cell - ivec2(0, 1), base, prevBase, cellSize);
-  float next = (2.0 - DAMPING) * h - (1.0 - DAMPING) * state.y + c2 * (neighbours - 4.0 * h) - RESTORE * h;
+  float next = (2.0 - damping) * h - (1.0 - damping) * state.y + c2 * (neighbours - 4.0 * h) - restore * h;
   if (rainRate > 0.0) {
     // A drop pushes its cell down and the water it displaces up into the four cells around it.
     int salt = int(u.misc.x) * 4 + pc.pass;

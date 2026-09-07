@@ -20,9 +20,13 @@ final class Ripples
 	static final int CELLS = 512;
 	static final float CELL_SIZE = 8f;
 	private static final int MAX_WALKERS = 64;
-	/** Wave speed in world units a second; about two tiles. */
-	private static final float WAVE_SPEED = 250f;
-	private static final float RAIN_RATE = 0.0004f;
+	/** Wave speed in world units a second: half a tile, about what rings of this size do on a pond. */
+	private static final float WAVE_SPEED = 64f;
+	/** Rain drops per cell per second at full rain. */
+	private static final float RAIN_RATE = 0.045f;
+	/** Fractions of the wave motion and of the level lost per second, whatever the step size. */
+	private static final float DAMPING = 1.3f;
+	private static final float RESTORE = 0.32f;
 
 	private final Client client;
 	private final RltxConfig config;
@@ -67,7 +71,9 @@ final class Ripples
 		float c = WAVE_SPEED * substep / CELL_SIZE;
 		packed[4] = CELL_SIZE;
 		packed[5] = Math.min(c * c, 0.45f);
-		packed[6] = frame.rain * RAIN_RATE;
+		packed[6] = frame.rain * RAIN_RATE * substep;
+		packed[8] = 1f - (float) Math.exp(-DAMPING * substep);
+		packed[9] = 1f - (float) Math.exp(-RESTORE * substep);
 		int plane = client.getPlane();
 		int count = 0;
 		for (Player player : wv.players())
