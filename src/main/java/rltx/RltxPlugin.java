@@ -1233,7 +1233,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// outside the scene with the scene itself hidden, lit by a key light from the front and the
 	// sky, framed from the front at the height of the chest, accumulated like a photo, and saved.
 	// The live frame lends its settings and gets them back afterwards.
-	private boolean portrait(Player player)
+	private boolean portrait(Player player, String name)
 	{
 		Model model = player.getModel();
 		if (renderer == null || !glReady || !gameTexturesUploaded || model == null || client.getGameState() != GameState.LOGGED_IN)
@@ -1422,7 +1422,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		frame.starBrightness = starBrightness;
 		frame.ripples = ripples;
 
-		photo.saveOutfitAsync(argb, width, height);
+		photo.saveOutfitAsync(argb, width, height, name);
 		return true;
 	}
 

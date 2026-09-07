@@ -1203,7 +1203,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "outfitRenders",
 		name = "Portrait on outfit change",
-		description = "Whenever your character's outfit changes, once you stand still, a portrait of it is rendered on a plain stage and saved under the screenshots' RLTX/outfits folder. The game pauses for a moment while it renders.",
+		description = "Whenever your character's outfit changes to one not seen before, once you stand still, a portrait of it is rendered on a plain stage and saved under the screenshots' RLTX/outfits folder, named by a hash of the outfit. The game pauses for a moment while it renders.",
 		section = cameraSection,
 		position = 28
 	)
