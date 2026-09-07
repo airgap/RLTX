@@ -98,7 +98,9 @@ const uint MASK_OPAQUE = 0x1u;
 // the rooms beneath them do not.
 const uint MASK_HIDDEN_ROOF = 0x8u;
 const uint MASK_SHADOW = 0x3u | MASK_HIDDEN_ROOF;
-const uint MASK_ALL = 0xFFu;
+// Hidden roofs always carry this bit, for the composite pass to ask whether a point is indoors.
+const uint MASK_ROOF_PROBE = 0x10u;
+const uint MASK_ALL = 0xFFu & ~MASK_ROOF_PROBE;
 const uint MASK_VISIBLE = MASK_ALL & ~MASK_HIDDEN_ROOF;
 const float FAR = 1.0e6;
 const float TWO_PI = 6.28318530718;

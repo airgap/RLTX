@@ -1,3 +1,4 @@
 lumbridge.json
 lumbridge-swamp.json
 lumbridge-graveyard.json
+draynor-manor.json

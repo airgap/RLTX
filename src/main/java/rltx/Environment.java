@@ -507,6 +507,7 @@ final class Environment
 		frame.flash = flash;
 		frame.mist = config.mist() / 100f;
 		frame.mistEverywhere = config.mistEverywhere();
+		frame.mistIndoors = config.mistIndoors();
 		frame.fireflies = config.fireflies();
 		frame.dustMotes = config.dustMotes();
 		frame.wildlife = config.wildlife();

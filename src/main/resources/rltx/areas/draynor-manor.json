@@ -1,0 +1,23 @@
+{
+  "name": "Draynor Manor",
+  "polygons": [
+    [
+      -1,
+      3086,
+      3325,
+      3128,
+      3325,
+      3128,
+      3380,
+      3086,
+      3380
+    ]
+  ],
+  "regions": [],
+  "overrides": {
+    "mistIndoors": "true",
+    "mistEverywhere": "true",
+    "skyIntensity": "40",
+    "wildlife": "false"
+  }
+}

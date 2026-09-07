@@ -167,6 +167,16 @@ vec3 swampMist(vec3 c, ivec2 px, vec3 dir, float depth) {
     return c;
   }
   float tMax = min(depth > 0.0 ? depth : MIST_RANGE, MIST_RANGE);
+  // Mist keeps out of roofed rooms unless asked in: a roof the client has hidden, which is one
+  // of the building the player is in, over the surface seen means the pixel is indoors.
+  if ((u.flags2.x & 2u) == 0u && depth > 0.0) {
+    rayQueryEXT roof;
+    rayQueryInitializeEXT(roof, tlas, gl_RayFlagsTerminateOnFirstHitEXT, MASK_ROOF_PROBE, u.cam.xyz + dir * depth + vec3(0.0, -4.0, 0.0), 1.0, vec3(0.0, -1.0, 0.0), 1200.0);
+    rayQueryProceedEXT(roof);
+    if (rayQueryGetIntersectionTypeEXT(roof, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+      return c;
+    }
+  }
   float dt = tMax / float(MIST_STEPS);
   // Interleaved gradient noise staggers the sample positions so the layer shows no bands.
   float jitter = fract(52.9829189 * fract(0.06711056 * float(px.x) + 0.00583715 * float(px.y)));
@@ -263,6 +273,7 @@ const float SNOW_CELL = 44.0;
 const float SNOW_SPEED = 90.0;
 const int PRECIPITATION_STEPS = 80;
 const uint MASK_SHADOW = 0xBu; // opaque, translucent and hidden roofs
+const uint MASK_ROOF_PROBE = 0x10u; // the roofs the client hides for the building the player is in
 
 // Integer hash: a fractional hash of whole numbers repeats every few cells and lines drops up.
 uint hashCell(ivec3 c) {

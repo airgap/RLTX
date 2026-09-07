@@ -1670,6 +1670,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "mistIndoors",
+		name = "Mist indoors",
+		description = "Lets mist drift through roofed rooms as well. Off keeps it outside; an area can turn it on for a haunted or cursed place, as the bundled Draynor Manor area does.",
+		section = weatherSection,
+		position = 5
+	)
+	default boolean mistIndoors()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "fireflies",
 		name = "Fireflies",
 		description = "Fireflies drifting over swamps and graveyards on dry nights",

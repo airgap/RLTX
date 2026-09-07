@@ -92,6 +92,8 @@ public final class RtRenderer
 	private static final int MASK_WATER = 0x4;
 	/** Roofs the client hides: skipped by the rays the camera sees with, hit by the rays that light. */
 	private static final int MASK_HIDDEN_ROOF = 0x8;
+	/** Hidden roofs always carry this bit, so the composite pass can tell indoors from out. */
+	private static final int MASK_ROOF_PROBE = 0x10;
 	private static final int BYTES_PER_FACE_POS = GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
 	private static final int AS_OFFSET_ALIGNMENT = 256;
 	private static final int OUTPUT_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
@@ -2781,10 +2783,12 @@ public final class RtRenderer
 						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g],
 							res.translucent[g] ? MASK_TRANSLUCENT : res.water[g] ? MASK_WATER : MASK_OPAQUE, set.transform);
 					}
-					else if (params.roofOcclusion && hiddenRoof(set, res.level[g], res.roof[g]))
+					else if (hiddenRoof(set, res.level[g], res.roof[g]))
 					{
-						// The room below a hidden roof is still roofed as far as the sun and sky know.
-						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g], MASK_HIDDEN_ROOF, set.transform);
+						// The room below a hidden roof is still roofed as far as the sun and sky know,
+						// when roof occlusion is on, and as far as the mist knows always.
+						int mask = MASK_ROOF_PROBE | (params.roofOcclusion ? MASK_HIDDEN_ROOF : 0);
+						writeInstance(buffer.get(count++), res.faceBase + res.faceOffset[g], res.addresses[g], mask, set.transform);
 					}
 				}
 			}
@@ -2906,7 +2910,7 @@ public final class RtRenderer
 		{
 			b.putFloat(c);
 		}
-		int flags2 = p.sampledLights ? 1 : 0;
+		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0);
 		b.putInt(flags2).putInt(0).putInt(0).putInt(0);
 		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
 		if (b.position() > FRAME_UBO_SIZE)
