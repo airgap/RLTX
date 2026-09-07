@@ -149,8 +149,8 @@ public final class FrameParams
 	/** Whether mist may drift through roofed rooms; otherwise it keeps outside. */
 	public boolean mistIndoors;
 	public boolean clothActors;
-	/** The interface chrome traced as glass in front of the camera: on, its tint, and where the viewport lies on the interface. */
-	public boolean glassChrome;
+	/** The interface chrome traced as a sheet in front of the camera: 0 none, 1 glass, 2 parchment; the glass's tint; and where the viewport lies on the interface. */
+	public int sheetChrome;
 	public float glassTint;
 	public int viewportX, viewportY, viewportWidth, viewportHeight;
 	/** How far ground near the camera rises into its texture's relief, in world units at full height. */

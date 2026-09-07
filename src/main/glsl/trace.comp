@@ -1585,22 +1585,70 @@ void main() {
   vec3 glassNormal = vec3(0.0);
   vec3 glassSun = vec3(0.0);
   vec2 glassBend = vec2(0.0);
+  bool sheetDone = false;
   if (u.glass0.z > 0.5) {
     vec2 uiPx = u.glass1.xy + (vec2(px) + 0.5) / vec2(float(w), float(h)) * u.glass1.zw;
-    float nearest;
-    vec2 outward;
+    float nearest = 0.0;
+    vec2 outward = vec2(0.0);
+    vec3 gDir = dir;
+    vec3 pane = camPos;
+    vec3 forward = normalize(vec3(row0.z, row1.z, row2.z));
     if (glassEdge(uiPx, nearest, outward)) {
       glassPixel = true;
       vec3 centreView = vec3((float(px.x) + 0.5 - float(w) * 0.5) / zoom, (float(px.y) + 0.5 - float(h) * 0.5) / zoom, 1.0);
-      vec3 gDir = normalize(vec3(dot(row0, centreView), dot(row1, centreView), dot(row2, centreView)));
+      gDir = normalize(vec3(dot(row0, centreView), dot(row1, centreView), dot(row2, centreView)));
       float t = clamp(nearest / GLASS_RIM, 0.0, 1.0);
       float height = sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0));
       float slope = t < 1.0 ? (1.0 - t) / max(height, 0.05) : 0.0;
       vec3 nView = normalize(vec3(outward * slope, -1.0));
       glassNormal = normalize(vec3(dot(row0, nView), dot(row1, nView), dot(row2, nView)));
-      vec3 forward = normalize(vec3(row0.z, row1.z, row2.z));
-      vec3 pane = camPos + gDir * (GLASS_DISTANCE * length(centreView));
+      pane = camPos + gDir * (GLASS_DISTANCE * length(centreView));
       glassRim = 1.0 - smoothstep(1.5, 3.0, nearest);
+      if (int(u.glass0.z + 0.5) == 2) {
+        // Parchment: an opaque aged sheet, its fibres and stains fixed to the screen, lit by the
+        // sun where the camera stands in it, by the sky and by the lamps, with a scorched edge
+        // and an ink line at the rim. Nothing about it is left to chance or to the history.
+        vec3 flat_ = normalize(vec3(dot(row0, vec3(0.0, 0.0, -1.0)), dot(row1, vec3(0.0, 0.0, -1.0)), dot(row2, vec3(0.0, 0.0, -1.0))));
+        float fibre = 0.92 + 0.10 * valueNoise2(uiPx * 0.37) + 0.06 * (valueNoise2(uiPx * 1.9 + 11.0) - 0.5);
+        float stain = 1.0 - 0.16 * smoothstep(0.55, 0.9, valueNoise2(uiPx * 0.021 + 3.7)) - 0.08 * smoothstep(0.6, 0.95, valueNoise2(uiPx * 0.009 + 21.0));
+        float scorch = 1.0 - 0.5 * pow(1.0 - clamp(nearest / 18.0, 0.0, 1.0), 2.0);
+        float ink = 1.0 - smoothstep(1.0, 2.5, nearest);
+        vec3 albedo = vec3(0.70, 0.58, 0.40) * fibre * stain * scorch * mix(1.0, 0.3, ink);
+        // The grain tilts the sheet a little, so the light rakes across it.
+        vec2 grain = vec2(valueNoise2(uiPx * 0.9 + 5.0) - valueNoise2(uiPx * 0.9 + vec2(1.0, 0.0) + 5.0),
+          valueNoise2(uiPx * 0.9 + 5.0) - valueNoise2(uiPx * 0.9 + vec2(0.0, 1.0) + 5.0));
+        vec3 sheetView = normalize(vec3(grain * 0.35, -1.0));
+        vec3 sheetNormal = normalize(vec3(dot(row0, sheetView), dot(row1, sheetView), dot(row2, sheetView)));
+        bool lit = u.sun.w > 0.0 && !((flags & FLAG_SHADOWS) != 0u && occluded(pane, u.sun.xyz, seed));
+        vec3 sunLight = lit ? u.sunColor.rgb * (u.sun.w * cloudShadow(pane)) : vec3(0.0);
+        vec3 light = vec3(u.sky.w) + 0.5 * skyRadiance(flat_) + sunLight * max(dot(sheetNormal, u.sun.xyz), 0.0);
+        Hit sheetHit;
+        sheetHit.surface = pane;
+        sheetHit.p = pane + flat_ * RAY_EPS;
+        sheetHit.n = sheetNormal;
+        sheetHit.gn = flat_;
+        sheetHit.material = vec4(0.0, 0.0, 0.0, 1.0);
+        sheetHit.albedo = albedo;
+        sheetHit.relief = 1.0;
+        sheetHit.fabric = false;
+        int lampCount = min(int(u.lights.x), 64);
+        for (int i = 0; i < lampCount; ++i) {
+          vec3 l;
+          float d;
+          vec3 color;
+          vec3 e = localUnshadowed(i, sheetHit, l, d, color);
+          if (e == vec3(0.0) || occludedWithin(sheetHit.p, l, d - 2.0)) {
+            continue;
+          }
+          light += e;
+        }
+        imageStore(glassImage, ivec2(px), vec4(albedo * light, 0.0));
+        imageStore(glassBendImage, ivec2(px), vec4(0.0));
+        glassPixel = false;
+        sheetDone = true;
+      }
+    }
+    if (glassPixel) {
       // Reflectance rises toward the rim but is held short of a mirror: a sharp mirror of a
       // moving world on every edge reads as a shimmer, not as glass.
       float cosI = clamp(dot(-gDir, glassNormal), 0.0, 1.0);
@@ -1657,8 +1705,10 @@ void main() {
   }
 
   // Written now, whatever path the pixel takes from here, since it is laid over the frame later.
-  imageStore(glassImage, ivec2(px), glassOverlay(glassPixel, glassFresnel, glassRim, glassReflection, glassSpecular, glassNormal, glassSun));
-  imageStore(glassBendImage, ivec2(px), vec4(glassBend, 0.0, 0.0));
+  if (!sheetDone) {
+    imageStore(glassImage, ivec2(px), glassOverlay(glassPixel, glassFresnel, glassRim, glassReflection, glassSpecular, glassNormal, glassSun));
+    imageStore(glassBendImage, ivec2(px), vec4(glassBend, 0.0, 0.0));
+  }
 
   uint primaryFlags = (flags & FLAG_CULL) != 0u ? gl_RayFlagsCullBackFacingTrianglesEXT : gl_RayFlagsNoneEXT;
 

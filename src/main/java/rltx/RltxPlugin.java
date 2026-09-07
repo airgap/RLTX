@@ -1156,7 +1156,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		footprints.track(renderer, cells);
 		renderer.setCells(cells.bits);
 		frame.textureDisplacement = config.textureDisplacement();
-		frame.glassChrome = config.chrome() == RltxConfig.Chrome.GLASS;
+		frame.sheetChrome = config.chrome() == RltxConfig.Chrome.GLASS ? 1 : config.chrome() == RltxConfig.Chrome.PARCHMENT ? 2 : 0;
 		frame.glassTint = 1f - config.chromeTransparency() / 100f;
 		frame.viewportX = client.getViewportXOffset();
 		frame.viewportY = client.getViewportYOffset();
@@ -1942,9 +1942,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int canvasHeight = client.getCanvasHeight();
 		BufferProvider bufferProvider = client.getBufferProvider();
 		compositor.updateUiTexture(bufferProvider.getPixels(), bufferProvider.getWidth(), bufferProvider.getHeight(), canvasWidth, canvasHeight);
-		if (config.chrome() == RltxConfig.Chrome.GLASS && gameState == GameState.LOGGED_IN && renderer != null)
+		if (config.chrome().sheet() && gameState == GameState.LOGGED_IN && renderer != null)
 		{
-			// The panes of this frame's interface become the glass the next frame traces.
+			// The panes of this frame's interface become the sheets the next frame traces.
 			renderer.setUiMask(bufferProvider.getPixels(), bufferProvider.getWidth(), bufferProvider.getHeight(), Chrome.GLASS_KEY);
 		}
 
@@ -1990,7 +1990,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			// Liquid glass reads the scene behind the chrome, so only a frame that drew one this
 			// pass, and so holds the image, may have it; the chrome's panes stay solid otherwise.
-			boolean glass = sceneDrawn && gameState == GameState.LOGGED_IN && config.chrome() == RltxConfig.Chrome.GLASS;
+			boolean glass = sceneDrawn && gameState == GameState.LOGGED_IN && config.chrome().sheet();
 			compositor.setGlass(glass, Chrome.GLASS_KEY, 1f - config.chromeTransparency() / 100f, 4f, 10f, 1f,
 				client.getViewportXOffset(), client.getViewportYOffset(), client.getViewportWidth(), client.getViewportHeight());
 			compositor.drawUi(overlayColor, 0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));

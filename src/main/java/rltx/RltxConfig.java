@@ -2247,6 +2247,7 @@ public interface RltxConfig extends Config
 	enum Chrome
 	{
 		OFF("Off"),
+		PARCHMENT("Parchment"),
 		GLASS("Glass"),
 		SLATE("Slate"),
 		OBSIDIAN("Obsidian"),
@@ -2259,6 +2260,12 @@ public interface RltxConfig extends Config
 			this.label = label;
 		}
 
+		/** A sheet traced in the scene, drawn from its silhouette alone. */
+		public boolean sheet()
+		{
+			return this == PARCHMENT || this == GLASS;
+		}
+
 		@Override
 		public String toString()
 		{
@@ -2269,13 +2276,13 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "chrome",
 		name = "Interface chrome",
-		description = "Redraws the client's own chatbox, tabs, minimap frame, borders and buttons. Glass is liquid glass: panes that blur, tint and bend the scene behind them with a gold-lit rim; slate, obsidian and ember regrade the stone into a palette. Off keeps the client's sprites; other interface skins are overridden while this is on.",
+		description = "Redraws the client's own chatbox, tabs, minimap frame, borders and buttons. Parchment and glass are sheets traced in the scene a step in front of the camera, lit by the sun, the sky and the lamps and shadowed with the camera: parchment an aged sheet with scorched edges, glass a pane that reflects and bends the world. Slate, obsidian and ember regrade the stone into a palette. Off keeps the client's sprites; other interface skins are overridden while this is on.",
 		section = interfaceSection,
 		position = 0
 	)
 	default Chrome chrome()
 	{
-		return Chrome.GLASS;
+		return Chrome.PARCHMENT;
 	}
 
 	@Range(max = 80)
@@ -2283,7 +2290,7 @@ public interface RltxConfig extends Config
 	@ConfigItem(
 		keyName = "chromeTransparency",
 		name = "Chrome transparency",
-		description = "How far the scene shows through the interface chrome where it lies over the scene: how bright the glass lets it through, or how faded the other skins' widgets are. 0 is solid.",
+		description = "How far the scene shows through the interface chrome where it lies over the scene: how bright the glass lets it through, or how faded the regraded skins' widgets are. Parchment is opaque and ignores it. 0 is solid.",
 		section = interfaceSection,
 		position = 1
 	)

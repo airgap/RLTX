@@ -80,7 +80,7 @@ final class Chrome
 		// other skins fade their widgets. The client rebuilds interfaces as they open, so the
 		// widgets are revisited every tick, and glass also learns the layouts' own border and
 		// panel sprites from their shape as it goes.
-		boolean glass = skin == RltxConfig.Chrome.GLASS;
+		boolean glass = skin.sheet();
 		int opacity = skin == RltxConfig.Chrome.OFF || glass ? 0 : Math.round(255f * config.chromeTransparency() / 100f);
 		if (skin != RltxConfig.Chrome.OFF || appliedOpacity != 0)
 		{
@@ -202,7 +202,7 @@ final class Chrome
 	// becomes the key colour the compositor renders as a pane of liquid glass over the scene.
 	private static void grade(int[] pixels, RltxConfig.Chrome skin)
 	{
-		if (skin == RltxConfig.Chrome.GLASS)
+		if (skin.sheet())
 		{
 			glass(pixels);
 			return;

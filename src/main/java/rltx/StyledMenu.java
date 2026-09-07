@@ -74,9 +74,9 @@ final class StyledMenu extends Overlay
 
 		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 		g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_OFF);
-		if (config.chrome() == RltxConfig.Chrome.GLASS)
+		if (config.chrome().sheet())
 		{
-			// The compositor renders this colour as liquid glass over the scene.
+			// The tracer renders this colour as the sheet, parchment or glass, in the scene.
 			g.setColor(new Color(Chrome.GLASS_KEY));
 		}
 		else

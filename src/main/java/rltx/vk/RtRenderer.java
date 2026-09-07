@@ -3197,7 +3197,7 @@ public final class RtRenderer
 		float mipBias = (float) (Math.log((double) internalWidth / outputWidth) / Math.log(2.0)) - 1f;
 		b.putInt(flags2).putInt(p.textureSize).putFloat(mipBias).putFloat(p.groundRelief);
 		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
-		b.putFloat(uiMaskWidth).putFloat(uiMaskHeight).putFloat(p.glassChrome && !uiMaskUninitialized ? 1f : 0f).putFloat(p.glassTint);
+		b.putFloat(uiMaskWidth).putFloat(uiMaskHeight).putFloat(uiMaskUninitialized ? 0f : p.sheetChrome).putFloat(p.glassTint);
 		b.putFloat(p.viewportX).putFloat(p.viewportY).putFloat(Math.max(p.viewportWidth, 1)).putFloat(Math.max(p.viewportHeight, 1));
 		if (b.position() > FRAME_UBO_SIZE)
 		{
