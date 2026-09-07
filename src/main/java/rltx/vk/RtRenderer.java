@@ -181,7 +181,8 @@ public final class RtRenderer
 	private static final int BINDING_NOISY = 49;
 	private static final int BINDING_SPECULAR_ALBEDO = 50;
 	private static final int BINDING_LINEAR_DEPTH = 51;
-	private static final int BINDING_COUNT = 52;
+	private static final int BINDING_BIAS = 52;
+	private static final int BINDING_COUNT = 53;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -408,6 +409,9 @@ public final class RtRenderer
 	private Img noisyImage;
 	private Img specularAlbedoImage;
 	private Img linearDepthImage;
+	/** Per pixel, how far DLSS and Ray Reconstruction should trust the current frame over their history. */
+	private static final int BIAS_FORMAT = VK_FORMAT_R8_UNORM;
+	private Img biasImage;
 	private long rrFeature;
 	private boolean rrOn;
 	/** Set once its feature failed to create, so the request is not retried every frame. */
@@ -679,6 +683,7 @@ public final class RtRenderer
 			types[BINDING_NOISY] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_SPECULAR_ALBEDO] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_LINEAR_DEPTH] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_BIAS] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_STATIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_COL] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -736,7 +741,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(50);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(52);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(48);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
@@ -1977,6 +1982,7 @@ public final class RtRenderer
 		noisyImage = createImage(traceWidth, traceHeight, NOISY_FORMAT, fedUsage, false);
 		specularAlbedoImage = createImage(traceWidth, traceHeight, SPECULAR_ALBEDO_FORMAT, fedUsage, false);
 		linearDepthImage = createImage(traceWidth, traceHeight, DEPTH_FORMAT, fedUsage, false);
+		biasImage = createImage(traceWidth, traceHeight, BIAS_FORMAT, fedUsage, false);
 		sample = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		albedo = createImage(traceWidth, traceHeight, OUTPUT_FORMAT, fedUsage, false);
 		normal = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, fedUsage, false);
@@ -2014,6 +2020,7 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_NOISY, noisyImage.view);
 			writeImageDescriptor(handle, BINDING_SPECULAR_ALBEDO, specularAlbedoImage.view);
 			writeImageDescriptor(handle, BINDING_LINEAR_DEPTH, linearDepthImage.view);
+			writeImageDescriptor(handle, BINDING_BIAS, biasImage.view);
 			writeImageDescriptor(handle, BINDING_SAMPLE, sample.view);
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
@@ -2202,11 +2209,13 @@ public final class RtRenderer
 		destroyImage(noisyImage);
 		destroyImage(specularAlbedoImage);
 		destroyImage(linearDepthImage);
+		destroyImage(biasImage);
 		motionImage = null;
 		depthImage = null;
 		noisyImage = null;
 		specularAlbedoImage = null;
 		linearDepthImage = null;
+		biasImage = null;
 		if (output != presented)
 		{
 			destroyImage(output);
@@ -2399,7 +2408,7 @@ public final class RtRenderer
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
 			}
 			int firstLayout = outputUninitialized ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
-			for (Img fed : new Img[]{motionImage, depthImage, noisyImage, specularAlbedoImage, linearDepthImage})
+			for (Img fed : new Img[]{motionImage, depthImage, noisyImage, specularAlbedoImage, linearDepthImage, biasImage})
 			{
 				imageBarrier(cmd, fed.image, firstLayout,
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
@@ -2435,7 +2444,7 @@ public final class RtRenderer
 					// pass with a zero step, which filters nothing, lays the effects over it.
 					passes = 1;
 					recordMotion(cmd, groupsX, groupsY);
-					Img[] fed = {noisyImage, albedo, normal, specularAlbedoImage, linearDepthImage, motionImage};
+					Img[] fed = {noisyImage, albedo, normal, specularAlbedoImage, linearDepthImage, motionImage, biasImage};
 					for (Img image : fed)
 					{
 						readOnlyForDlss(cmd, image.image);
@@ -2448,6 +2457,7 @@ public final class RtRenderer
 						linearDepthImage.image, linearDepthImage.view, DEPTH_FORMAT,
 						motionImage.image, motionImage.view, MOTION_FORMAT,
 						filter[0].image, filter[0].view, HISTORY_COLOR_FORMAT,
+						biasImage.image, biasImage.view, BIAS_FORMAT,
 						-jitterX, -jitterY, !hasHistory);
 					if (result != 1 && !warnedRr)
 					{
@@ -2531,6 +2541,7 @@ public final class RtRenderer
 				readOnlyForDlss(cmd, output.image);
 				readOnlyForDlss(cmd, motionImage.image);
 				readOnlyForDlss(cmd, depthImage.image);
+				readOnlyForDlss(cmd, biasImage.image);
 				// The shader moves each pixel's sample point by the jitter; DLSS wants the jitter as the
 				// projection's displacement of the image, which is the same shift with the opposite sign.
 				int result = Ngx.evaluate(cmd.address(), dlssFeature,
@@ -2538,6 +2549,7 @@ public final class RtRenderer
 					presented.image, presented.view, OUTPUT_FORMAT, outputWidth, outputHeight,
 					depthImage.image, depthImage.view, DEPTH_FORMAT,
 					motionImage.image, motionImage.view, MOTION_FORMAT,
+					biasImage.image, biasImage.view, BIAS_FORMAT,
 					-jitterX, -jitterY, !hasHistory);
 				if (result != 1 && !warnedDlss)
 				{
@@ -2547,6 +2559,7 @@ public final class RtRenderer
 				generalAfterDlss(cmd, output.image);
 				generalAfterDlss(cmd, motionImage.image);
 				generalAfterDlss(cmd, depthImage.image);
+				generalAfterDlss(cmd, biasImage.image);
 			}
 			else if (presented != output)
 			{

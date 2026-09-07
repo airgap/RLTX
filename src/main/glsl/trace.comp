@@ -40,6 +40,8 @@ layout(set = 0, binding = 14, rgba16f) uniform writeonly image2D normalImage;
 // For Ray Reconstruction: the noisy colour with the albedo in, and the specular reflectance.
 layout(set = 0, binding = 49, rgba16f) uniform writeonly image2D noisyImage;
 layout(set = 0, binding = 50, rgba8) uniform writeonly image2D specularAlbedoImage;
+// Where the light itself moves, as caustics do, DLSS is asked to lean on the current frame.
+layout(set = 0, binding = 52, r8) uniform writeonly image2D biasImage;
 layout(std430, set = 0, binding = 19) readonly buffer StaticTex { uint t[]; } staticTex;
 layout(std430, set = 0, binding = 20) readonly buffer StaticUv { float v[]; } staticUv;
 layout(std430, set = 0, binding = 21) readonly buffer DynTex { uint t[]; } dynTex;
@@ -1346,6 +1348,7 @@ void main() {
     imageStore(normalImage, ivec2(px), vec4(0.0));
     imageStore(noisyImage, ivec2(px), vec4(background, 1.0));
     imageStore(specularAlbedoImage, ivec2(px), vec4(0.5, 0.5, 0.5, 1.0));
+    imageStore(biasImage, ivec2(px), vec4(0.0));
     imageStore(currPos, ivec2(px), vec4(0.0, 0.0, 0.0, -1.0));
     return;
   }
@@ -1405,6 +1408,9 @@ void main() {
       footprint(hit, u.weather2.y);
     }
   }
+  // How far DLSS should trust this frame over its history here: raised where the light itself
+  // moves, since its motion vectors follow surfaces and would smear a dancing pattern.
+  float biasCurrent = 0.0;
   // Radiance that does not scale with the albedo: highlights, reflections and glow.
   vec3 specular = vec3(0.0);
   vec3 toEye = -dir;
@@ -1413,6 +1419,7 @@ void main() {
   vec3 sunLight = u.sunColor.rgb * (u.sun.w * sunVisible);
   if ((flags & FLAG_UNDERWATER) != 0u && !hit.water) {
     // Sunlight under water: dimmed by its passage and focused by the waves into a dancing web.
+    biasCurrent = 0.5;
     float t = u.weather3.x;
     float n1 = valueNoise2(hit.surface.xz / 56.0 + vec2(t * 0.21, -t * 0.13));
     float n2 = valueNoise2(hit.surface.xz / 44.0 + vec2(-t * 0.17, t * 0.11) + 7.3);
@@ -1478,6 +1485,7 @@ void main() {
   bool waterPixel = false;
   if (hit.water) {
     light = (flags & FLAG_UNDERWATER) != 0u && dir.y < 0.0 ? shadeWaterFromBelow(hit, dir, sunDir, shadows, seed) : shadeWater(hit, dir, sunDir, shadows, seed);
+    biasCurrent = (flags & FLAG_CAUSTICS) != 0u ? 0.5 : 0.0;
     hit.albedo = vec3(1.0);
     waterPixel = true;
   } else if (wetPixel && puddle > 0.3) {
@@ -1552,6 +1560,7 @@ void main() {
   float roughness = hit.material.x > 0.0 ? clamp(inversesqrt(max(hit.material.y, 1.0)), 0.02, 1.0) : 1.0;
   imageStore(normalImage, ivec2(px), vec4(stable.gn, roughness));
   imageStore(noisyImage, ivec2(px), vec4(hit.albedo * sample_, 1.0));
+  imageStore(biasImage, ivec2(px), vec4(biasCurrent));
   imageStore(specularAlbedoImage, ivec2(px), vec4(specularAlbedo(vec3(clamp(hit.material.x, 0.0, 1.0)), roughness, cosine), 1.0));
   imageStore(currPos, ivec2(px), vec4(stable.surface, stable.t));
 }

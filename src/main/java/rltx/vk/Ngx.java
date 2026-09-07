@@ -164,6 +164,7 @@ public final class Ngx
 		long outImage, long outView, int outFormat, int outWidth, int outHeight,
 		long depthImage, long depthView, int depthFormat,
 		long motionImage, long motionView, int motionFormat,
+		long biasImage, long biasView, int biasFormat,
 		float jitterX, float jitterY, boolean reset);
 
 	/** A Ray Reconstruction feature denoising at one size; flags as for DLSS. */
@@ -177,6 +178,7 @@ public final class Ngx
 		long depthImage, long depthView, int depthFormat,
 		long motionImage, long motionView, int motionFormat,
 		long outImage, long outView, int outFormat,
+		long biasImage, long biasView, int biasFormat,
 		float jitterX, float jitterY, boolean reset);
 
 	static native void releaseFeature(long feature);

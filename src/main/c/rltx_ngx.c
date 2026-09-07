@@ -202,9 +202,11 @@ JNIEXPORT jint JNICALL Java_rltx_vk_Ngx_evaluate(JNIEnv *env, jclass cls, jlong 
 	jlong outImage, jlong outView, jint outFormat, jint outWidth, jint outHeight,
 	jlong depthImage, jlong depthView, jint depthFormat,
 	jlong motionImage, jlong motionView, jint motionFormat,
+	jlong biasImage, jlong biasView, jint biasFormat,
 	jfloat jitterX, jfloat jitterY, jboolean reset)
 {
 	NVSDK_NGX_Resource_VK color = resource(colorView, colorImage, colorFormat, inWidth, inHeight, false);
+	NVSDK_NGX_Resource_VK bias = resource(biasView, biasImage, biasFormat, inWidth, inHeight, false);
 	NVSDK_NGX_Resource_VK output = resource(outView, outImage, outFormat, outWidth, outHeight, true);
 	NVSDK_NGX_Resource_VK depth = resource(depthView, depthImage, depthFormat, inWidth, inHeight, false);
 	NVSDK_NGX_Resource_VK motion = resource(motionView, motionImage, motionFormat, inWidth, inHeight, false);
@@ -215,6 +217,7 @@ JNIEXPORT jint JNICALL Java_rltx_vk_Ngx_evaluate(JNIEnv *env, jclass cls, jlong 
 	eval.Feature.InSharpness = 0.0f;
 	eval.pInDepth = &depth;
 	eval.pInMotionVectors = &motion;
+	eval.pInBiasCurrentColorMask = &bias;
 	eval.InJitterOffsetX = jitterX;
 	eval.InJitterOffsetY = jitterY;
 	eval.InRenderSubrectDimensions.Width = (unsigned int) inWidth;
@@ -263,9 +266,11 @@ JNIEXPORT jint JNICALL Java_rltx_vk_Ngx_evaluateDenoiser(JNIEnv *env, jclass cls
 	jlong depthImage, jlong depthView, jint depthFormat,
 	jlong motionImage, jlong motionView, jint motionFormat,
 	jlong outImage, jlong outView, jint outFormat,
+	jlong biasImage, jlong biasView, jint biasFormat,
 	jfloat jitterX, jfloat jitterY, jboolean reset)
 {
 	NVSDK_NGX_Resource_VK color = resource(colorView, colorImage, colorFormat, width, height, false);
+	NVSDK_NGX_Resource_VK bias = resource(biasView, biasImage, biasFormat, width, height, false);
 	NVSDK_NGX_Resource_VK albedo = resource(albedoView, albedoImage, albedoFormat, width, height, false);
 	NVSDK_NGX_Resource_VK specular = resource(specularView, specularImage, specularFormat, width, height, false);
 	NVSDK_NGX_Resource_VK normals = resource(normalView, normalImage, normalFormat, width, height, false);
@@ -281,6 +286,7 @@ JNIEXPORT jint JNICALL Java_rltx_vk_Ngx_evaluateDenoiser(JNIEnv *env, jclass cls
 	eval.pInOutput = &output;
 	eval.pInDepth = &depth;
 	eval.pInMotionVectors = &motion;
+	eval.pInBiasCurrentColorMask = &bias;
 	eval.InJitterOffsetX = jitterX;
 	eval.InJitterOffsetY = jitterY;
 	eval.InRenderSubrectDimensions.Width = (unsigned int) width;
