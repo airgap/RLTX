@@ -27,8 +27,8 @@ bool isKey(vec3 c) {
 const int DIRECTIONS = 12;
 const int STEPS = 12;
 const float STEP = 2.0;
-const float RIM_RADIUS = 12.0;
-const float SLAB = 9.0;
+const float RIM_RADIUS = 14.0;
+const float SLAB = 12.0;
 
 vec3 glass(vec2 px) {
   vec2 texel = 1.0 / uiSize;
@@ -79,18 +79,22 @@ vec3 glass(vec2 px) {
     }
     behind = sum / 10.0;
   }
-  // Tinted glass, thicker at the rim where more of the light is absorbed.
-  float absorb = mix(1.0, 0.7, 1.0 - height);
-  vec3 colour = behind * mix(vec3(1.0), vec3(0.26, 0.28, 0.34), glassLook.x) * absorb + vec3(0.01, 0.01, 0.015);
-  // The surface: a sky reflected more at the rim, and a highlight from the upper left.
+  // Lightly smoked, faintly milky glass; the frost scatters a little white into it.
+  vec3 colour = behind * mix(vec3(1.0), vec3(0.42, 0.44, 0.50), glassLook.x) + vec3(0.035, 0.035, 0.045);
+  // The thick rim gathers light: it brightens toward the edge, reflects the sky more steeply by
+  // Fresnel, and takes a highlight from a light at the upper left.
+  float bevel = pow(1.0 - height, 1.5);
+  colour += vec3(0.90, 0.92, 1.0) * (bevel * 0.22);
   float fresnel = 0.04 + 0.96 * pow(1.0 - normal.z, 5.0);
-  colour += vec3(0.62, 0.66, 0.74) * (fresnel * 0.55);
+  colour += vec3(0.62, 0.66, 0.74) * (fresnel * 0.75);
   vec3 light = normalize(vec3(-0.5, -0.7, 0.55));
   vec3 half_ = normalize(light + vec3(0.0, 0.0, 1.0));
-  colour += vec3(1.0, 0.94, 0.80) * (pow(max(dot(normal, half_), 0.0), 60.0) * 0.9 * glassLook.w);
-  // The gold rim, a fine line at the very edge with a lit inner bevel behind it.
-  float line = 1.0 - smoothstep(1.0, 2.5, nearest);
-  colour = mix(colour, vec3(0.84, 0.70, 0.40), line);
+  colour += vec3(1.0, 0.94, 0.80) * (pow(max(dot(normal, half_), 0.0), 40.0) * 1.2 * glassLook.w);
+  // The gold rim: a fine line at the very edge, with a soft gold glow just inside it.
+  float glow = 1.0 - smoothstep(2.0, 7.0, nearest);
+  colour += vec3(0.84, 0.70, 0.40) * (glow * 0.18);
+  float line = 1.0 - smoothstep(1.5, 3.0, nearest);
+  colour = mix(colour, vec3(0.88, 0.74, 0.44), line);
   return colour;
 }
 

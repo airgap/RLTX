@@ -1980,7 +1980,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			// Liquid glass reads the scene behind the chrome, so only a frame that drew one this
 			// pass, and so holds the image, may have it; the chrome's panes stay solid otherwise.
 			boolean glass = sceneDrawn && gameState == GameState.LOGGED_IN && config.chrome() == RltxConfig.Chrome.GLASS;
-			compositor.setGlass(glass, Chrome.GLASS_KEY, 1f - config.chromeTransparency() / 100f, 2.5f, 10f, 1f,
+			compositor.setGlass(glass, Chrome.GLASS_KEY, 1f - config.chromeTransparency() / 100f, 4f, 10f, 1f,
 				client.getViewportXOffset(), client.getViewportYOffset(), client.getViewportWidth(), client.getViewportHeight());
 			compositor.drawUi(overlayColor, 0, 0, scaled(dpi.getScaleX(), targetWidth), scaled(dpi.getScaleY(), targetHeight));
 		}
