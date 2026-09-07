@@ -162,6 +162,22 @@ public final class GeometryBuffer
 		++faces;
 	}
 
+	/** Appends another buffer's faces moved by an offset. */
+	public void append(GeometryBuffer other, float dx, float dy, float dz)
+	{
+		int first = faces;
+		append(other);
+		for (int i = first * FLOATS_PER_FACE; i < faces * FLOATS_PER_FACE; i += 3)
+		{
+			pos[i] += dx;
+			pos[i + 1] += dy;
+			pos[i + 2] += dz;
+			prev[i] += dx;
+			prev[i + 1] += dy;
+			prev[i + 2] += dz;
+		}
+	}
+
 	public void append(GeometryBuffer other)
 	{
 		ensure(other.faces);

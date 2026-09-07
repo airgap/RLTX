@@ -54,6 +54,8 @@ final class Lyku
 	private final ConfigManager configManager;
 	private final Consumer<String> say;
 	private HttpServer callback;
+	/** Run once a sign-in has completed. */
+	private Runnable connected;
 
 	Lyku(OkHttpClient http, Gson gson, ConfigManager configManager, Consumer<String> say)
 	{
@@ -61,6 +63,11 @@ final class Lyku
 		this.gson = gson;
 		this.configManager = configManager;
 		this.say = say;
+	}
+
+	void onConnected(Runnable connected)
+	{
+		this.connected = connected;
 	}
 
 	boolean connected()
@@ -185,6 +192,10 @@ final class Lyku
 			configManager.setConfiguration(RltxConfig.GROUP, WORKSPACE_KEY, workspace);
 		}
 		say.accept("Lyku: connected" + (token.has("workspace_name") ? " to " + token.get("workspace_name").getAsString() : ""));
+		if (connected != null)
+		{
+			connected.run();
+		}
 	}
 
 	private synchronized void stopCallback()

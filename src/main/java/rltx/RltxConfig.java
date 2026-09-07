@@ -1248,6 +1248,44 @@ public interface RltxConfig extends Config
 		return false;
 	}
 
+	enum PortraitScene
+	{
+		STAGE("Plain stage"),
+		HERE("Where you stand"),
+		LUMBRIDGE("Lumbridge Castle"),
+		VARROCK("Varrock fountain"),
+		FALADOR("Falador Park"),
+		DRAYNOR("Draynor Manor"),
+		GRAND_EXCHANGE("Grand Exchange"),
+		EDGEVILLE("Edgeville"),
+		SEERS("Seers' Village");
+
+		private final String label;
+
+		PortraitScene(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
+	@ConfigItem(
+		keyName = "portraitScene",
+		name = "Portrait scene",
+		description = "Where outfit portraits are posed: a plain stage, the spot you stand on as it is, or a place across Gielinor. A place is kept for portraits once you have walked within a few tiles of its spot, and a portrait asked for before then is posed on the stage.",
+		section = cameraSection,
+		position = 32
+	)
+	default PortraitScene portraitScene()
+	{
+		return PortraitScene.STAGE;
+	}
+
 	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",

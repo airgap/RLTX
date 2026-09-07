@@ -72,11 +72,22 @@ final class Outfits
 		{
 			return;
 		}
-		String name = "outfit-" + hash(kit, colours);
+		String name = currentName();
 		if (new File(FOLDER, name + ".png").exists() || portrait.test(local, name))
 		{
 			pending = false;
 		}
+	}
+
+	/** The file stem of the outfit worn now in the scene chosen now, or null before the outfit is known. */
+	String currentName()
+	{
+		if (kit == null)
+		{
+			return null;
+		}
+		RltxConfig.PortraitScene scene = config.portraitScene();
+		return "outfit-" + hash(kit, colours) + (scene == RltxConfig.PortraitScene.STAGE ? "" : "-" + scene.name().toLowerCase());
 	}
 
 	// A short digest of the kit and colours, the same for the same outfit on any day.

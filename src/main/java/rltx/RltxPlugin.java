@@ -156,6 +156,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Lyku lyku;
 	private final GeometryBuffer portraitOpaque = new GeometryBuffer(1 << 12);
 	private final GeometryBuffer portraitTranslucent = new GeometryBuffer(1 << 10);
+	private final GeometryBuffer portraitWater = new GeometryBuffer(1 << 8);
+	private Stages stages;
 	private static final int GPU_FLAGS = DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0);
 	/** The stem of a photo just saved whose stock render is still to be drawn, or null. */
 	private String stockStem;
@@ -220,6 +222,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		outfits.tick();
 		Player local = client.getLocalPlayer();
 		currentPosition = local == null ? null : WorldPoint.fromLocalInstance(client, local.getLocalLocation());
+		stages.tick(scenes.get(WorldView.TOPLEVEL), currentPosition);
 		String area = areaRules.tick(currentPosition, config.areaSettings(), onMistyGround(currentPosition));
 		if (area != null)
 		{
@@ -473,6 +476,14 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		styledMenu = new StyledMenu(client, config);
 		outfits = new Outfits(client, config, this::portrait);
 		lyku = new Lyku(okHttpClient, gson, configManager, this::say);
+		lyku.onConnected(() -> clientThread.invoke(() ->
+		{
+			if (config.lykuAvatar())
+			{
+				pushOutfitToLyku();
+			}
+		}));
+		stages = new Stages(client, this::say);
 		eventBus.register(styledMenu);
 		overlayManager.add(styledMenu);
 		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
@@ -640,6 +651,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			showcase.set(config.showcase());
 			say(config.showcase() ? "RLTX: showcase on" : "RLTX: showcase off, your settings are back");
+		}
+		if ("lykuAvatar".equals(event.getKey()) && config.lykuAvatar())
+		{
+			// Turning it on puts the outfit worn now up straight away, not only the next change.
+			clientThread.invoke(this::pushOutfitToLyku);
 		}
 		if ("lykuConnect".equals(event.getKey()) && config.lykuConnect())
 		{
@@ -1240,10 +1256,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
 	}
 
-	// A portrait of the character's outfit: their model alone, standing on a grey stage far
-	// outside the scene with the scene itself hidden, lit by a key light from the front and the
-	// sky, framed from the front at the height of the chest, accumulated like a photo, and saved.
-	// The live frame lends its settings and gets them back afterwards.
+	// A portrait of the character's outfit. On the plain stage their model stands alone on a grey
+	// floor far outside the scene with the scene hidden; in a kept place it stands at that place's
+	// spot among its surroundings; where they stand it is simply the character as they are, in
+	// the world as it is. Lit by a key light from the camera's front left and the sky, framed from
+	// the front at the height of the chest, accumulated like a photo, and saved. The live frame
+	// lends its settings and gets them back afterwards.
 	private boolean portrait(Player player, String name)
 	{
 		Model model = player.getModel();
@@ -1251,8 +1269,51 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			return false;
 		}
-		final float stageX = -40000f, stageZ = -40000f;
-		float[] span = stage(model, stageX, stageZ);
+		RltxConfig.PortraitScene choice = config.portraitScene();
+		Stages.Place place = Stages.place(choice);
+		Stages.Stage kept = null;
+		if (place != null)
+		{
+			try
+			{
+				kept = stages.load(place);
+			}
+			catch (IOException e)
+			{
+				log.warn("Scene {} not loaded", place.label, e);
+				say("RLTX: " + e.getMessage());
+			}
+			if (kept == null)
+			{
+				say("RLTX: the " + place.label + " scene is not kept yet; walk within a few tiles of its spot once. This portrait is posed on the stage.");
+			}
+		}
+		boolean here = choice == RltxConfig.PortraitScene.HERE;
+		// Where the figure stands, which way it faces, and from which side the camera looks.
+		float originX, originY, originZ, cameraYaw;
+		int orientation;
+		if (here)
+		{
+			LocalPoint lp = player.getLocalLocation();
+			if (lp == null)
+			{
+				return false;
+			}
+			originX = lp.getX();
+			originZ = lp.getY();
+			originY = Perspective.getTileHeight(client, lp, player.getWorldLocation().getPlane()) - player.getAnimationHeightOffset();
+			orientation = player.getCurrentOrientation();
+			cameraYaw = (float) (-orientation * Math.PI * 2.0 / 2048.0);
+		}
+		else
+		{
+			originX = -40000f;
+			originY = 0f;
+			originZ = -40000f;
+			cameraYaw = kept != null ? place.cameraYaw : 0f;
+			orientation = (int) Math.round(-cameraYaw / (2.0 * Math.PI) * 2048.0) & 2047;
+		}
+		float[] span = stage(model, originX, originY, originZ, orientation, kept, !here && kept == null);
 		if (span == null)
 		{
 			return false;
@@ -1265,6 +1326,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float centreY = top + 0.5f * modelHeight;
 		float cameraY = top + 0.42f * modelHeight;
 		float pitch = (float) Math.atan2(centreY - cameraY, distance);
+		float sinYaw = (float) Math.sin(cameraYaw), cosYaw = (float) Math.cos(cameraYaw);
 
 		// Everything of the live frame the portrait changes, put back afterwards.
 		Showcase.Held held = Showcase.maximise(frame, true);
@@ -1286,73 +1348,78 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		boolean rainbows = frame.rainbows, heatShimmer = frame.heatShimmer, puddles = frame.puddles, ripples = frame.ripples;
 		float footprintStrength = frame.footprintStrength, starBrightness = frame.starBrightness;
 
-		frame.cameraX = stageX;
-		frame.cameraY = cameraY;
-		frame.cameraZ = stageZ - distance;
+		frame.cameraX = originX + sinYaw * distance;
+		frame.cameraY = originY + cameraY;
+		frame.cameraZ = originZ - cosYaw * distance;
 		frame.zoom = height * distance / (1.3f * modelHeight);
-		CameraMath.inverseRotation(pitch, 0f, frame.inverseRotation);
-		CameraMath.forwardRotation(pitch, 0f, frame.forwardRotation);
-		// A key light from above and the front left; up is -y, and the camera stands at -z.
-		float keyLength = (float) Math.sqrt(0.45f * 0.45f + 0.75f * 0.75f + 0.55f * 0.55f);
-		frame.sunX = -0.45f / keyLength;
-		frame.sunY = -0.75f / keyLength;
-		frame.sunZ = -0.55f / keyLength;
-		frame.sunIntensity = config.sunIntensity() / 100f;
-		frame.sunR = 1f;
-		frame.sunG = 0.97f;
-		frame.sunB = 0.92f;
-		frame.skyR = 0.35f;
-		frame.skyG = 0.4f;
-		frame.skyB = 0.5f;
-		frame.ambient = 0.25f;
-		frame.exposure = config.exposure() / 100f;
-		frame.backgroundR = 0.22f;
-		frame.backgroundG = 0.22f;
-		frame.backgroundB = 0.24f;
-		frame.skybox = false;
-		frame.proceduralSky = false;
-		frame.physicalSky = false;
-		frame.starBrightness = 0f;
-		frame.clouds = false;
-		frame.cloudShadows = false;
-		frame.autoExposure = false;
-		frame.cloud = 0f;
-		frame.fogAmount = 0f;
-		frame.rain = 0f;
-		frame.snow = 0f;
-		frame.mist = 0f;
-		frame.wetness = 0f;
-		frame.snowCover = 0f;
-		frame.lightShafts = 0f;
-		frame.unseenDarkness = 0f;
+		CameraMath.inverseRotation(pitch, cameraYaw, frame.inverseRotation);
+		CameraMath.forwardRotation(pitch, cameraYaw, frame.forwardRotation);
 		frame.aperture = 0f;
 		frame.vignette = 0f;
 		frame.filmGrain = 0f;
 		frame.chromaticAberration = 0f;
-		frame.aerialPerspective = 0f;
-		frame.distanceFade = 0f;
-		frame.auroraWeight = 0f;
-		frame.lightCount = 0;
-		frame.printCount = 0;
-		frame.markerCount = 0;
-		frame.plumeCount = 0;
-		frame.treeCount = 0;
-		frame.wildlife = false;
-		frame.fireflies = false;
-		frame.dustMotes = false;
-		frame.mistEverywhere = false;
-		frame.rainbows = false;
-		frame.heatShimmer = false;
-		frame.puddles = false;
-		frame.footprintStrength = 0f;
-		frame.ripples = false;
-		// The scene itself is hidden: no level is visible and no roof is hidden.
-		renderer.setStaticView(WorldView.TOPLEVEL, null, 99, 99, -1, java.util.Collections.emptySet());
+		frame.unseenDarkness = 0f;
+		if (!here)
+		{
+			// A key light from above and the camera's front left; up is -y.
+			float keyLength = (float) Math.sqrt(0.45f * 0.45f + 0.75f * 0.75f + 0.55f * 0.55f);
+			float keyX = -0.45f / keyLength, keyZ = -0.55f / keyLength;
+			frame.sunX = keyX * cosYaw + keyZ * sinYaw;
+			frame.sunY = -0.75f / keyLength;
+			frame.sunZ = -keyX * sinYaw + keyZ * cosYaw;
+			frame.sunIntensity = config.sunIntensity() / 100f;
+			frame.sunR = 1f;
+			frame.sunG = 0.97f;
+			frame.sunB = 0.92f;
+			boolean outdoors = kept != null;
+			frame.skyR = outdoors ? 0.5f : 0.35f;
+			frame.skyG = outdoors ? 0.6f : 0.4f;
+			frame.skyB = outdoors ? 0.75f : 0.5f;
+			frame.ambient = 0.25f;
+			frame.exposure = config.exposure() / 100f;
+			frame.backgroundR = outdoors ? 0.5f : 0.22f;
+			frame.backgroundG = outdoors ? 0.65f : 0.22f;
+			frame.backgroundB = outdoors ? 0.9f : 0.24f;
+			frame.skybox = false;
+			frame.proceduralSky = false;
+			frame.physicalSky = false;
+			frame.starBrightness = 0f;
+			frame.clouds = false;
+			frame.cloudShadows = false;
+			frame.autoExposure = false;
+			frame.cloud = 0f;
+			frame.fogAmount = 0f;
+			frame.rain = 0f;
+			frame.snow = 0f;
+			frame.mist = 0f;
+			frame.wetness = 0f;
+			frame.snowCover = 0f;
+			frame.lightShafts = 0f;
+			frame.aerialPerspective = 0f;
+			frame.distanceFade = 0f;
+			frame.auroraWeight = 0f;
+			frame.lightCount = 0;
+			frame.printCount = 0;
+			frame.markerCount = 0;
+			frame.plumeCount = 0;
+			frame.treeCount = 0;
+			frame.wildlife = false;
+			frame.fireflies = false;
+			frame.dustMotes = false;
+			frame.mistEverywhere = false;
+			frame.rainbows = false;
+			frame.heatShimmer = false;
+			frame.puddles = false;
+			frame.footprintStrength = 0f;
+			frame.ripples = false;
+			// The scene itself is hidden: no level is visible and no roof is hidden.
+			renderer.setStaticView(WorldView.TOPLEVEL, null, 99, 99, -1, java.util.Collections.emptySet());
+		}
 
 		int canvasWidth = client.getCanvasWidth();
 		int canvasHeight = client.getCanvasHeight();
 		renderer.ensureOutput(width, height, 1f, -1, false);
-		burst(48, false, portraitOpaque, portraitTranslucent, empty);
+		burst(48, false, portraitOpaque, portraitTranslucent, portraitWater);
 		glSignalPending = false;
 		int[] argb = renderer.readbackOutput();
 
@@ -1376,11 +1443,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			{
 				player.setPoseAnimationFrame(f);
 				Model posed = player.getModel();
-				if (posed == null || stage(posed, stageX, stageZ) == null)
+				if (posed == null || stage(posed, originX, originY, originZ, orientation, kept, !here && kept == null) == null)
 				{
 					continue;
 				}
-				burst(CYCLE_SAMPLES, false, portraitOpaque, portraitTranslucent, empty);
+				burst(CYCLE_SAMPLES, false, portraitOpaque, portraitTranslucent, portraitWater);
 				cycle.add(renderer.readbackOutput());
 				int duration = 0;
 				for (int k = f; k < Math.min(count, f + step); ++k)
@@ -1482,15 +1549,16 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private static final int CYCLE_POSES = 20;
 	private static final int CYCLE_SAMPLES = 12;
 
-	// Fills the portrait buffers with a model standing at the stage's centre and the grey floor
-	// under it; returns the model's top and bottom, or null when it has no faces.
-	private float[] stage(Model model, float stageX, float stageZ)
+	// Fills the portrait buffers with a model standing at the origin facing the given way, with
+	// either a kept place's surroundings around it or, when asked, a grey floor under it; returns
+	// the model's top and bottom relative to the origin, or null when it has no faces.
+	private float[] stage(Model model, float originX, float originY, float originZ, int orientation, Stages.Stage kept, boolean floor)
 	{
-		final float stageHalf = 1500f;
 		portraitOpaque.clear();
 		portraitTranslucent.clear();
+		portraitWater.clear();
 		framePusher.actor = true;
-		framePusher.push(model, 0, (int) stageX, 0, (int) stageZ, null, palette(), portraitOpaque, portraitTranslucent);
+		framePusher.push(model, orientation, (int) originX, (int) originY, (int) originZ, null, palette(), portraitOpaque, portraitTranslucent);
 		framePusher.actor = false;
 		int faces = portraitOpaque.faces();
 		if (faces == 0)
@@ -1501,13 +1569,49 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		float top = Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
 		for (int i = 0; i < faces * GeometryBuffer.FLOATS_PER_FACE; i += 3)
 		{
-			top = Math.min(top, pos[i + 1]);
-			bottom = Math.max(bottom, pos[i + 1]);
+			top = Math.min(top, pos[i + 1] - originY);
+			bottom = Math.max(bottom, pos[i + 1] - originY);
 		}
-		int grey = 0xff6a6a6a;
-		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ - stageHalf, grey);
-		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX - stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, grey);
+		if (kept != null)
+		{
+			portraitOpaque.append(kept.opaque, originX, originY, originZ);
+			portraitTranslucent.append(kept.translucent, originX, originY, originZ);
+			portraitWater.append(kept.water, originX, originY, originZ);
+		}
+		else if (floor)
+		{
+			final float half = 1500f;
+			int grey = 0xff6a6a6a;
+			portraitOpaque.face(originX - half, originY, originZ - half, originX + half, originY, originZ + half, originX + half, originY, originZ - half, grey);
+			portraitOpaque.face(originX - half, originY, originZ - half, originX - half, originY, originZ + half, originX + half, originY, originZ + half, grey);
+		}
 		return new float[]{top, bottom};
+	}
+
+	// The portrait of the outfit worn now, as already on disk, put up as the Lyku profile picture.
+	private void pushOutfitToLyku()
+	{
+		String name = outfits.currentName();
+		if (name == null || !lyku.connected())
+		{
+			return;
+		}
+		File webp = new File(Outfits.FOLDER, name + ".webp");
+		File png = new File(Outfits.FOLDER, name + ".png");
+		File file = webp.exists() ? webp : png.exists() ? png : null;
+		if (file == null)
+		{
+			return;
+		}
+		try
+		{
+			lyku.setAvatarBytesAsync(java.nio.file.Files.readAllBytes(file.toPath()), webp.exists() ? "image/webp" : "image/png");
+		}
+		catch (IOException e)
+		{
+			log.warn("Outfit {} not read for Lyku", file, e);
+			say("Lyku: could not read " + file.getName());
+		}
 	}
 
 	// Holds this frame's scene still and accumulates many more samples of it before it is shown,
