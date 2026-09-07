@@ -2451,7 +2451,9 @@ public final class RtRenderer
 				.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			check(vkBeginCommandBuffer(cmd, begin), "vkBeginCommandBuffer");
 			vkCmdResetQueryPool(cmd, timestampPool, 0, STAMPS);
-			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool, 0);
+			// Taken at the compute stage, which the wait on OpenGL's semaphore holds back, so the
+			// first pass is not charged with the time spent waiting for the compositor.
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPool, 0);
 
 			// Static structures and last frame's history were written by earlier submissions.
 			memoryBarrier(cmd,

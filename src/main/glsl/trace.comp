@@ -669,7 +669,7 @@ bool trace(vec3 origin, vec3 dir, float tMin, float tMax, uint rayFlags, uint ma
         // at the level the lift was, so the light falls on the stones the way they stand.
         float lod = log2(float(textureSize(reliefMaps, 0).x) / 8.0);
         float d = 8.0 / 128.0;
-        float amplitude = 8.0 * u.material.z;
+        float amplitude = 8.0 * min(u.material.z, 1.0);
         float dhdx = (texHeight(uv + vec2(d, 0.0), float(tex - 1u), lod) - texHeight(uv - vec2(d, 0.0), float(tex - 1u), lod)) * amplitude / (2.0 * d * 128.0);
         float dhdz = (texHeight(uv + vec2(0.0, d), float(tex - 1u), lod) - texHeight(uv - vec2(0.0, d), float(tex - 1u), lod)) * amplitude / (2.0 * d * 128.0);
         hit.n = normalize(hit.n + vec3(-dhdx, 0.0, -dhdz));
@@ -1204,6 +1204,9 @@ float rippleHeight(vec2 xz) {
   if (c.x < base.x || c.y < base.y || c.x >= base.x + 511.0 || c.y >= base.y + 511.0) {
     return 0.0;
   }
+  // The field ends at the window's edge; the last stretch of it fades so the edge never shows.
+  vec2 inset = min(c - base, base + 511.0 - c);
+  float edge = clamp(min(inset.x, inset.y) / 32.0, 0.0, 1.0);
   ivec2 i0 = ivec2(floor(c));
   vec2 f = c - vec2(i0);
   ivec2 t00 = ((i0 % 512) + 512) % 512;
@@ -1212,7 +1215,7 @@ float rippleHeight(vec2 xz) {
   float h10 = imageLoad(rippleField, ivec2(t11.x, t00.y)).x;
   float h01 = imageLoad(rippleField, ivec2(t00.x, t11.y)).x;
   float h11 = imageLoad(rippleField, t11).x;
-  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y) * edge;
 }
 
 vec3 waterNormal(vec3 p, float strength, float duration) {

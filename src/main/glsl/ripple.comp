@@ -28,6 +28,9 @@ layout(std430, set = 0, binding = 56) readonly buffer WaterMask { uint v[]; } wa
 
 const int N = 512;
 const float DAMPING = 0.012;
+// The wave equation keeps whatever level the field is given, so every disturbance here is made
+// to move water rather than add or take it, and a slow pull toward rest takes out what is left.
+const float RESTORE = 0.003;
 const float RAIN_DEPTH = 3.5;
 const float WALKER_RADIUS = 22.0;
 const float LIMIT = 30.0;
@@ -105,16 +108,24 @@ void main() {
   float h = state.x;
   float neighbours = heightAt(cell + ivec2(1, 0), base, prevBase, cellSize) + heightAt(cell - ivec2(1, 0), base, prevBase, cellSize)
     + heightAt(cell + ivec2(0, 1), base, prevBase, cellSize) + heightAt(cell - ivec2(0, 1), base, prevBase, cellSize);
-  float next = (2.0 - DAMPING) * h - (1.0 - DAMPING) * state.y + c2 * (neighbours - 4.0 * h);
-  if (rainRate > 0.0 && hash(texel, int(u.misc.x) * 4 + pc.pass) < rainRate) {
-    next -= RAIN_DEPTH;
+  float next = (2.0 - DAMPING) * h - (1.0 - DAMPING) * state.y + c2 * (neighbours - 4.0 * h) - RESTORE * h;
+  if (rainRate > 0.0) {
+    // A drop pushes its cell down and the water it displaces up into the four cells around it.
+    int salt = int(u.misc.x) * 4 + pc.pass;
+    if (hash(texel, salt) < rainRate) {
+      next -= RAIN_DEPTH;
+    }
+    float around = float(hash(texel + ivec2(1, 0), salt) < rainRate) + float(hash(texel - ivec2(1, 0), salt) < rainRate)
+      + float(hash(texel + ivec2(0, 1), salt) < rainRate) + float(hash(texel - ivec2(0, 1), salt) < rainRate);
+    next += around * (RAIN_DEPTH / 4.0);
   }
   for (int i = 0; i < walkers; ++i) {
     vec4 w = ripple.v[3 + i];
     vec2 d = xz - w.xy;
-    float r2 = dot(d, d);
-    if (r2 < WALKER_RADIUS * WALKER_RADIUS) {
-      next -= w.z * (1.0 - r2 / (WALKER_RADIUS * WALKER_RADIUS));
+    float x = dot(d, d) / (WALKER_RADIUS * WALKER_RADIUS);
+    if (x < 1.0) {
+      // A hollow under the foot with a raised rim: the profile integrates to nothing over the disc.
+      next -= w.z * (1.0 - x) * (1.0 - 3.0 * x);
     }
   }
   store(texel, vec2(clamp(next, -LIMIT, LIMIT), h));

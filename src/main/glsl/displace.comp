@@ -41,6 +41,9 @@ float rippleHeight(vec2 xz) {
   if (c.x < base.x || c.y < base.y || c.x >= base.x + 511.0 || c.y >= base.y + 511.0) {
     return 0.0;
   }
+  // The field ends at the window's edge; the last stretch of it fades so the edge never shows.
+  vec2 inset = min(c - base, base + 511.0 - c);
+  float edge = clamp(min(inset.x, inset.y) / 32.0, 0.0, 1.0);
   ivec2 i0 = ivec2(floor(c));
   vec2 f = c - vec2(i0);
   ivec2 t00 = ((i0 % 512) + 512) % 512;
@@ -49,7 +52,7 @@ float rippleHeight(vec2 xz) {
   float h10 = imageLoad(rippleField, ivec2(t11.x, t00.y)).x;
   float h01 = imageLoad(rippleField, ivec2(t00.x, t11.y)).x;
   float h11 = imageLoad(rippleField, t11).x;
-  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y) * edge;
 }
 
 // The same wave table the shading normal builds, for its eight longest waves: indices 16 to 23.
@@ -77,7 +80,7 @@ float waveHeight(vec2 xz, float t, float windAngle) {
 void liftGround(int face) {
   uint tex = dynTex.t[face];
   float layer = float((tex & 0xFFFFu) - 1u);
-  float amplitude = GROUND_DEPTH * u.material.z;
+  float amplitude = GROUND_DEPTH * min(u.material.z, 1.0);
   float level = log2(float(textureSize(reliefMaps, 0).x) * GROUND_CELL / 128.0 / 2.0);
   for (int v = 0; v < 3; ++v) {
     int o = (face * 3 + v) * 3;
