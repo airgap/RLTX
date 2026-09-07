@@ -91,7 +91,8 @@ final class Waves
 		int[] textures = zone.geometry.textures();
 		float[] uvs = zone.geometry.uvs();
 		int n = SUBDIVISIONS;
-		float[] corner = new float[5 * 3];
+		// Four corners of a cell, x, y, z, u and v each: a triangle and the one that shares its diagonal.
+		float[] corner = new float[5 * 4];
 		for (int g = 0; g < zone.groupWater.length; ++g)
 		{
 			if (!zone.groupWater[g])
