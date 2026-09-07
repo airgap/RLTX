@@ -184,7 +184,11 @@ public final class RtRenderer
 	private static final int BINDING_SPECULAR_ALBEDO = 50;
 	private static final int BINDING_LINEAR_DEPTH = 51;
 	private static final int BINDING_BIAS = 52;
-	private static final int BINDING_COUNT = 53;
+	private static final int BINDING_RIPPLE_A = 53;
+	private static final int BINDING_RIPPLE_B = 54;
+	private static final int BINDING_RIPPLE_PARAMS = 55;
+	private static final int BINDING_WATER_MASK = 56;
+	private static final int BINDING_COUNT = 57;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -383,6 +387,17 @@ public final class RtRenderer
 	private VkBuf prints;
 	private VkBuf trees;
 	private VkBuf cells;
+	// The water ripple simulation: two height fields stepped in turn, its per-frame parameters
+	// and the scene's water tiles.
+	public static final int RIPPLE_CELLS = 512;
+	public static final int RIPPLE_PARAM_FLOATS = (3 + 64) * 4;
+	private static final int WATER_MASK_WORDS = 2048;
+	private Img rippleA;
+	private Img rippleB;
+	private boolean rippleUninitialized = true;
+	private VkBuf rippleParams;
+	private VkBuf waterMaskBuffer;
+	private long ripplePipeline;
 	private VkBuf materials;
 	private VkBuf terrainHeights;
 	private VkBuf runoff;
@@ -486,6 +501,12 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		cells = ctx.createBuffer((long) CELL_LAYERS * CELL_WORDS * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		rippleParams = ctx.createBuffer((long) RIPPLE_PARAM_FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		waterMaskBuffer = ctx.createBuffer((long) WATER_MASK_WORDS * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		rippleA = createImage(RIPPLE_CELLS, RIPPLE_CELLS, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, false);
+		rippleB = createImage(RIPPLE_CELLS, RIPPLE_CELLS, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, false);
 		materials = ctx.createBuffer((long) Materials.TEXTURES * Materials.FLOATS * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		terrainHeights = ctx.createBuffer((long) HEIGHTS_MAX * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -504,6 +525,10 @@ public final class RtRenderer
 			writeBufferDescriptor(set, BINDING_PRINTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, prints);
 			writeBufferDescriptor(set, BINDING_TREES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trees);
 			writeBufferDescriptor(set, BINDING_CELLS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, cells);
+			writeBufferDescriptor(set, BINDING_RIPPLE_PARAMS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, rippleParams);
+			writeBufferDescriptor(set, BINDING_WATER_MASK, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterMaskBuffer);
+			writeImageDescriptor(set, BINDING_RIPPLE_A, rippleA.view);
+			writeImageDescriptor(set, BINDING_RIPPLE_B, rippleB.view);
 			writeBufferDescriptor(set, BINDING_EXPOSURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, exposureReadback);
 			writeBufferDescriptor(set, BINDING_TEX_ANIM, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, textureAnimation);
 			writeBufferDescriptor(set, BINDING_WATER_TYPES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, waterTypes);
@@ -686,6 +711,10 @@ public final class RtRenderer
 			types[BINDING_SPECULAR_ALBEDO] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_LINEAR_DEPTH] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_BIAS] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_RIPPLE_A] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_RIPPLE_B] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_RIPPLE_PARAMS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			types[BINDING_WATER_MASK] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_STATIC_COL] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_DYNAMIC_POS] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -743,8 +772,8 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(52);
-			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(48);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(56);
+			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(52);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(12);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
@@ -779,6 +808,7 @@ public final class RtRenderer
 		shaftsPipeline = createComputePipeline("/rltx/shafts.comp.spv");
 		upscalePipeline = createComputePipeline("/rltx/upscale.comp.spv");
 		motionPipeline = createComputePipeline("/rltx/motion.comp.spv");
+		ripplePipeline = createComputePipeline("/rltx/ripple.comp.spv");
 	}
 
 	private long createComputePipeline(String resource)
@@ -1470,6 +1500,19 @@ public final class RtRenderer
 		pendingRunoff.set(packed, Math.min(packed.length, 185 * 185 * 4));
 	}
 
+	/** The ripple simulation's window, step and sources for the coming frame; see ripple.comp for the layout. */
+	public void setRipples(float[] packed, int floats)
+	{
+		pendingRipples.set(packed, Math.min(floats, RIPPLE_PARAM_FLOATS));
+	}
+
+	/** One bit per tile of the loaded scene, row-major over the extended tiles, set where the tile is water. */
+	public void setWaterMask(int[] bits)
+	{
+		System.arraycopy(bits, 0, pendingWaterMask, 0, Math.min(bits.length, WATER_MASK_WORDS));
+		waterMaskDirty = true;
+	}
+
 	// A host copy of a per-frame buffer's contents, so the plugin can set it while the GPU is still
 	// reading the previous frame's; the next submit copies it across after waiting for that frame.
 	private static final class Pending
@@ -1509,6 +1552,9 @@ public final class RtRenderer
 	private final Pending pendingRunoff = new Pending(185 * 185 * 4);
 	private final int[] pendingCells = new int[CELL_LAYERS * CELL_WORDS];
 	private boolean cellsDirty;
+	private final Pending pendingRipples = new Pending(RIPPLE_PARAM_FLOATS);
+	private final int[] pendingWaterMask = new int[WATER_MASK_WORDS];
+	private boolean waterMaskDirty;
 
 	private void flushPending()
 	{
@@ -1523,6 +1569,12 @@ public final class RtRenderer
 		{
 			cells.mapped.asIntBuffer().put(pendingCells, 0, CELL_LAYERS * CELL_WORDS);
 			cellsDirty = false;
+		}
+		pendingRipples.flush(rippleParams);
+		if (waterMaskDirty)
+		{
+			waterMaskBuffer.mapped.asIntBuffer().put(pendingWaterMask, 0, WATER_MASK_WORDS);
+			waterMaskDirty = false;
 		}
 	}
 
@@ -2421,6 +2473,25 @@ public final class RtRenderer
 			int groupsX = (internalWidth + 7) / 8;
 			int groupsY = (internalHeight + 7) / 8;
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSets[parity]), null);
+			if (params.ripples)
+			{
+				// The ripple field steps an even number of times so its result is in the first image.
+				if (rippleUninitialized)
+				{
+					rippleUninitialized = false;
+					imageBarrier(cmd, rippleA.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+					imageBarrier(cmd, rippleB.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+				}
+				ByteBuffer ripplePush = stack.malloc(PUSH_CONSTANT_SIZE);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ripplePipeline);
+				int rippleGroups = RIPPLE_CELLS / 8;
+				for (int s = 0; s < params.rippleSteps; ++s)
+				{
+					pushPass(cmd, ripplePush, s & 1, 0, 0, 0);
+					vkCmdDispatch(cmd, rippleGroups, rippleGroups, 1);
+					computeBarrier(cmd);
+				}
+			}
 			// Every stamp is written every frame, run or not, so the readback never waits on one.
 			stamp(cmd, 3);
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tracePipeline);
@@ -2910,7 +2981,7 @@ public final class RtRenderer
 		{
 			b.putFloat(c);
 		}
-		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0);
+		int flags2 = (p.sampledLights ? 1 : 0) | (p.mistIndoors ? 2 : 0) | (p.ripples ? 8 : 0);
 		b.putInt(flags2).putInt(0).putInt(0).putInt(0);
 		b.putFloat(jitterX).putFloat(jitterY).putFloat(dlssFeature != 0 ? 1f : 0f).putFloat(rrFeature != 0 ? 1f : 0f);
 		if (b.position() > FRAME_UBO_SIZE)
@@ -2973,6 +3044,10 @@ public final class RtRenderer
 		ctx.destroyBuffer(prints);
 		ctx.destroyBuffer(trees);
 		ctx.destroyBuffer(cells);
+		ctx.destroyBuffer(rippleParams);
+		ctx.destroyBuffer(waterMaskBuffer);
+		destroyImage(rippleA);
+		destroyImage(rippleB);
 		ctx.destroyBuffer(materials);
 		ctx.destroyBuffer(terrainHeights);
 		ctx.destroyBuffer(runoff);
@@ -2998,6 +3073,7 @@ public final class RtRenderer
 		vkDestroyPipeline(device, shaftsPipeline, null);
 		vkDestroyPipeline(device, upscalePipeline, null);
 		vkDestroyPipeline(device, motionPipeline, null);
+		vkDestroyPipeline(device, ripplePipeline, null);
 		vkDestroyPipelineLayout(device, pipelineLayout, null);
 		vkDestroyDescriptorPool(device, descriptorPool, null);
 		vkDestroyDescriptorSetLayout(device, descriptorLayout, null);

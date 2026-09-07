@@ -144,6 +144,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Waves waves;
 	private PluginGlow glow;
 	private Footprints footprints;
+	private Ripples ripples;
 	private final Cells cells = new Cells();
 
 	private ControlPanel controlPanel;
@@ -197,6 +198,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		glow.tick();
 		footprints.retainPresent(client.getTopLevelWorldView());
+		ripples.retainPresent(client.getTopLevelWorldView());
 		// The date moving the season along recolours the static scene.
 		Palette current = palette;
 		if (current != null && (current.season != environment.seasonKind() || current.seasonProgress != environment.seasonProgress()))
@@ -427,6 +429,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		waves = new Waves(config, frame);
 		glow = new PluginGlow(client, clientThread, config, pluginManager, overlayManager, npcOverlayService, frame);
 		footprints = new Footprints(client, config, frame);
+		ripples = new Ripples(client, config, frame);
 		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
 		keyManager.registerKeyListener(controlPanelKey);
 		photo.register(keyManager, mouseManager);
@@ -707,6 +710,25 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				}
 			}
 			renderer.setTerrainHeights(flat);
+			// Water tiles, a bit each over the extended tiles, for the ripple simulation's shores.
+			int size = scene.getExtendedTiles()[0].length;
+			int offset = (size - Constants.SCENE_SIZE) / 2;
+			int[] waterBits = new int[(size * size + 31) / 32];
+			for (int plane = 0; plane < 4; ++plane)
+			{
+				for (int x = 0; x < size; ++x)
+				{
+					for (int y = 0; y < size; ++y)
+					{
+						if (loaded.waterBed.isWater(plane, x - offset, y - offset))
+						{
+							int bit = x * size + y;
+							waterBits[bit >> 5] |= 1 << (bit & 31);
+						}
+					}
+				}
+			}
+			renderer.setWaterMask(waterBits);
 			loaded.water = new WaterSim(heights[0]);
 			runoffUploaded = false;
 			frame.mistGridSize = scene.getExtendedTiles()[0].length + 1;
@@ -1025,6 +1047,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		foliage.push(top, dynamic, renderer, environment.weatherNow);
 		int foliageFaces = dynamic.faces() + dynamicTranslucent.faces() - actorFaces;
 		waves.push(top, dynamicWater, renderer);
+		ripples.fill(renderer, top, environment.weatherDt);
 		lights.fill(renderer, top == null ? null : top.lights);
 		glow.fillGuide(renderer, cells);
 		glow.fillMarkers(renderer, cells);

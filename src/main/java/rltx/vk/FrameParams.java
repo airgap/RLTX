@@ -146,6 +146,9 @@ public final class FrameParams
 	public boolean sampledLights;
 	/** Whether mist may drift through roofed rooms; otherwise it keeps outside. */
 	public boolean mistIndoors;
+	/** Whether the water ripple field is simulated and shaded this frame, and how many even steps it takes. */
+	public boolean ripples;
+	public int rippleSteps;
 	/** Display-space colour of the route glow, and how many route entries were uploaded; 0 draws none. */
 	public float guideR, guideG, guideB;
 	public int guideCount;

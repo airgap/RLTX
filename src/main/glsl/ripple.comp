@@ -1,0 +1,121 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Ripples on the water near the camera as a simulated height field: a square of cells that
+// follows the camera, stepped by the wave equation, so rain and anyone wading raise waves that
+// spread, meet, and reflect off the shore, where the field is held at rest. Two images hold
+// the height and the height before it; each step reads one and writes the other. Cells are
+// addressed by their world position wrapped into the image, so the window slides with the
+// camera without copying; a cell that has just entered the window starts at rest.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "frame.glsl"
+layout(push_constant) uniform Push {
+  int pass; // 0 reads the first image and writes the second, 1 the reverse
+  int step;
+  int last;
+  int passes;
+} pc;
+layout(set = 0, binding = 53, rg32f) uniform image2D rippleA;
+layout(set = 0, binding = 54, rg32f) uniform image2D rippleB;
+// v[0]: window base cell x and z, the base of the frame before; v[1]: cell size, wave term
+// c^2 dt^2 / s^2, rain drops per cell per step, walker count; v[2]: spare; v[3..]: walkers as
+// x, z, amplitude, spare.
+layout(std430, set = 0, binding = 55) readonly buffer RippleParams { vec4 v[]; } ripple;
+// One bit per tile of the loaded scene, set where the tile is water.
+layout(std430, set = 0, binding = 56) readonly buffer WaterMask { uint v[]; } waterMask;
+
+const int N = 512;
+const float DAMPING = 0.012;
+const float RAIN_DEPTH = 3.5;
+const float WALKER_RADIUS = 22.0;
+const float LIMIT = 30.0;
+
+ivec2 wrapped(ivec2 cell) {
+  return ((cell % N) + N) % N;
+}
+
+// The cell a texel holds under a given window base: the one cell in the window congruent to it.
+ivec2 cellOf(ivec2 texel, ivec2 base) {
+  return base + ((texel - base) % N + N) % N;
+}
+
+bool water(vec2 xz) {
+  int offset = int(u.weather3.w);
+  int size = int(u.weather3.z) - 1;
+  ivec2 tile = ivec2(floor(xz / 128.0)) + offset;
+  if (tile.x < 0 || tile.y < 0 || tile.x >= size || tile.y >= size) {
+    return false;
+  }
+  int bit = tile.x * size + tile.y;
+  return (waterMask.v[bit >> 5] & (1u << uint(bit & 31))) != 0u;
+}
+
+vec2 load(ivec2 texel) {
+  return pc.pass == 0 ? imageLoad(rippleA, texel).xy : imageLoad(rippleB, texel).xy;
+}
+
+void store(ivec2 texel, vec2 state) {
+  if (pc.pass == 0) {
+    imageStore(rippleB, texel, vec4(state, 0.0, 0.0));
+  } else {
+    imageStore(rippleA, texel, vec4(state, 0.0, 0.0));
+  }
+}
+
+// The height at a neighbouring cell: at rest beyond the window, on land, and where the texel
+// still holds a cell that has left the window.
+float heightAt(ivec2 cell, ivec2 base, ivec2 prevBase, float cellSize) {
+  if (cell.x < base.x || cell.y < base.y || cell.x >= base.x + N || cell.y >= base.y + N) {
+    return 0.0;
+  }
+  ivec2 texel = wrapped(cell);
+  if (cellOf(texel, prevBase) != cell || !water((vec2(cell) + 0.5) * cellSize)) {
+    return 0.0;
+  }
+  return load(texel).x;
+}
+
+float hash(ivec2 texel, int salt) {
+  uint v = uint(texel.x) * 1973u + uint(texel.y) * 9277u + uint(salt) * 26699u;
+  v = v * 747796405u + 2891336453u;
+  uint word = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+  return float((word >> 22u) ^ word) / 4294967296.0;
+}
+
+void main() {
+  ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+  if (texel.x >= N || texel.y >= N) {
+    return;
+  }
+  ivec2 base = ivec2(ripple.v[0].xy);
+  ivec2 prevBase = ivec2(ripple.v[0].zw);
+  float cellSize = ripple.v[1].x;
+  float c2 = ripple.v[1].y;
+  float rainRate = ripple.v[1].z;
+  int walkers = int(ripple.v[1].w);
+  ivec2 cell = cellOf(texel, base);
+  vec2 xz = (vec2(cell) + 0.5) * cellSize;
+  if (!water(xz)) {
+    store(texel, vec2(0.0));
+    return;
+  }
+  vec2 state = cellOf(texel, prevBase) == cell ? load(texel) : vec2(0.0);
+  float h = state.x;
+  float neighbours = heightAt(cell + ivec2(1, 0), base, prevBase, cellSize) + heightAt(cell - ivec2(1, 0), base, prevBase, cellSize)
+    + heightAt(cell + ivec2(0, 1), base, prevBase, cellSize) + heightAt(cell - ivec2(0, 1), base, prevBase, cellSize);
+  float next = (2.0 - DAMPING) * h - (1.0 - DAMPING) * state.y + c2 * (neighbours - 4.0 * h);
+  if (rainRate > 0.0 && hash(texel, int(u.misc.x) * 4 + pc.pass) < rainRate) {
+    next -= RAIN_DEPTH;
+  }
+  for (int i = 0; i < walkers; ++i) {
+    vec4 w = ripple.v[3 + i];
+    vec2 d = xz - w.xy;
+    float r2 = dot(d, d);
+    if (r2 < WALKER_RADIUS * WALKER_RADIUS) {
+      next -= w.z * (1.0 - r2 / (WALKER_RADIUS * WALKER_RADIUS));
+    }
+  }
+  store(texel, vec2(clamp(next, -LIMIT, LIMIT), h));
+}

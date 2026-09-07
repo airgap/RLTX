@@ -1966,6 +1966,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "waterRipples",
+		name = "Water ripples",
+		description = "Ripples simulated on the water near the camera: rain, and anyone standing or wading in it, raise waves that spread, meet and lap against the shore.",
+		section = surfacesSection,
+		position = 44
+	)
+	default boolean waterRipples()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "areaSettings",
 		name = "Apply area settings",
 		description = "Whether the settings saved for map regions in the F8 panel's Areas tab take over when you enter them. Presets of every setting can be saved to files or the clipboard in its Presets tab.",

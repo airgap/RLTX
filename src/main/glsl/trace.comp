@@ -59,6 +59,9 @@ layout(std430, set = 0, binding = 26) readonly buffer MistGrid { vec4 v[]; } gro
 layout(std430, set = 0, binding = 36) readonly buffer Heights { float v[]; } tileHeights;
 // Rain runoff per ground vertex: water depth, flow x, flow z.
 layout(std430, set = 0, binding = 37) readonly buffer Runoff { vec4 v[]; } runoff;
+// The simulated water ripples: heights over a window of cells that follows the camera.
+layout(set = 0, binding = 53, rg32f) uniform readonly image2D rippleField;
+layout(std430, set = 0, binding = 55) readonly buffer RippleParams { vec4 v[]; } ripple;
 
 const uint FLAG_CULL = 1u;
 const uint FLAG_SHADOWS = 2u;
@@ -1104,6 +1107,26 @@ vec2 rainRippleGradient(vec2 xz) {
 // wind with short chop scattering widest, each travels at the speed deep-water dispersion gives
 // its length, and crests are sharpened as Gerstner waves are. Two octaves of warped noise ride
 // on top, so no interference pattern stays fixed long enough to read as one.
+// Height of the simulated ripples at a point, bilinear over the field's cells and zero beyond
+// its window; cells are stored at their world position wrapped into the image.
+float rippleHeight(vec2 xz) {
+  vec2 base = ripple.v[0].xy;
+  float cellSize = ripple.v[1].x;
+  vec2 c = xz / cellSize - 0.5;
+  if (c.x < base.x || c.y < base.y || c.x >= base.x + 511.0 || c.y >= base.y + 511.0) {
+    return 0.0;
+  }
+  ivec2 i0 = ivec2(floor(c));
+  vec2 f = c - vec2(i0);
+  ivec2 t00 = ((i0 % 512) + 512) % 512;
+  ivec2 t11 = (((i0 + 1) % 512) + 512) % 512;
+  float h00 = imageLoad(rippleField, t00).x;
+  float h10 = imageLoad(rippleField, ivec2(t11.x, t00.y)).x;
+  float h01 = imageLoad(rippleField, ivec2(t00.x, t11.y)).x;
+  float h11 = imageLoad(rippleField, t11).x;
+  return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
 vec3 waterNormal(vec3 p, float strength, float duration) {
   // Real time, so the waves move the same at any frame rate; a type's duration slows them.
   float t = u.weather3.x * 0.9 / max(duration, 0.05);
@@ -1133,7 +1156,14 @@ vec3 waterNormal(vec3 p, float strength, float duration) {
   vec2 q = p.xz / 42.0 + vec2(t * 0.15, -t * 0.11);
   vec2 warp = vec2(valueNoise2(q + 3.1), valueNoise2(q - 2.7)) - 0.5;
   grad += (vec2(valueNoise2(q * 2.0 + warp * 0.8), valueNoise2(q * 2.0 + warp * 0.8 + 5.3)) - 0.5) * 0.35;
-  if ((u.misc.y & FLAG_RAIN_RIPPLES) != 0u && u.weather.z > 0.0) {
+  if ((u.flags2.x & 8u) != 0u) {
+    // The simulated ripples' slope, at their own scale rather than the type's; they carry the
+    // rain on water, so the drawn rings stay for puddles only.
+    float e = 4.0;
+    vec2 slope = vec2(rippleHeight(p.xz + vec2(e, 0.0)) - rippleHeight(p.xz - vec2(e, 0.0)),
+      rippleHeight(p.xz + vec2(0.0, e)) - rippleHeight(p.xz - vec2(0.0, e))) / (2.0 * e);
+    grad += slope * 1.5 / max(strength, 0.02);
+  } else if ((u.misc.y & FLAG_RAIN_RIPPLES) != 0u && u.weather.z > 0.0) {
     grad += rainRippleGradient(p.xz) / max(strength, 0.02);
   }
   return normalize(vec3(-grad.x * strength, -1.0, -grad.y * strength));

@@ -157,6 +157,7 @@ Generated from the plugin's configuration by `./gradlew settingsDoc`; do not edi
 | Underwater camera | true | When the free camera dips below the water: the view greens and dims with distance, sunlight dances on the bed, and the surface mirrors or lets the sky through as the angle allows |
 | Texture displacement | true | Textured surfaces such as bark, brick and thatch are traced into the relief their texture describes, so ridges and hollows shift with the viewpoint rather than only their shading. Uses the Texture relief strength. |
 | Wave geometry near the camera | false | Water within fourteen tiles rises and falls as real geometry, so shorelines, pillars and low views meet moving waves. Costs client-thread time each frame in proportion to the water in view; watch the frame rate before leaving it on. |
+| Water ripples | true | Ripples simulated on the water near the camera: rain, and anyone standing or wading in it, raise waves that spread, meet and lap against the shore. |
 
 ## Other plugins
 
