@@ -2,6 +2,7 @@ package rltx;
 
 import net.runelite.api.Constants;
 import net.runelite.api.Perspective;
+import net.runelite.api.Tile;
 import rltx.scene.GeometryBuffer;
 import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
@@ -54,7 +55,7 @@ final class Ground
 		int offsetTiles = (built.zonesX * 8 - Constants.SCENE_SIZE) / 2;
 		if (mapped != built)
 		{
-			mapTiles(built, offsetTiles);
+			mapTiles(built, offsetTiles, top.scene.getExtendedTiles());
 		}
 		int candidates = 0;
 		for (int i = 0; i < built.zones.length; ++i)
@@ -122,8 +123,10 @@ final class Ground
 	}
 
 	// Which ground texture each tile carries, so a tile's lift can fade where its neighbour's
-	// heights would not meet it. The lowest terrain face of a tile speaks for it.
-	private void mapTiles(StaticScene built, int offset)
+	// heights would not meet it. The lowest terrain face of a tile speaks for it. A tile that
+	// carries a bridge, a dock's planks or a bridge's deck, is left out altogether: its ground
+	// lies under boards someone walks on, and lifted it would come up through them.
+	private void mapTiles(StaticScene built, int offset, Tile[][][] tiles)
 	{
 		mapped = built;
 		offsetTiles = offset;
@@ -153,6 +156,21 @@ final class Ground
 				{
 					tileY[tile] = y;
 					tileTexture[tile] = textures[f] & 0xffff;
+				}
+			}
+		}
+		for (Tile[][] plane : tiles)
+		{
+			for (int x = 0; x < plane.length; ++x)
+			{
+				for (int z = 0; z < plane[x].length; ++z)
+				{
+					Tile tile = plane[x][z];
+					int index = tileAt(x, z);
+					if (index >= 0 && tile != null && tile.getBridge() != null)
+					{
+						tileTexture[index] = 0;
+					}
 				}
 			}
 		}
@@ -222,6 +240,11 @@ final class Ground
 			int texture = textures[f] & 0xffff;
 			int tx = (int) Math.floor((pos[o] + pos[o + 3] + pos[o + 6]) / (3f * Perspective.LOCAL_TILE_SIZE));
 			int tz = (int) Math.floor((pos[o + 2] + pos[o + 5] + pos[o + 8]) / (3f * Perspective.LOCAL_TILE_SIZE));
+			if (!sameTexture(tx + offsetTiles, tz + offsetTiles, texture))
+			{
+				// The tile itself is left out: it carries a bridge or a dock.
+				continue;
+			}
 			// West, east, south, north, then the corners between them in the same order.
 			same[0] = sameTexture(tx - 1 + offsetTiles, tz + offsetTiles, texture);
 			same[1] = sameTexture(tx + 1 + offsetTiles, tz + offsetTiles, texture);

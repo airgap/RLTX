@@ -192,7 +192,8 @@ public final class RtRenderer
 	private static final int BINDING_DYNAMIC_NRM = 58;
 	private static final int BINDING_RELIEF = 59;
 	private static final int BINDING_UI_MASK = 60;
-	private static final int BINDING_COUNT = 61;
+	private static final int BINDING_GLASS = 61;
+	private static final int BINDING_COUNT = 62;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
 	/** Local lights uploaded per frame, eight floats each. */
 	public static final int MAX_LIGHTS = 256;
@@ -451,6 +452,8 @@ public final class RtRenderer
 	/** Per pixel, how far DLSS and Ray Reconstruction should trust the current frame over their history. */
 	private static final int BIAS_FORMAT = VK_FORMAT_R8_UNORM;
 	private Img biasImage;
+	/** The chrome's glass, traced but never denoised: what it lays over the frame and how much of the frame it lets through. */
+	private Img glassImage;
 	private long rrFeature;
 	private boolean rrOn;
 	/** Set once its feature failed to create, so the request is not retried every frame. */
@@ -802,6 +805,7 @@ public final class RtRenderer
 			types[BINDING_DYNAMIC_NRM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_RELIEF] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_UI_MASK] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			types[BINDING_GLASS] = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			types[BINDING_TEXTURES] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			types[BINDING_TEX_ANIM] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			types[BINDING_WATER_TYPES] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -838,7 +842,7 @@ public final class RtRenderer
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(5, stack);
 			sizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(2);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(58);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(60);
 			sizes.get(2).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(54);
 			sizes.get(3).type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(2);
 			sizes.get(4).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(14);
@@ -2195,6 +2199,7 @@ public final class RtRenderer
 		specularAlbedoImage = createImage(traceWidth, traceHeight, SPECULAR_ALBEDO_FORMAT, fedUsage, false);
 		linearDepthImage = createImage(traceWidth, traceHeight, DEPTH_FORMAT, fedUsage, false);
 		biasImage = createImage(traceWidth, traceHeight, BIAS_FORMAT, fedUsage, false);
+		glassImage = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		sample = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, scratchUsage, false);
 		albedo = createImage(traceWidth, traceHeight, OUTPUT_FORMAT, fedUsage, false);
 		normal = createImage(traceWidth, traceHeight, HISTORY_COLOR_FORMAT, fedUsage, false);
@@ -2233,6 +2238,7 @@ public final class RtRenderer
 			writeImageDescriptor(handle, BINDING_SPECULAR_ALBEDO, specularAlbedoImage.view);
 			writeImageDescriptor(handle, BINDING_LINEAR_DEPTH, linearDepthImage.view);
 			writeImageDescriptor(handle, BINDING_BIAS, biasImage.view);
+			writeImageDescriptor(handle, BINDING_GLASS, glassImage.view);
 			writeImageDescriptor(handle, BINDING_SAMPLE, sample.view);
 			writeImageDescriptor(handle, BINDING_ALBEDO, albedo.view);
 			writeImageDescriptor(handle, BINDING_NORMAL, normal.view);
@@ -2427,6 +2433,7 @@ public final class RtRenderer
 		destroyImage(specularAlbedoImage);
 		destroyImage(linearDepthImage);
 		destroyImage(biasImage);
+		destroyImage(glassImage);
 		motionImage = null;
 		depthImage = null;
 		noisyImage = null;
