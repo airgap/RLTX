@@ -149,6 +149,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private Ground ground;
 	private Chrome chrome;
 	private StyledMenu styledMenu;
+	private Outfits outfits;
+	private final GeometryBuffer portraitOpaque = new GeometryBuffer(1 << 12);
+	private final GeometryBuffer portraitTranslucent = new GeometryBuffer(1 << 10);
 	private static final int GPU_FLAGS = DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0);
 	/** The stem of a photo just saved whose stock render is still to be drawn, or null. */
 	private String stockStem;
@@ -210,6 +213,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	public void onGameTick(GameTick event)
 	{
 		chrome.apply();
+		outfits.tick();
 		Player local = client.getLocalPlayer();
 		currentPosition = local == null ? null : WorldPoint.fromLocalInstance(client, local.getLocalLocation());
 		String area = areaRules.tick(currentPosition, config.areaSettings(), onMistyGround(currentPosition));
@@ -463,6 +467,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		ripples = new Ripples(client, config, frame);
 		chrome = new Chrome(client, config);
 		styledMenu = new StyledMenu(client, config);
+		outfits = new Outfits(client, config, this::portrait);
 		eventBus.register(styledMenu);
 		overlayManager.add(styledMenu);
 		controlPanel = new ControlPanel(configManager, config, presets, areaRules, () -> currentPosition, glow::previewPolygons, cinema.control, cinema.paths);
@@ -1224,6 +1229,203 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
 	}
 
+	// A portrait of the character's outfit: their model alone, standing on a grey stage far
+	// outside the scene with the scene itself hidden, lit by a key light from the front and the
+	// sky, framed from the front at the height of the chest, accumulated like a photo, and saved.
+	// The live frame lends its settings and gets them back afterwards.
+	private boolean portrait(Player player)
+	{
+		Model model = player.getModel();
+		if (renderer == null || !glReady || !gameTexturesUploaded || model == null || client.getGameState() != GameState.LOGGED_IN)
+		{
+			return false;
+		}
+		final float stageX = -40000f, stageZ = -40000f, stageHalf = 1500f;
+		portraitOpaque.clear();
+		portraitTranslucent.clear();
+		framePusher.actor = true;
+		framePusher.push(model, 0, (int) stageX, 0, (int) stageZ, null, palette(), portraitOpaque, portraitTranslucent);
+		framePusher.actor = false;
+		int faces = portraitOpaque.faces();
+		if (faces == 0)
+		{
+			return false;
+		}
+		float[] pos = portraitOpaque.positions();
+		float top = Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
+		for (int i = 0; i < faces * GeometryBuffer.FLOATS_PER_FACE; i += 3)
+		{
+			top = Math.min(top, pos[i + 1]);
+			bottom = Math.max(bottom, pos[i + 1]);
+		}
+		// The stage, a grey floor to stand on and cast a shadow across.
+		int grey = 0xff6a6a6a;
+		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ - stageHalf, grey);
+		portraitOpaque.face(stageX - stageHalf, 0f, stageZ - stageHalf, stageX - stageHalf, 0f, stageZ + stageHalf, stageX + stageHalf, 0f, stageZ + stageHalf, grey);
+
+		final int width = 1024, height = 1536;
+		float modelHeight = Math.max(bottom - top, 60f);
+		float distance = Math.max(3.2f * modelHeight, 600f);
+		float centreY = top + 0.5f * modelHeight;
+		float cameraY = top + 0.42f * modelHeight;
+		float pitch = (float) Math.atan2(centreY - cameraY, distance);
+
+		// Everything of the live frame the portrait changes, put back afterwards.
+		Showcase.Held held = Showcase.maximise(frame, true);
+		float[] inverse = frame.inverseRotation.clone();
+		float[] forward = frame.forwardRotation.clone();
+		float cameraX = frame.cameraX, cameraYSaved = frame.cameraY, cameraZ = frame.cameraZ, zoom = frame.zoom;
+		float sunX = frame.sunX, sunY = frame.sunY, sunZ = frame.sunZ, sunIntensity = frame.sunIntensity;
+		float sunR = frame.sunR, sunG = frame.sunG, sunB = frame.sunB;
+		float skyR = frame.skyR, skyG = frame.skyG, skyB = frame.skyB, ambient = frame.ambient, exposure = frame.exposure;
+		float backgroundR = frame.backgroundR, backgroundG = frame.backgroundG, backgroundB = frame.backgroundB;
+		boolean skybox = frame.skybox, proceduralSky = frame.proceduralSky, physicalSky = frame.physicalSky;
+		boolean clouds = frame.clouds, cloudShadows = frame.cloudShadows, autoExposure = frame.autoExposure;
+		float cloud = frame.cloud, fogAmount = frame.fogAmount, rain = frame.rain, snow = frame.snow, mist = frame.mist;
+		float wetness = frame.wetness, snowCover = frame.snowCover, lightShafts = frame.lightShafts, unseenDarkness = frame.unseenDarkness;
+		float aperture = frame.aperture, vignette = frame.vignette, filmGrain = frame.filmGrain, chromaticAberration = frame.chromaticAberration;
+		float aerialPerspective = frame.aerialPerspective, distanceFade = frame.distanceFade, auroraWeight = frame.auroraWeight;
+		int lightCount = frame.lightCount, printCount = frame.printCount, markerCount = frame.markerCount, plumeCount = frame.plumeCount, treeCount = frame.treeCount;
+		boolean wildlife = frame.wildlife, fireflies = frame.fireflies, dustMotes = frame.dustMotes, mistEverywhere = frame.mistEverywhere;
+		boolean rainbows = frame.rainbows, heatShimmer = frame.heatShimmer, puddles = frame.puddles, ripples = frame.ripples;
+		float footprintStrength = frame.footprintStrength, starBrightness = frame.starBrightness;
+
+		frame.cameraX = stageX;
+		frame.cameraY = cameraY;
+		frame.cameraZ = stageZ - distance;
+		frame.zoom = height * distance / (1.3f * modelHeight);
+		CameraMath.inverseRotation(pitch, 0f, frame.inverseRotation);
+		CameraMath.forwardRotation(pitch, 0f, frame.forwardRotation);
+		// A key light from above and the front left; up is -y, and the camera stands at -z.
+		float keyLength = (float) Math.sqrt(0.45f * 0.45f + 0.75f * 0.75f + 0.55f * 0.55f);
+		frame.sunX = -0.45f / keyLength;
+		frame.sunY = -0.75f / keyLength;
+		frame.sunZ = -0.55f / keyLength;
+		frame.sunIntensity = config.sunIntensity() / 100f;
+		frame.sunR = 1f;
+		frame.sunG = 0.97f;
+		frame.sunB = 0.92f;
+		frame.skyR = 0.35f;
+		frame.skyG = 0.4f;
+		frame.skyB = 0.5f;
+		frame.ambient = 0.25f;
+		frame.exposure = config.exposure() / 100f;
+		frame.backgroundR = 0.22f;
+		frame.backgroundG = 0.22f;
+		frame.backgroundB = 0.24f;
+		frame.skybox = false;
+		frame.proceduralSky = false;
+		frame.physicalSky = false;
+		frame.starBrightness = 0f;
+		frame.clouds = false;
+		frame.cloudShadows = false;
+		frame.autoExposure = false;
+		frame.cloud = 0f;
+		frame.fogAmount = 0f;
+		frame.rain = 0f;
+		frame.snow = 0f;
+		frame.mist = 0f;
+		frame.wetness = 0f;
+		frame.snowCover = 0f;
+		frame.lightShafts = 0f;
+		frame.unseenDarkness = 0f;
+		frame.aperture = 0f;
+		frame.vignette = 0f;
+		frame.filmGrain = 0f;
+		frame.chromaticAberration = 0f;
+		frame.aerialPerspective = 0f;
+		frame.distanceFade = 0f;
+		frame.auroraWeight = 0f;
+		frame.lightCount = 0;
+		frame.printCount = 0;
+		frame.markerCount = 0;
+		frame.plumeCount = 0;
+		frame.treeCount = 0;
+		frame.wildlife = false;
+		frame.fireflies = false;
+		frame.dustMotes = false;
+		frame.mistEverywhere = false;
+		frame.rainbows = false;
+		frame.heatShimmer = false;
+		frame.puddles = false;
+		frame.footprintStrength = 0f;
+		frame.ripples = false;
+		// The scene itself is hidden: no level is visible and no roof is hidden.
+		renderer.setStaticView(WorldView.TOPLEVEL, null, 99, 99, -1, java.util.Collections.emptySet());
+
+		int canvasWidth = client.getCanvasWidth();
+		int canvasHeight = client.getCanvasHeight();
+		renderer.ensureOutput(width, height, 1f, -1, false);
+		burst(48, false, portraitOpaque, portraitTranslucent, empty);
+		glSignalPending = false;
+		int[] argb = renderer.readbackOutput();
+		renderer.ensureOutput(canvasWidth, canvasHeight, 1f, -1, false);
+		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), canvasWidth, canvasHeight);
+
+		held.restore(frame);
+		System.arraycopy(inverse, 0, frame.inverseRotation, 0, 9);
+		System.arraycopy(forward, 0, frame.forwardRotation, 0, 9);
+		frame.cameraX = cameraX;
+		frame.cameraY = cameraYSaved;
+		frame.cameraZ = cameraZ;
+		frame.zoom = zoom;
+		frame.sunX = sunX;
+		frame.sunY = sunY;
+		frame.sunZ = sunZ;
+		frame.sunIntensity = sunIntensity;
+		frame.sunR = sunR;
+		frame.sunG = sunG;
+		frame.sunB = sunB;
+		frame.skyR = skyR;
+		frame.skyG = skyG;
+		frame.skyB = skyB;
+		frame.ambient = ambient;
+		frame.exposure = exposure;
+		frame.backgroundR = backgroundR;
+		frame.backgroundG = backgroundG;
+		frame.backgroundB = backgroundB;
+		frame.skybox = skybox;
+		frame.proceduralSky = proceduralSky;
+		frame.physicalSky = physicalSky;
+		frame.clouds = clouds;
+		frame.cloudShadows = cloudShadows;
+		frame.autoExposure = autoExposure;
+		frame.cloud = cloud;
+		frame.fogAmount = fogAmount;
+		frame.rain = rain;
+		frame.snow = snow;
+		frame.mist = mist;
+		frame.wetness = wetness;
+		frame.snowCover = snowCover;
+		frame.lightShafts = lightShafts;
+		frame.unseenDarkness = unseenDarkness;
+		frame.aperture = aperture;
+		frame.vignette = vignette;
+		frame.filmGrain = filmGrain;
+		frame.chromaticAberration = chromaticAberration;
+		frame.aerialPerspective = aerialPerspective;
+		frame.distanceFade = distanceFade;
+		frame.auroraWeight = auroraWeight;
+		frame.lightCount = lightCount;
+		frame.printCount = printCount;
+		frame.markerCount = markerCount;
+		frame.plumeCount = plumeCount;
+		frame.treeCount = treeCount;
+		frame.wildlife = wildlife;
+		frame.fireflies = fireflies;
+		frame.dustMotes = dustMotes;
+		frame.mistEverywhere = mistEverywhere;
+		frame.rainbows = rainbows;
+		frame.heatShimmer = heatShimmer;
+		frame.puddles = puddles;
+		frame.footprintStrength = footprintStrength;
+		frame.starBrightness = starBrightness;
+		frame.ripples = ripples;
+
+		photo.saveOutfitAsync(argb, width, height);
+		return true;
+	}
+
 	// Holds this frame's scene still and accumulates many more samples of it before it is shown,
 	// so the photo taken of it has neither noise nor denoiser blur. The client waits meanwhile.
 	private void burst(int frames)
@@ -1233,6 +1435,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	// A burst that is not presented leaves OpenGL's semaphore alone, since nothing will wait on it.
 	private void burst(int frames, boolean present)
+	{
+		burst(frames, present, dynamic, dynamicTranslucent, dynamicWater);
+	}
+
+	private void burst(int frames, boolean present, GeometryBuffer opaque, GeometryBuffer translucent, GeometryBuffer water)
 	{
 		frame.historyFrames = frames + 1;
 		frame.dynamicHistoryFrames = frames + 1;
@@ -1249,7 +1456,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		renderer.resetHistory();
 		for (int i = 0; i <= frames; ++i)
 		{
-			renderer.submit(frame, dynamic, dynamicTranslucent, dynamicWater, i == 0 && glSignalPending, present && i == frames);
+			renderer.submit(frame, opaque, translucent, water, i == 0 && glSignalPending, present && i == frames);
 		}
 		frame.rippleSteps = rippleSteps;
 		frame.still = false;

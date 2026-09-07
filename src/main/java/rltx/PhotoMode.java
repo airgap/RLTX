@@ -122,6 +122,36 @@ final class PhotoMode
 		this.saved = saved;
 	}
 
+	/** Saves a portrait of the character's outfit, the image assembled off the client thread. */
+	void saveOutfitAsync(int[] argb, int width, int height)
+	{
+		Thread saver = new Thread(() ->
+		{
+			BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+			image.setRGB(0, 0, width, height, argb, 0, width);
+			File dir = new File(RuneLite.SCREENSHOT_DIR, "RLTX/outfits");
+			if (!dir.exists() && !dir.mkdirs())
+			{
+				log.warn("Could not create {}", dir);
+				return;
+			}
+			File file = new File(dir, "outfit-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + ".png");
+			try
+			{
+				ImageIO.write(image, "png", file);
+			}
+			catch (IOException e)
+			{
+				log.warn("Outfit not saved to {}", file, e);
+				return;
+			}
+			log.info("Outfit saved to {}", file);
+			say.accept("Outfit saved to " + file.getName());
+		}, "rltx-photo");
+		saver.setDaemon(true);
+		saver.start();
+	}
+
 	/** Saves the client's own render of the view beside the photo of the same name; copied here, since the client redraws into it. */
 	void saveStockAsync(Image image, String stem)
 	{

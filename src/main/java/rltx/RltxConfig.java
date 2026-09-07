@@ -1201,6 +1201,18 @@ public interface RltxConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "outfitRenders",
+		name = "Portrait on outfit change",
+		description = "Whenever your character's outfit changes, once you stand still, a portrait of it is rendered on a plain stage and saved under the screenshots' RLTX/outfits folder. The game pauses for a moment while it renders.",
+		section = cameraSection,
+		position = 28
+	)
+	default boolean outfitRenders()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "photoModeKey",
 		name = "Photo mode key",
 		description = "Hides every interface, overlay and text so only the scene shows. While hidden, click the top-left corner of the view to bring the interface back, or the bottom-right corner to save a photo to the screenshots folder under RLTX.",
