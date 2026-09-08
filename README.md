@@ -6,17 +6,21 @@ with shadows, bounced light, reflective and refractive water, weather, and a pho
 renders noise-free stills and video. The traced image is composited back through the client's
 OpenGL canvas, so RuneLite's interface is untouched.
 
+![lum](docs/screenshots/lum.png)
+
+![library](docs/screenshots/library.png)
+
+![forest](docs/screenshots/forest.png)
+
 ![home](docs/screenshots/home.png)
+
+![silhouette](docs/screenshots/moonrise.png)
+
+![forge](docs/screenshots/forge.png)
 
 ![swamp](docs/screenshots/swamp-sunset.png)
 
 ![standoff](docs/screenshots/standoff.png)
-
-![forge](docs/screenshots/forge.png)
-
-![silhouette](docs/screenshots/moonrise.png)
-
-![library](docs/screenshots/library.png)
 
 ## What it does
 
