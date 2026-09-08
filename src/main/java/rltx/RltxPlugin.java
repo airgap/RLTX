@@ -160,6 +160,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private final GeometryBuffer portraitOpaque = new GeometryBuffer(1 << 12);
 	private final GeometryBuffer portraitTranslucent = new GeometryBuffer(1 << 10);
 	private final GeometryBuffer portraitWater = new GeometryBuffer(1 << 8);
+	// The offscreen avatar renders from its own frame + buffers so nothing it does
+	// touches the live frame or the live geometry. Guarded by avatarBusy: only one
+	// avatar render at a time.
+	private final FrameParams avatarFrame = new FrameParams();
+	private volatile boolean avatarBusy;
 	private Stages stages;
 	private static final int GPU_FLAGS = DrawCallbacks.GPU | DrawCallbacks.ZBUF | DrawCallbacks.NORMALS | DrawCallbacks.RENDER_THREADS(0);
 	/** The stem of a photo just saved whose stock render is still to be drawn, or null. */
@@ -401,6 +406,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private GlCompositor compositor;
 	private VkContext vk;
 	private RtRenderer renderer;
+	// A second, independent renderer for the offscreen avatar, present only when the
+	// GPU gave us a dedicated queue. It shares nothing mutable with the live renderer,
+	// reads back via Vulkan (no GL compositor), and runs off the client thread.
+	private RtRenderer avatarRenderer;
 
 	private volatile Palette palette;
 	private boolean gameTexturesUploaded;
@@ -477,7 +486,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		ripples = new Ripples(client, config, frame);
 		chrome = new Chrome(client, config);
 		styledMenu = new StyledMenu(client, config);
-		outfits = new Outfits(client, config, this::portrait);
+		outfits = new Outfits(client, config, this::portraitOrAvatar);
 		lyku = new Lyku(okHttpClient, gson, configManager, this::say);
 		lyku.onConnected(() -> clientThread.invoke(() ->
 		{
@@ -540,6 +549,13 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 				GroundTextures.applyMaterials(materials);
 				renderer.setMaterials(materials);
 				compositor.importSemaphores(renderer.semaphoreVkDoneHandle(), renderer.semaphoreGlDoneHandle());
+				// The avatar renderer needs materials to shade, but no GL interop (it reads
+				// back to CPU) and no Environment (it drives its own FrameParams).
+				if (vk.avatarQueueDedicated)
+				{
+					avatarRenderer = new RtRenderer(vk, vk.avatarQueue, vk.avatarCommandPool);
+					avatarRenderer.setMaterials(materials);
+				}
 
 				client.setDrawCallbacks(this);
 				// UNLIT_FACE_COLORS is deliberately absent: with it set from client start, actors stop
@@ -601,6 +617,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			client.setGpuFlags(0);
 			client.setDrawCallbacks(null);
 
+			if (avatarRenderer != null)
+			{
+				avatarRenderer.destroy();
+				avatarRenderer = null;
+			}
 			if (renderer != null)
 			{
 				renderer.destroy();
@@ -1284,6 +1305,17 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// the world as it is. Lit by a key light from the camera's front left and the sky, framed from
 	// the front at the height of the chest, accumulated like a photo, and saved. The live frame
 	// lends its settings and gets them back afterwards.
+	// The avatar goes through the non-freezing offscreen renderer when the GPU gave us a second
+	// queue; otherwise it falls back to the synchronous portrait (which briefly freezes the frame).
+	private boolean portraitOrAvatar(Player player, String name)
+	{
+		if (avatarRenderer != null && renderAvatarAsync(player, name))
+		{
+			return true;
+		}
+		return portrait(player, name);
+	}
+
 	private boolean portrait(Player player, String name)
 	{
 		Model model = player.getModel();
@@ -1571,6 +1603,255 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 
 	// Where a new portrait goes as a profile picture: each linked account whose setting is on;
 	// null when there is none. A setting on without its link says so.
+	// burst(), but on the avatar renderer with the avatar frame; no GL wait/signal and no present,
+	// since the avatar output is read back to CPU rather than composited to the canvas.
+	private void avatarBurst(int frames, GeometryBuffer opaque, GeometryBuffer translucent, GeometryBuffer water)
+	{
+		avatarFrame.historyFrames = frames + 1;
+		avatarFrame.dynamicHistoryFrames = frames + 1;
+		avatarFrame.denoisePasses = 1;
+		avatarFrame.shutter = 0f;
+		avatarFrame.still = true;
+		avatarFrame.thinLens = avatarFrame.aperture > 0f;
+		int rippleSteps = avatarFrame.rippleSteps;
+		avatarFrame.rippleSteps = 0;
+		avatarRenderer.resetHistory();
+		for (int i = 0; i <= frames; ++i)
+		{
+			avatarRenderer.submit(avatarFrame, opaque, translucent, water, false, false);
+		}
+		avatarFrame.rippleSteps = rippleSteps;
+		avatarFrame.still = false;
+		avatarFrame.thinLens = false;
+		avatarRenderer.resetHistory();
+	}
+
+	/**
+	 * Renders the animated avatar without freezing the game: the idle poses are captured on the
+	 * client thread (model reads + cheap CPU geometry pushes), then a worker raytraces and reads
+	 * back each pose on the second renderer and hands the frames to the existing WebP upload.
+	 *
+	 * First cut: the frame configuration below mirrors portrait()'s studio lighting; the per-scene
+	 * lighting polish, resolution and sample count are worth tuning against a real render.
+	 */
+	private boolean renderAvatarAsync(Player player, String name)
+	{
+		if (avatarRenderer == null || !glReady || !gameTexturesUploaded || avatarBusy
+			|| player.getModel() == null || client.getGameState() != GameState.LOGGED_IN)
+		{
+			return false;
+		}
+		RltxConfig.PortraitScene choice = config.portraitScene();
+		Stages.Place place = Stages.place(choice);
+		Stages.Stage kept = null;
+		if (place != null)
+		{
+			try
+			{
+				kept = stages.load(place);
+			}
+			catch (IOException e)
+			{
+				log.warn("Scene {} not loaded", place.label, e);
+			}
+			if (kept == null)
+			{
+				say("RLTX: the " + place.label + " scene is not kept yet; walk within a few tiles of its spot once.");
+			}
+		}
+		boolean here = choice == RltxConfig.PortraitScene.HERE;
+		float originX, originY, originZ, cameraYaw;
+		int orientation;
+		if (here)
+		{
+			LocalPoint lp = player.getLocalLocation();
+			if (lp == null)
+			{
+				return false;
+			}
+			originX = lp.getX();
+			originZ = lp.getY();
+			originY = Perspective.getTileHeight(client, lp, player.getWorldLocation().getPlane()) - player.getAnimationHeightOffset();
+			orientation = player.getCurrentOrientation();
+			cameraYaw = (float) (-orientation * Math.PI * 2.0 / 2048.0);
+		}
+		else
+		{
+			originX = -40000f;
+			originY = 0f;
+			originZ = -40000f;
+			cameraYaw = kept != null ? place.cameraYaw : 0f;
+			orientation = (int) Math.round(-cameraYaw / (2.0 * Math.PI) * 2048.0) & 2047;
+		}
+		final boolean bare = !here && kept == null;
+
+		// Capture the idle poses on the client thread: one fresh buffer set per pose so the worker
+		// can render them all without the client thread mutating geometry mid-render.
+		Animation idle = config.outfitAnimation() ? client.loadAnimation(player.getIdlePoseAnimation()) : null;
+		int count = idle != null && idle.getNumFrames() > 1 ? idle.getNumFrames() : 1;
+		int[] lengths = idle != null ? idle.getFrameLengths() : null;
+		int step = Math.max(1, (count + CYCLE_POSES - 1) / CYCLE_POSES);
+		int savedPose = player.getPoseAnimationFrame();
+		List<GeometryBuffer[]> poses = new ArrayList<>();
+		List<Integer> millis = new ArrayList<>();
+		float top = Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
+		for (int f = 0; f < count; f += step)
+		{
+			if (idle != null)
+			{
+				player.setPoseAnimationFrame(f);
+			}
+			Model posed = player.getModel();
+			if (posed == null)
+			{
+				continue;
+			}
+			GeometryBuffer o = new GeometryBuffer(1 << 12);
+			GeometryBuffer t = new GeometryBuffer(1 << 10);
+			GeometryBuffer w = new GeometryBuffer(1 << 8);
+			float[] span = stage(posed, originX, originY, originZ, orientation, kept, bare, o, t, w);
+			if (span == null)
+			{
+				continue;
+			}
+			top = Math.min(top, span[0]);
+			bottom = Math.max(bottom, span[1]);
+			poses.add(new GeometryBuffer[]{o, t, w});
+			int duration = 0;
+			for (int k = f; k < Math.min(count, f + step); ++k)
+			{
+				duration += (lengths != null && k < lengths.length ? Math.max(lengths[k], 1) : 1) * 20;
+			}
+			millis.add(duration);
+		}
+		if (idle != null)
+		{
+			player.setPoseAnimationFrame(savedPose);
+		}
+		if (poses.isEmpty())
+		{
+			return false;
+		}
+
+		final int width = 512, height = 768;
+		float modelHeight = Math.max(bottom - top, 60f);
+		float distance = Math.max(3.2f * modelHeight, 600f);
+		float centreY = top + 0.5f * modelHeight;
+		float cameraY = top + 0.42f * modelHeight;
+		float pitch = (float) Math.atan2(centreY - cameraY, distance);
+		configureAvatarFrame(originX, originY, originZ, cameraY, distance, pitch, cameraYaw, modelHeight, height, kept != null);
+
+		final java.util.function.BiConsumer<byte[], String> upload = profilePictureSinks();
+		final int[] durations = new int[millis.size()];
+		for (int i = 0; i < durations.length; ++i)
+		{
+			durations[i] = millis.get(i);
+		}
+		avatarBusy = true;
+		Thread worker = new Thread(() ->
+		{
+			try
+			{
+				List<int[]> cycle = new ArrayList<>();
+				avatarRenderer.ensureOutput(width, height, 1f, -1, false);
+				for (GeometryBuffer[] pose : poses)
+				{
+					avatarBurst(CYCLE_SAMPLES, pose[0], pose[1], pose[2]);
+					cycle.add(avatarRenderer.readbackOutput());
+				}
+				if (cycle.size() > 1)
+				{
+					photo.saveOutfitAnimationAsync(cycle, durations, width, height, name, upload);
+				}
+				else if (upload != null && !cycle.isEmpty())
+				{
+					upload.accept(Lyku.avatarPng(cycle.get(0), width, height), "image/png");
+				}
+			}
+			catch (Exception e)
+			{
+				log.warn("Avatar render failed", e);
+			}
+			finally
+			{
+				avatarBusy = false;
+			}
+		}, "rltx-avatar");
+		worker.setDaemon(true);
+		worker.start();
+		return true;
+	}
+
+	// Sets the avatar frame's camera (framed on the model) and a studio key light, and clears the
+	// weather/skybox/effect state that would otherwise leak in from an unconfigured frame.
+	private void configureAvatarFrame(float originX, float originY, float originZ, float cameraY, float distance,
+		float pitch, float cameraYaw, float modelHeight, int height, boolean outdoors)
+	{
+		float sinYaw = (float) Math.sin(cameraYaw), cosYaw = (float) Math.cos(cameraYaw);
+		avatarFrame.cameraX = originX + sinYaw * distance;
+		avatarFrame.cameraY = originY + cameraY;
+		avatarFrame.cameraZ = originZ - cosYaw * distance;
+		avatarFrame.zoom = height * distance / (1.3f * modelHeight);
+		CameraMath.inverseRotation(pitch, cameraYaw, avatarFrame.inverseRotation);
+		CameraMath.forwardRotation(pitch, cameraYaw, avatarFrame.forwardRotation);
+		avatarFrame.aperture = 0f;
+		avatarFrame.vignette = 0f;
+		avatarFrame.filmGrain = 0f;
+		avatarFrame.chromaticAberration = 0f;
+		avatarFrame.unseenDarkness = 0f;
+		float keyLength = (float) Math.sqrt(0.45f * 0.45f + 0.75f * 0.75f + 0.55f * 0.55f);
+		float keyX = -0.45f / keyLength, keyZ = -0.55f / keyLength;
+		avatarFrame.sunX = keyX * cosYaw + keyZ * sinYaw;
+		avatarFrame.sunY = -0.75f / keyLength;
+		avatarFrame.sunZ = -keyX * sinYaw + keyZ * cosYaw;
+		avatarFrame.sunIntensity = config.sunIntensity() / 100f;
+		avatarFrame.sunR = 1f;
+		avatarFrame.sunG = 0.97f;
+		avatarFrame.sunB = 0.92f;
+		avatarFrame.skyR = outdoors ? 0.5f : 0.35f;
+		avatarFrame.skyG = outdoors ? 0.6f : 0.4f;
+		avatarFrame.skyB = outdoors ? 0.75f : 0.5f;
+		avatarFrame.ambient = 0.25f;
+		avatarFrame.exposure = config.exposure() / 100f;
+		avatarFrame.backgroundR = outdoors ? 0.5f : 0.22f;
+		avatarFrame.backgroundG = outdoors ? 0.65f : 0.22f;
+		avatarFrame.backgroundB = outdoors ? 0.9f : 0.24f;
+		avatarFrame.skybox = false;
+		avatarFrame.proceduralSky = false;
+		avatarFrame.physicalSky = false;
+		avatarFrame.starBrightness = 0f;
+		avatarFrame.clouds = false;
+		avatarFrame.cloudShadows = false;
+		avatarFrame.autoExposure = false;
+		avatarFrame.cloud = 0f;
+		avatarFrame.fogAmount = 0f;
+		avatarFrame.rain = 0f;
+		avatarFrame.snow = 0f;
+		avatarFrame.mist = 0f;
+		avatarFrame.wetness = 0f;
+		avatarFrame.snowCover = 0f;
+		avatarFrame.lightShafts = 0f;
+		avatarFrame.aerialPerspective = 0f;
+		avatarFrame.distanceFade = 0f;
+		avatarFrame.auroraWeight = 0f;
+		avatarFrame.lightCount = 0;
+		avatarFrame.printCount = 0;
+		avatarFrame.markerCount = 0;
+		avatarFrame.plumeCount = 0;
+		avatarFrame.treeCount = 0;
+		avatarFrame.wildlife = false;
+		avatarFrame.fireflies = false;
+		avatarFrame.dustMotes = false;
+		avatarFrame.mistEverywhere = false;
+		avatarFrame.rainbows = false;
+		avatarFrame.heatShimmer = false;
+		avatarFrame.puddles = false;
+		avatarFrame.footprintStrength = 0f;
+		avatarFrame.ripples = false;
+		avatarFrame.textureSize = frame.textureSize;
+		avatarFrame.still = true;
+	}
+
 	private java.util.function.BiConsumer<byte[], String> profilePictureSinks()
 	{
 		boolean org = config.lykuOrgAvatar();
@@ -1612,18 +1893,26 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// the model's top and bottom relative to the origin, or null when it has no faces.
 	private float[] stage(Model model, float originX, float originY, float originZ, int orientation, Stages.Stage kept, boolean floor)
 	{
-		portraitOpaque.clear();
-		portraitTranslucent.clear();
-		portraitWater.clear();
+		return stage(model, originX, originY, originZ, orientation, kept, floor, portraitOpaque, portraitTranslucent, portraitWater);
+	}
+
+	// Pushes the player model (plus a kept backdrop or a grey floor) into the given buffers and
+	// returns its vertical span, so both the live portrait and the offscreen avatar can stage.
+	private float[] stage(Model model, float originX, float originY, float originZ, int orientation, Stages.Stage kept, boolean floor,
+		GeometryBuffer opaque, GeometryBuffer translucent, GeometryBuffer water)
+	{
+		opaque.clear();
+		translucent.clear();
+		water.clear();
 		framePusher.actor = true;
-		framePusher.push(model, orientation, (int) originX, (int) originY, (int) originZ, null, palette(), portraitOpaque, portraitTranslucent);
+		framePusher.push(model, orientation, (int) originX, (int) originY, (int) originZ, null, palette(), opaque, translucent);
 		framePusher.actor = false;
-		int faces = portraitOpaque.faces();
+		int faces = opaque.faces();
 		if (faces == 0)
 		{
 			return null;
 		}
-		float[] pos = portraitOpaque.positions();
+		float[] pos = opaque.positions();
 		float top = Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
 		for (int i = 0; i < faces * GeometryBuffer.FLOATS_PER_FACE; i += 3)
 		{
@@ -1632,16 +1921,16 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 		if (kept != null)
 		{
-			portraitOpaque.append(kept.opaque, originX, originY, originZ);
-			portraitTranslucent.append(kept.translucent, originX, originY, originZ);
-			portraitWater.append(kept.water, originX, originY, originZ);
+			opaque.append(kept.opaque, originX, originY, originZ);
+			translucent.append(kept.translucent, originX, originY, originZ);
+			water.append(kept.water, originX, originY, originZ);
 		}
 		else if (floor)
 		{
 			final float half = 1500f;
 			int grey = 0xff6a6a6a;
-			portraitOpaque.face(originX - half, originY, originZ - half, originX + half, originY, originZ + half, originX + half, originY, originZ - half, grey);
-			portraitOpaque.face(originX - half, originY, originZ - half, originX - half, originY, originZ + half, originX + half, originY, originZ + half, grey);
+			opaque.face(originX - half, originY, originZ - half, originX + half, originY, originZ + half, originX + half, originY, originZ - half, grey);
+			opaque.face(originX - half, originY, originZ - half, originX - half, originY, originZ + half, originX + half, originY, originZ + half, grey);
 		}
 		return new float[]{top, bottom};
 	}
@@ -1855,6 +2144,12 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 						renderer.setTextureAnimation(scroll);
 						renderer.setTextureArray(layers, target, levels, packed);
 						renderer.setReliefArray(layers, target, levels, relief);
+						if (avatarRenderer != null)
+						{
+							avatarRenderer.setTextureAnimation(scroll);
+							avatarRenderer.setTextureArray(layers, target, levels, packed);
+							avatarRenderer.setReliefArray(layers, target, levels, relief);
+						}
 						frame.textureSize = target;
 						gameTexturesUploaded = true;
 						// Faces with cutout textures need the non-opaque path; reclassify the static scene.
