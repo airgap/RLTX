@@ -61,6 +61,7 @@ import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkQueryPoolCreateInfo;
+import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import org.lwjgl.vulkan.VkSemaphoreCreateInfo;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
@@ -250,6 +251,11 @@ public final class RtRenderer
 
 	private final VkContext ctx;
 	private final VkDevice device;
+	// Which queue + command pool this renderer submits on. The live renderer uses
+	// the context's main pair; a second (avatar) renderer is given the context's
+	// avatar pair so it can submit without blocking the live frame.
+	private final VkQueue queue;
+	private final long commandPool;
 
 	private long descriptorLayout;
 	private long descriptorPool;
@@ -479,9 +485,16 @@ public final class RtRenderer
 
 	public RtRenderer(VkContext ctx)
 	{
+		this(ctx, ctx.queue, ctx.commandPool);
+	}
+
+	public RtRenderer(VkContext ctx, VkQueue queue, long commandPool)
+	{
 		this.ctx = ctx;
 		this.device = ctx.device;
-		this.cmd = ctx.allocateCommandBuffer();
+		this.queue = queue;
+		this.commandPool = commandPool;
+		this.cmd = ctx.allocateCommandBuffer(commandPool);
 
 		createSyncObjects();
 		createPipeline();
@@ -674,7 +687,7 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		MemoryUtil.memCopy(MemoryUtil.memAddress(data), MemoryUtil.memAddress(staging.mapped), bytes);
 
-		VkCommandBuffer upload = ctx.beginOneTime();
+		VkCommandBuffer upload = beginOneTime();
 		try (MemoryStack stack = stackPush())
 		{
 			imageLayout(upload, image.image, layers, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -693,7 +706,7 @@ public final class RtRenderer
 			imageLayout(upload, image.image, layers, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 		}
-		ctx.endOneTimeAndWait(upload);
+		endOneTimeAndWait(upload);
 		ctx.destroyBuffer(staging);
 
 		try (MemoryStack stack = stackPush())
@@ -1211,7 +1224,7 @@ public final class RtRenderer
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		MemoryUtil.memCopy(MemoryUtil.memAddress(rgba), MemoryUtil.memAddress(staging.mapped), bytes);
 
-		VkCommandBuffer upload = ctx.beginOneTime();
+		VkCommandBuffer upload = beginOneTime();
 		try (MemoryStack stack = stackPush())
 		{
 			imageLayout(upload, skybox.image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1224,7 +1237,7 @@ public final class RtRenderer
 			imageLayout(upload, skybox.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 		}
-		ctx.endOneTimeAndWait(upload);
+		endOneTimeAndWait(upload);
 		ctx.destroyBuffer(staging);
 
 		try (MemoryStack stack = stackPush())
@@ -1355,7 +1368,7 @@ public final class RtRenderer
 
 		VkBuf staging = createStaging(totalFaces);
 		VkBuf scratch = createScratch(Math.max(maxScratch, 1));
-		VkCommandBuffer upload = ctx.beginOneTime();
+		VkCommandBuffer upload = beginOneTime();
 		int stagingFace = 0;
 		for (int i = 0; i < scene.zones.length; ++i)
 		{
@@ -1379,7 +1392,7 @@ public final class RtRenderer
 				buildZoneAccel(upload, set.zones[i], scene.zones[i], scratch);
 			}
 		}
-		ctx.endOneTimeAndWait(upload);
+		endOneTimeAndWait(upload);
 		ctx.destroyBuffer(staging);
 		ctx.destroyBuffer(scratch);
 
@@ -1954,9 +1967,30 @@ public final class RtRenderer
 
 	// Drains the queue and puts the frame fence back into the unsignalled state the next submit
 	// requires; leaving it signalled would let the following frame skip its wait entirely.
+	// One-time command buffers routed through this renderer's own pool/queue, so a
+	// second (avatar) renderer never touches the live renderer's pool or queue.
+	private VkCommandBuffer beginOneTime()
+	{
+		return ctx.beginOneTime(commandPool);
+	}
+
+	private void endOneTimeAndWait(VkCommandBuffer buffer)
+	{
+		ctx.endOneTimeAndWait(buffer, queue, commandPool);
+	}
+
 	private void idle()
 	{
-		vkDeviceWaitIdle(device);
+		// The live renderer drains the whole device (unchanged). The avatar renderer
+		// only waits on its own queue, so it never stalls the live frame.
+		if (queue == ctx.queue)
+		{
+			vkDeviceWaitIdle(device);
+		}
+		else
+		{
+			vkQueueWaitIdle(queue);
+		}
 		freeRetired();
 		if (fencePending)
 		{
@@ -2101,7 +2135,7 @@ public final class RtRenderer
 		long bytes = (long) width * height * bytesPerPixel;
 		VkBuf staging = ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		VkCommandBuffer cmd = ctx.beginOneTime();
+		VkCommandBuffer cmd = beginOneTime();
 		try (MemoryStack stack = stackPush())
 		{
 			VkBufferImageCopy.Buffer region = VkBufferImageCopy.calloc(1, stack);
@@ -2111,7 +2145,7 @@ public final class RtRenderer
 			region.get(0).imageExtent().width(width).height(height).depth(1);
 			vkCmdCopyImageToBuffer(cmd, img.image, VK_IMAGE_LAYOUT_GENERAL, staging.buffer, region);
 		}
-		ctx.endOneTimeAndWait(cmd);
+		endOneTimeAndWait(cmd);
 		ByteBuffer out = MemoryUtil.memAlloc((int) bytes);
 		MemoryUtil.memCopy(MemoryUtil.memAddress(staging.mapped), MemoryUtil.memAddress(out), bytes);
 		ctx.destroyBuffer(staging);
@@ -2267,9 +2301,9 @@ public final class RtRenderer
 		rrOn = rr;
 		if (rr)
 		{
-			VkCommandBuffer setup = ctx.beginOneTime();
+			VkCommandBuffer setup = beginOneTime();
 			rrFeature = Ngx.createDenoiser(device.address(), setup.address(), traceWidth, traceHeight, Ngx.FLAG_HDR | Ngx.FLAG_MV_LOW_RES);
-			ctx.endOneTimeAndWait(setup);
+			endOneTimeAndWait(setup);
 			if (rrFeature == 0)
 			{
 				log.warn("Ray Reconstruction feature creation failed with NGX result 0x{}; denoising as before until the plugin restarts", Integer.toHexString(Ngx.lastResult()));
@@ -2280,9 +2314,9 @@ public final class RtRenderer
 		if (quality >= 0)
 		{
 			// The feature records its own setup, which must have run before the first evaluate.
-			VkCommandBuffer setup = ctx.beginOneTime();
+			VkCommandBuffer setup = beginOneTime();
 			dlssFeature = Ngx.createFeature(device.address(), setup.address(), traceWidth, traceHeight, width, height, quality, Ngx.FLAG_MV_LOW_RES);
-			ctx.endOneTimeAndWait(setup);
+			endOneTimeAndWait(setup);
 			if (dlssFeature == 0)
 			{
 				// The traced images are the wrong size for the plain upscale as well, so start over without DLSS.
@@ -2395,7 +2429,7 @@ public final class RtRenderer
 	// resize ignores their contents through FLAG_RESET_HISTORY.
 	private void initializeHistory()
 	{
-		VkCommandBuffer init = ctx.beginOneTime();
+		VkCommandBuffer init = beginOneTime();
 		try (MemoryStack stack = stackPush())
 		{
 			VkClearColorValue clear = VkClearColorValue.calloc(stack);
@@ -2413,7 +2447,7 @@ public final class RtRenderer
 		memoryBarrier(init,
 			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-		ctx.endOneTimeAndWait(init);
+		endOneTimeAndWait(init);
 	}
 
 	// Frees the traced-size images, and the presented image too when the view itself has changed.
@@ -2866,7 +2900,7 @@ public final class RtRenderer
 					.pWaitSemaphores(stack.longs(semaphoreGlDone))
 					.pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
 			}
-			check(vkQueueSubmit(ctx.queue, submit, fence), "vkQueueSubmit");
+			check(vkQueueSubmit(queue, submit, fence), "vkQueueSubmit");
 			fencePending = true;
 			++frameIndex;
 		}
@@ -3216,7 +3250,14 @@ public final class RtRenderer
 	public void destroy()
 	{
 		pendingZones.clear();
-		vkDeviceWaitIdle(device);
+		if (queue == ctx.queue)
+		{
+			vkDeviceWaitIdle(device);
+		}
+		else
+		{
+			vkQueueWaitIdle(queue);
+		}
 		freeRetired();
 		destroyOutput(true);
 		if (dlssReady)
@@ -3306,7 +3347,7 @@ public final class RtRenderer
 		vkDestroySemaphore(device, semaphoreGlDone, null);
 		vkDestroyFence(device, fence, null);
 		vkDestroyQueryPool(device, timestampPool, null);
-		vkFreeCommandBuffers(device, ctx.commandPool, cmd);
+		vkFreeCommandBuffers(device, commandPool, cmd);
 	}
 
 	private void destroyAccel(Accel accel)

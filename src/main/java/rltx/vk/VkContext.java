@@ -76,6 +76,13 @@ public final class VkContext
 	public final VkQueue queue;
 	public final int queueFamily;
 	public final long commandPool;
+	// A second queue + pool for the offscreen avatar renderer, so it can submit
+	// without serialising against the live frame. When the queue family exposes
+	// only one queue, avatarQueue == queue and avatarQueueDedicated is false, and
+	// the avatar renderer must hold a lock while it submits.
+	public final VkQueue avatarQueue;
+	public final long avatarCommandPool;
+	public final boolean avatarQueueDedicated;
 	public final int scratchAlignment;
 	/** Nanoseconds per timestamp tick. */
 	public final float timestampPeriod;
@@ -83,7 +90,8 @@ public final class VkContext
 	private final VkPhysicalDeviceMemoryProperties memoryProperties;
 
 	private VkContext(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue,
-		int queueFamily, long commandPool, int scratchAlignment, float timestampPeriod, String deviceName,
+		int queueFamily, long commandPool, VkQueue avatarQueue, long avatarCommandPool, boolean avatarQueueDedicated,
+		int scratchAlignment, float timestampPeriod, String deviceName,
 		VkPhysicalDeviceMemoryProperties memoryProperties)
 	{
 		this.timestampPeriod = timestampPeriod;
@@ -93,6 +101,9 @@ public final class VkContext
 		this.queue = queue;
 		this.queueFamily = queueFamily;
 		this.commandPool = commandPool;
+		this.avatarQueue = avatarQueue;
+		this.avatarCommandPool = avatarCommandPool;
+		this.avatarQueueDedicated = avatarQueueDedicated;
 		this.scratchAlignment = scratchAlignment;
 		this.deviceName = deviceName;
 		this.memoryProperties = memoryProperties;
@@ -158,6 +169,7 @@ public final class VkContext
 		int scratchAlignment;
 		float timestampPeriod;
 		int queueFamily;
+		int queueCount = 1;
 		try (MemoryStack stack = stackPush())
 		{
 			VkPhysicalDeviceAccelerationStructurePropertiesKHR asProps = VkPhysicalDeviceAccelerationStructurePropertiesKHR.calloc(stack).sType$Default();
@@ -178,6 +190,7 @@ public final class VkContext
 				if ((flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) != 0)
 				{
 					queueFamily = i;
+					queueCount = families.get(i).queueCount();
 					break;
 				}
 			}
@@ -190,6 +203,9 @@ public final class VkContext
 		VkDevice device;
 		VkQueue queue;
 		long commandPool;
+		VkQueue avatarQueue;
+		long avatarCommandPool;
+		final boolean dedicated = queueCount >= 2;
 		try (MemoryStack stack = stackPush())
 		{
 			VkPhysicalDeviceRayQueryFeaturesKHR rayQuery = VkPhysicalDeviceRayQueryFeaturesKHR.calloc(stack).sType$Default();
@@ -214,7 +230,9 @@ public final class VkContext
 			enable.features().robustBufferAccess(features.features().robustBufferAccess());
 
 			VkDeviceQueueCreateInfo.Buffer queueInfo = VkDeviceQueueCreateInfo.calloc(1, stack);
-			queueInfo.get(0).sType$Default().queueFamilyIndex(queueFamily).pQueuePriorities(stack.floats(1f));
+			// A second queue (lower priority) for the avatar renderer when the family has room.
+			queueInfo.get(0).sType$Default().queueFamilyIndex(queueFamily)
+				.pQueuePriorities(dedicated ? stack.floats(1f, 0.5f) : stack.floats(1f));
 
 			String[] ngxDevice = ngxDeviceExtensions(instance, physicalDevice);
 			PointerBuffer extensions = stack.mallocPointer(REQUIRED_EXTENSIONS.length + ngxDevice.length);
@@ -239,6 +257,15 @@ public final class VkContext
 			PointerBuffer pQueue = stack.mallocPointer(1);
 			vkGetDeviceQueue(device, queueFamily, 0, pQueue);
 			queue = new VkQueue(pQueue.get(0), device);
+			if (dedicated)
+			{
+				vkGetDeviceQueue(device, queueFamily, 1, pQueue);
+				avatarQueue = new VkQueue(pQueue.get(0), device);
+			}
+			else
+			{
+				avatarQueue = queue;
+			}
 
 			VkCommandPoolCreateInfo poolInfo = VkCommandPoolCreateInfo.calloc(stack).sType$Default()
 				.flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
@@ -246,13 +273,17 @@ public final class VkContext
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateCommandPool(device, poolInfo, null, pPool), "vkCreateCommandPool");
 			commandPool = pPool.get(0);
+			check(vkCreateCommandPool(device, poolInfo, null, pPool), "vkCreateCommandPool (avatar)");
+			avatarCommandPool = pPool.get(0);
 		}
 
 		VkPhysicalDeviceMemoryProperties memoryProperties = VkPhysicalDeviceMemoryProperties.calloc();
 		vkGetPhysicalDeviceMemoryProperties(physicalDevice, memoryProperties);
 
-		log.info("Vulkan device: {} (scratch alignment {})", name, scratchAlignment);
-		return new VkContext(instance, physicalDevice, device, queue, queueFamily, commandPool, scratchAlignment, timestampPeriod, name, memoryProperties);
+		log.info("Vulkan device: {} (scratch alignment {}, avatar queue {})", name, scratchAlignment,
+			dedicated ? "dedicated" : "shared");
+		return new VkContext(instance, physicalDevice, device, queue, queueFamily, commandPool,
+			avatarQueue, avatarCommandPool, dedicated, scratchAlignment, timestampPeriod, name, memoryProperties);
 	}
 
 	private static VkInstance createInstance()
@@ -528,10 +559,15 @@ public final class VkContext
 
 	public VkCommandBuffer allocateCommandBuffer()
 	{
+		return allocateCommandBuffer(commandPool);
+	}
+
+	public VkCommandBuffer allocateCommandBuffer(long pool)
+	{
 		try (MemoryStack stack = stackPush())
 		{
 			VkCommandBufferAllocateInfo info = VkCommandBufferAllocateInfo.calloc(stack).sType$Default()
-				.commandPool(commandPool)
+				.commandPool(pool)
 				.level(VK_COMMAND_BUFFER_LEVEL_PRIMARY)
 				.commandBufferCount(1);
 			PointerBuffer pCmd = stack.mallocPointer(1);
@@ -542,7 +578,12 @@ public final class VkContext
 
 	public VkCommandBuffer beginOneTime()
 	{
-		VkCommandBuffer cmd = allocateCommandBuffer();
+		return beginOneTime(commandPool);
+	}
+
+	public VkCommandBuffer beginOneTime(long pool)
+	{
+		VkCommandBuffer cmd = allocateCommandBuffer(pool);
 		try (MemoryStack stack = stackPush())
 		{
 			VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
@@ -554,6 +595,11 @@ public final class VkContext
 
 	public void endOneTimeAndWait(VkCommandBuffer cmd)
 	{
+		endOneTimeAndWait(cmd, queue, commandPool);
+	}
+
+	public void endOneTimeAndWait(VkCommandBuffer cmd, VkQueue queue, long pool)
+	{
 		check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 		try (MemoryStack stack = stackPush())
 		{
@@ -561,13 +607,14 @@ public final class VkContext
 			check(vkQueueSubmit(queue, submit, VK_NULL_HANDLE), "vkQueueSubmit");
 			check(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
 		}
-		vkFreeCommandBuffers(device, commandPool, cmd);
+		vkFreeCommandBuffers(device, pool, cmd);
 	}
 
 	public void destroy()
 	{
 		vkDeviceWaitIdle(device);
 		vkDestroyCommandPool(device, commandPool, null);
+		vkDestroyCommandPool(device, avatarCommandPool, null);
 		vkDestroyDevice(device, null);
 		vkDestroyInstance(instance, null);
 		memoryProperties.free();
