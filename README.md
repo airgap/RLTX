@@ -1,10 +1,6 @@
 # RLTX
 
-A RuneLite plugin that replaces the GPU renderer with a Vulkan ray tracer. The game's own
-triangles are lit by traced light: a sun and sky that follow real time and place, local lights
-with shadows, bounced light, reflective and refractive water, weather, and a photo mode that
-renders noise-free stills and video. The traced image is composited back through the client's
-OpenGL canvas, so RuneLite's interface is untouched.
+Old School RuneScape with raytracing
 
 ![lum](docs/screenshots/lum.png)
 
@@ -26,52 +22,86 @@ OpenGL canvas, so RuneLite's interface is untouched.
 
 Everything below has its own setting.
 
-**Light.** Ray traced sun and moon shadows, local lights from 117 HD's light data including
-spells and projectiles, path traced bounce light, glossy and wet reflections, and a
-line-of-sight mode that darkens what your character could not see.
+**Light**
+- Ray traced sun and moon shadows
+- Local lights from 117 HD's light data including
+    - spells and projectiles
+    - path traced bounce light
+    - glossy and wet reflections
 
-**Sky.** A procedural sky computed from sunlight scattering in the atmosphere, or your own
-skybox pack. The sun follows the clock and your location; at night the real stars and Milky Way
-turn overhead and the moon lights the scene from where it truly is, showing its phase.
-Volumetric clouds, aurora at high latitudes, rainbows after rain, a lens flare.
+**Sky**
+- Fully procedural sky computed from sunlight scattering in the atmosphere
+- Follows the clock and your location
+- Volumetric clouds
+- Aurora at high latitudes
+- Rainbows after rain
+- Lens flare
 
-**Weather and seasons.** Real weather for your location or a preset: cloud, fog, rain, snow,
-storms and wind. Wet ground, puddles and a small runoff simulation; mist over swamps and
-graveyards; smoke from chimneys and fires with heat shimmer above them. Seasons from the date
-turn and drop the leaves, bare the trees in winter and blossom in spring.
+**Weather and seasons**
+- Real weather for your location
+  - Cloud
+  - Fog
+  - Rain
+  - Snow
+  - Storms
+  - Wind
+- Wet ground
+- Puddles
+- Runoff
+- Mist over swamps and graveyards
+- Smoke from chimneys and fires with heat shimmer above them
+- Seasons from the date turn and drop the leaves, bare the trees in winter, and blossom in spring
 
-**Water.** A wind-driven wave spectrum with refraction, reflection, caustics and rain ripples.
-The free camera can go beneath the surface.
+**Water**
+- Wind-driven wave spectrum with refraction, reflection, caustics and rain ripples
+- Free camera can go beneath the surface
 
-**Life.** Fireflies, dust in sunbeams, birds, bats and butterflies. Footprints in snow and wet
-ground, ripples from steps in puddles, plants pushed aside by whoever walks through them.
+**Life**
+- Fireflies, dust in sunbeams, birds, bats and butterflies
+- Footprints in snow and wet ground
+- Ripples from steps in puddles
+- Plants pushed aside by whoever walks through them
 
-**Photography.** A photo mode that hides the interface and accumulates each photo over hundreds
-of frames through a real thin lens, giving clean images with true bokeh. Click to focus, focus
-peaking, a linear HDR file beside each shot, a quad-resolution photo key, a free camera tethered
-to your character, and a cinema mode that renders keyframed camera paths, clock and all, as
-frame sequences for video. Bloom, vignette, grain, aberration, soft glow and colour grading.
+**Photography**
+- A photo mode that hides the interface
+- Temporal accumulation
+- Clean images with true bokeh
+- Click to focus
+- Focus peaking
+- Linear HDR file beside each shot
+- Quad-resolution photo key
+- Bloom
+- Vignette
+- Grain
+- Chromatic aberration
+- Colour grading
+- Depth of field
 
-**Other plugins.** Shortest Path's route becomes a trail worn into the ground with wisps of light
-along it, or a glowing ribbon. Ground Markers' tiles become pools of light. NPCs highlighted by
-NPC Indicators, Slayer and others wear a rim of their colour. Your character can carry a lit
-torch that casts real light.
+**Other plugins**
+- Shortest Path's route is integrated into the environment
+- Ground Markers' tiles become pools of light
+- NPCs highlighted by NPC Indicators, Slayer and others wear a rim of their colour
 
-Nothing here reads or changes gameplay. The plugin draws only what the client already has, and
-sends nothing to the game.
+**Nothing here reads or changes gameplay. RLTX draws only what the client already has. All game interactions are unchanged.**
 
 ## Requirements
+**Hardware:**
+- Developed on an NVIDIA RTX 4070 Ti, would not recommend anything less
+- (Optional) RTX for DLSS
 
-- Linux, or Windows. Linux is where RLTX is developed and played; the Windows path compiles but
-  has not yet been run. No macOS: Apple's drivers have no Vulkan ray queries.
-- A GPU and driver with Vulkan 1.2 ray queries and external memory sharing. Developed on an
-  NVIDIA RTX 4070 Ti.
-- A JDK, 17 or newer, and `glslangValidator` on the path (`glslang-tools` on Debian and Ubuntu,
-  `glslang` on Arch and Fedora, the Vulkan SDK on Windows).
+**OS:**
+- Linux: yes
+- Windows: probably, untested
+- TempleOS: no
+- FreeBSD: no
+- macOS: no
+
+**Software:**
+- GPU driver with Vulkan 1.2 ray queries and external memory sharing
+- A JDK, 17 or newer, and `glslangValidator` on the path (`glslang-tools` on Debian and Ubuntu, `glslang` on Arch and Fedora, the Vulkan SDK on Windows).
 - RuneLite installed through the Jagex Launcher, to play with a Jagex account.
-- For DLSS, optional: an RTX GPU, `gcc` and `git`. The launch script fetches NVIDIA's DLSS SDK
-  from GitHub and compiles a small bridge to it; without them the DLSS setting says so in the log
-  and does nothing.
+- (Optional) For DLSS: `gcc` and `git`. The launch script fetches NVIDIA's DLSS SDK
+  from GitHub and compiles a small bridge to it; without them the DLSS setting says so in the log and does nothing.
 
 ## Building
 
@@ -113,19 +143,9 @@ shadowJar` builds a sideloadable jar for clients started in developer mode.
 
 ## Settings
 
-Settings live in RuneLite's sidebar under RLTX, and in a floating panel on F8 for when the
-sidebar is out of the way; `docs/settings.md` lists every one with its default. The panel also
-holds three tabs the sidebar cannot: Presets save every setting to a file or the clipboard and
-load them back; Areas bind settings to places, bounded by polygons walked corner by corner or by
-misty ground, applied when you enter and undone when you leave, with starter areas for
-Lumbridge bundled; Cinema records, previews, saves and renders camera paths. Keys, all
-rebindable: F11 photo mode, F9 quad-resolution photo, F8 settings panel, F7 showcase, which puts
-every quality setting at its top until pressed again, F10 free camera, and
-with the free camera on, Ctrl+K, Ctrl+Shift+K, Ctrl+Alt+K and Ctrl+Alt+P to record, clear, render
-and preview a cinema path.
-
-Skyboxes are your own files: the Skybox setting lists the Fantasy Skybox pack by Render Knight
-and needs its `Materials` folder in the pack folder setting. Without it, use the procedural sky.
+- Most Settings live in RuneLite's sidebar under RLTX
+- Open the floating panel with F8 to see all settings
+- `docs/settings.md` lists every setting with its default
 
 ## Licence and notices
 
