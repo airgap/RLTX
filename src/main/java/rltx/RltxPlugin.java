@@ -1137,10 +1137,15 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		{
 			return;
 		}
-		// Photos and cinema frames are traced at full size whatever the render scale or DLSS say.
-		boolean held = cinema.active() && !cinema.preview() || photo.burstPending();
+		// Photos and cinema frames are traced at full size whatever the render scale says. Photos
+		// keep the live DLSS so they antialias with the same jitter the view uses, but not Ray
+		// Reconstruction: it stands in for the temporal accumulation, and a photo wants the burst's
+		// hundred and fifty samples run through the accumulation and wavelet denoiser instead. Cinema
+		// traces raw, its motion resolved by the burst rather than an upscaler.
+		boolean cinemaHeld = cinema.active() && !cinema.preview();
+		boolean held = cinemaHeld || photo.burstPending();
 		float scale = held ? 1f : config.renderScale() / 100f;
-		int dlss = held ? -1 : dlssQuality(config.dlss());
+		int dlss = cinemaHeld ? -1 : dlssQuality(config.dlss());
 		boolean rr = !held && config.rayReconstruction();
 		if (renderer.ensureOutput(width, height, scale, dlss, rr))
 		{
@@ -1274,27 +1279,33 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		}
 	}
 
-	// A photo at twice the width and height of the view, at whatever quality is live (no showcase
-	// override): the renderer's images are resized for the burst, the field of view held by
-	// doubling the zoom, the result read straight back, and the view-sized images restored and
-	// handed back to OpenGL for the frame that follows.
+	// A photo at twice the width and height of the view, with the live DLSS applied so it antialiases
+	// exactly as the view does, only larger. Ray Reconstruction is left off: it replaces the temporal
+	// accumulation, and the burst's hundred and fifty samples belong in the accumulation and wavelet
+	// denoiser, which resolve stochastic foliage that Ray Reconstruction only sprays. The renderer's
+	// images are resized for the burst, the field of view held by doubling the zoom, the result read
+	// straight back, and the view-sized images restored and handed back to OpenGL for the frame that
+	// follows. The linear buffer is read at the traced resolution, which DLSS makes smaller than the
+	// presented image.
 	private void quadPhoto(int width, int height)
 	{
 		float zoom = frame.zoom;
 		float diffusionRadius = frame.diffusionRadius;
 		frame.zoom = zoom * 2f;
 		frame.diffusionRadius = diffusionRadius * 2f;
-		renderer.ensureOutput(width * 2, height * 2, 1f, -1, false);
+		renderer.ensureOutput(width * 2, height * 2, 1f, dlssQuality(config.dlss()), false);
 		burst(config.photoBurst(), false);
 		glSignalPending = false;
 		int[] argb = renderer.readbackOutput();
 		float[] linear = config.linearExport() ? renderer.readbackColor() : null;
+		int linearWidth = renderer.internalWidth();
+		int linearHeight = renderer.internalHeight();
 		float exposure = frame.exposure;
 		frame.zoom = zoom;
 		frame.diffusionRadius = diffusionRadius;
 		renderer.ensureOutput(width, height, 1f, -1, false);
 		compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
-		photo.saveArgbAsync(argb, width * 2, height * 2, linear, exposure);
+		photo.saveArgbAsync(argb, width * 2, height * 2, linear, linearWidth, linearHeight, exposure);
 	}
 
 	// A portrait of the character's outfit. On the plain stage their model stands alone on a grey

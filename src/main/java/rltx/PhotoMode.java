@@ -327,14 +327,17 @@ final class PhotoMode
 		saver.start();
 	}
 
-	/** Saves pixels read straight back from the renderer, the image assembled off the client thread. */
-	void saveArgbAsync(int[] argb, int width, int height, float[] linear, float exposure)
+	/**
+	 * Saves pixels read straight back from the renderer, the image assembled off the client thread.
+	 * The linear buffer carries its own size: DLSS traces it smaller than the presented image.
+	 */
+	void saveArgbAsync(int[] argb, int width, int height, float[] linear, int linearWidth, int linearHeight, float exposure)
 	{
 		Thread saver = new Thread(() ->
 		{
 			BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 			image.setRGB(0, 0, width, height, argb, 0, width);
-			savePhoto(image, linear, width, height, exposure);
+			savePhoto(image, linear, linearWidth, linearHeight, exposure);
 		}, "rltx-photo");
 		saver.setDaemon(true);
 		saver.start();
