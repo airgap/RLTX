@@ -86,6 +86,7 @@ import rltx.scene.WaterSim;
 import rltx.scene.lights.SceneLights;
 import rltx.vk.FrameParams;
 import rltx.vk.Ngx;
+import rltx.vk.Renderer;
 import rltx.vk.RtRenderer;
 import rltx.vk.VkContext;
 
@@ -405,11 +406,11 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private boolean glReady;
 	private GlCompositor compositor;
 	private VkContext vk;
-	private RtRenderer renderer;
+	private Renderer renderer;
 	// A second, independent renderer for the offscreen avatar, present only when the
 	// GPU gave us a dedicated queue. It shares nothing mutable with the live renderer,
 	// reads back via Vulkan (no GL compositor), and runs off the client thread.
-	private RtRenderer avatarRenderer;
+	private Renderer avatarRenderer;
 
 	private volatile Palette palette;
 	private boolean gameTexturesUploaded;

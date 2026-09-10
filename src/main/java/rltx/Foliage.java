@@ -24,7 +24,7 @@ import rltx.scene.StaticScene;
 import rltx.scene.lights.LightDefinition;
 import rltx.sky.WeatherState;
 import rltx.vk.FrameParams;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * What the scene's objects are by name, and the foliage near the camera drawn each frame as
@@ -158,7 +158,7 @@ final class Foliage
 	}
 
 	// The wind is a slow gust field with the weather's wind on top.
-	void push(LoadedScene top, GeometryBuffer dynamic, RtRenderer renderer, WeatherState weather)
+	void push(LoadedScene top, GeometryBuffer dynamic, Renderer renderer, WeatherState weather)
 	{
 		if (!config.foliageWind() || top == null)
 		{

@@ -7,7 +7,7 @@ import rltx.scene.GeometryBuffer;
 import rltx.scene.StaticScene;
 import rltx.scene.StaticSceneBuilder;
 import rltx.vk.FrameParams;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * Ground near the camera as relief: each zone's terrain faces go through the dynamic path cut
@@ -44,7 +44,7 @@ final class Ground
 		this.frame = frame;
 	}
 
-	void push(LoadedScene top, GeometryBuffer dynamic, RtRenderer renderer, boolean texturesReady)
+	void push(LoadedScene top, GeometryBuffer dynamic, Renderer renderer, boolean texturesReady)
 	{
 		if (!config.terrainRelief() || frame.groundRelief <= 0f || !frame.terrainTextures || !texturesReady || top == null)
 		{

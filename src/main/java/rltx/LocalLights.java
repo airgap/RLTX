@@ -19,7 +19,7 @@ import rltx.scene.lights.LightDefinition;
 import rltx.scene.lights.LightLibrary;
 import rltx.scene.lights.SceneLights;
 import rltx.vk.FrameParams;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * The local lights of a frame: 117 HD's light data, which objects and effects carry a flame,
@@ -166,7 +166,7 @@ final class LocalLights
 	 *
 	 * @param lights the top-level scene's lights, or null while no scene is loaded
 	 */
-	void fill(RtRenderer renderer, SceneLights lights)
+	void fill(Renderer renderer, SceneLights lights)
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		if (!config.localLights() || lights == null || wv == null)

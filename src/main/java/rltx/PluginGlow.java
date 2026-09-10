@@ -19,6 +19,7 @@ import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.overlay.OverlayManager;
 import rltx.scene.GroundTextures;
 import rltx.vk.FrameParams;
+import rltx.vk.Renderer;
 import rltx.vk.RtRenderer;
 
 /**
@@ -132,7 +133,7 @@ final class PluginGlow
 
 	// Packs the markers on this plane: a bounding box, then tile centres with the colour's bits in
 	// w, followed by the tiles along the edges of any area polygon being edited.
-	void fillMarkers(RtRenderer renderer, Cells cells)
+	void fillMarkers(Renderer renderer, Cells cells)
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		WorldPoint[] tiles = markerTiles;
@@ -310,7 +311,7 @@ final class PluginGlow
 	// Packs the route for the composite pass: a bounding box, then tile centres with their distance
 	// along the route in w. Tiles off this plane or outside the scene break the ribbon, marked by an
 	// entry with a negative w; the pulses run on across the break as if the route were unbroken.
-	void fillGuide(RtRenderer renderer, Cells cells)
+	void fillGuide(Renderer renderer, Cells cells)
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		WorldPoint[] tiles = route;

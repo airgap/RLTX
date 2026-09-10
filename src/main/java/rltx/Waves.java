@@ -6,7 +6,7 @@ import net.runelite.api.WorldView;
 import rltx.scene.GeometryBuffer;
 import rltx.scene.StaticScene;
 import rltx.vk.FrameParams;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * Water near the camera as real geometry: its faces go through the dynamic path each frame, cut
@@ -49,7 +49,7 @@ final class Waves
 		this.frame = frame;
 	}
 
-	void push(LoadedScene top, GeometryBuffer dynamicWater, RtRenderer renderer)
+	void push(LoadedScene top, GeometryBuffer dynamicWater, Renderer renderer)
 	{
 		if (!config.waveGeometry() || !frame.water || top == null)
 		{

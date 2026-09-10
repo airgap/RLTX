@@ -23,7 +23,7 @@ import net.runelite.client.ui.DrawManager;
 import net.runelite.client.util.HotkeyListener;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.system.MemoryUtil;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * Photo mode: the interface layer is left out of the composite, and two corners of the view act
@@ -261,7 +261,7 @@ final class PhotoMode
 		return focusProbePending;
 	}
 
-	void probeFocus(RtRenderer renderer)
+	void probeFocus(Renderer renderer)
 	{
 		focusProbePending = false;
 		float depth = renderer.readbackDepth(focusProbeX, focusProbeY);

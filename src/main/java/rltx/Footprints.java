@@ -12,6 +12,7 @@ import net.runelite.api.Player;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import rltx.vk.FrameParams;
+import rltx.vk.Renderer;
 import rltx.vk.RtRenderer;
 
 /** Footprints: the last steps of everyone in view, alternating feet, kept in a ring. */
@@ -53,7 +54,7 @@ final class Footprints
 		lastStep.keySet().retainAll(present);
 	}
 
-	void track(RtRenderer renderer, Cells cells)
+	void track(Renderer renderer, Cells cells)
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		if (!config.footprints() || wv == null)

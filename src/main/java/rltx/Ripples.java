@@ -9,7 +9,7 @@ import net.runelite.api.Player;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import rltx.vk.FrameParams;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * Feeds the water ripple simulation: where its window of cells sits this frame, how far to step
@@ -43,7 +43,7 @@ final class Ripples
 		this.frame = frame;
 	}
 
-	void fill(RtRenderer renderer, LoadedScene top, float dt)
+	void fill(Renderer renderer, LoadedScene top, float dt)
 	{
 		WorldView wv = client.getTopLevelWorldView();
 		if (!config.waterRipples() || top == null || wv == null)

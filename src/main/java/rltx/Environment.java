@@ -28,7 +28,7 @@ import rltx.sky.StarMap;
 import rltx.sky.WeatherService;
 import rltx.sky.WeatherState;
 import rltx.vk.FrameParams;
-import rltx.vk.RtRenderer;
+import rltx.vk.Renderer;
 
 /**
  * The world outside the scene: the sun and moon from the clock and place, the sky as a skybox,
@@ -50,7 +50,7 @@ final class Environment
 	private final Cinema cinema;
 	private final FrameParams frame;
 	// The renderer the sky's images are uploaded to, while it lives.
-	private RtRenderer renderer;
+	private Renderer renderer;
 
 	private WeatherService weatherService;
 	private GeoLocation geoLocation;
@@ -95,7 +95,7 @@ final class Environment
 	}
 
 	/** Takes a freshly created renderer and starts loading the star map into it. */
-	void attach(RtRenderer renderer)
+	void attach(Renderer renderer)
 	{
 		this.renderer = renderer;
 		loadStarMap();

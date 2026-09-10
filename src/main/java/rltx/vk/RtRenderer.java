@@ -81,7 +81,7 @@ import rltx.scene.WaterType;
  * with OpenGL.
  */
 @Slf4j
-public final class RtRenderer
+public final class RtRenderer implements Renderer
 {
 	public static final int MAX_DYNAMIC_FACES = 1 << 19;
 	private static final int MAX_INSTANCES = 8192;
