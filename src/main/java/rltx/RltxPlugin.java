@@ -86,6 +86,7 @@ import rltx.scene.WaterSim;
 import rltx.scene.lights.SceneLights;
 import rltx.vk.FrameParams;
 import rltx.vk.Ngx;
+import rltx.vk.NormalRenderer;
 import rltx.vk.Renderer;
 import rltx.vk.RtRenderer;
 import rltx.vk.VkContext;
@@ -544,7 +545,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 					log.info("DLSS unavailable: {}", Ngx.unavailableReason());
 				}
 				vk = VkContext.create(compositor.deviceUuid());
-				renderer = new RtRenderer(vk);
+				renderer = config.renderBackend() == RltxConfig.RendererBackend.NORMAL
+					? new NormalRenderer(vk)
+					: new RtRenderer(vk);
 				environment.attach(renderer);
 				float[] materials = Materials.table(gson);
 				GroundTextures.applyMaterials(materials);

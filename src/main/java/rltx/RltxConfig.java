@@ -533,6 +533,36 @@ public interface RltxConfig extends Config
 		return DlssMode.OFF;
 	}
 
+	enum RendererBackend
+	{
+		UBER("Uber — ray traced"),
+		NORMAL("Normal — rasterised (in development)");
+
+		private final String label;
+
+		RendererBackend(String label)
+		{
+			this.label = label;
+		}
+
+		@Override
+		public String toString()
+		{
+			return label;
+		}
+	}
+
+	@ConfigItem(
+		keyName = "renderBackend",
+		name = "Renderer",
+		description = "Which rendering engine to use. Uber is the Vulkan ray tracer. Normal is a lighter rasteriser, still in development and incomplete. Takes effect on the next client start.",
+		position = -100
+	)
+	default RendererBackend renderBackend()
+	{
+		return RendererBackend.UBER;
+	}
+
 	@ConfigItem(
 		keyName = "rayReconstruction",
 		name = "Ray Reconstruction",
