@@ -305,10 +305,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	private static final int MAX_PLUME_SOURCES = 64;
 	private final float[] plumeSources = new float[MAX_PLUME_SOURCES * 4];
 	private int plumeSourceCount;
-	private final float[] plumePacked = new float[RtRenderer.MAX_PLUMES * 4];
+	private final float[] plumePacked = new float[Renderer.MAX_PLUMES * 4];
 
 	// Uploads the nearest trees while the season has them shedding.
-	private final float[] treePacked = new float[RtRenderer.MAX_TREES * 4];
+	private final float[] treePacked = new float[Renderer.MAX_TREES * 4];
 
 	private void fillTrees()
 	{
@@ -328,7 +328,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			distance[i] = dx * dx + dz * dz;
 			order[i] = i;
 		}
-		int keep = Math.min(total, RtRenderer.MAX_TREES);
+		int keep = Math.min(total, Renderer.MAX_TREES);
 		for (int i = 0; i < keep; ++i)
 		{
 			int best = i;
@@ -372,7 +372,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			distance[i] = dx * dx + dy * dy + dz * dz;
 			order[i] = i;
 		}
-		int keep = Math.min(total, RtRenderer.MAX_PLUMES);
+		int keep = Math.min(total, Renderer.MAX_PLUMES);
 		for (int i = 0; i < keep; ++i)
 		{
 			int best = i;
@@ -792,7 +792,7 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		SceneLights sceneLights = null;
 		if (scene.getWorldViewId() == WorldView.TOPLEVEL)
 		{
-			sceneLights = new SceneLights(RtRenderer.MAX_LIGHTS);
+			sceneLights = new SceneLights(Renderer.MAX_LIGHTS);
 			sceneLights.collect(scene, lights.library());
 		}
 		pendingScenes.put(scene.getWorldViewId(), new LoadedScene(scene, built, StaticSceneBuilder.terrainLight(scene, p), StaticSceneBuilder.waterBed(scene), sceneLights));

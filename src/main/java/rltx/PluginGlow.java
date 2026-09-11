@@ -20,7 +20,6 @@ import net.runelite.client.ui.overlay.OverlayManager;
 import rltx.scene.GroundTextures;
 import rltx.vk.FrameParams;
 import rltx.vk.Renderer;
-import rltx.vk.RtRenderer;
 
 /**
  * What other plugins show, drawn as light by the composite pass instead of their own overlays:
@@ -38,12 +37,12 @@ final class PluginGlow
 
 	private final ShortestPath shortestPath;
 	private WorldPoint[] route;
-	private final float[] guidePacked = new float[(RtRenderer.MAX_GUIDE_POINTS + 1 + RtRenderer.MAX_WISPS) * 4];
+	private final float[] guidePacked = new float[(Renderer.MAX_GUIDE_POINTS + 1 + Renderer.MAX_WISPS) * 4];
 
 	private final GroundMarkers groundMarkers;
 	private WorldPoint[] markerTiles;
 	private int[] markerColours;
-	private final float[] markerPacked = new float[(RtRenderer.MAX_MARKERS + 1) * 4];
+	private final float[] markerPacked = new float[(Renderer.MAX_MARKERS + 1) * 4];
 	// The polygons the Areas tab is showing, drawn on the ground as a line of white pools.
 	private volatile List<int[]> previewPolygons;
 	private int markerFill;
@@ -194,7 +193,7 @@ final class PluginGlow
 
 	private void addMarker(WorldView wv, int plane, WorldPoint tile, int rgb, Cells cells)
 	{
-		if (markerFill >= RtRenderer.MAX_MARKERS || tile.getPlane() != plane)
+		if (markerFill >= Renderer.MAX_MARKERS || tile.getPlane() != plane)
 		{
 			return;
 		}
@@ -224,7 +223,7 @@ final class PluginGlow
 		{
 			return 0;
 		}
-		int wisps = Math.max(1, Math.min(RtRenderer.MAX_WISPS, (int) (length / 384f)));
+		int wisps = Math.max(1, Math.min(Renderer.MAX_WISPS, (int) (length / 384f)));
 		float spacing = length / wisps;
 		float travelled = frame.timeSeconds * 220f;
 		for (int k = 0; k < wisps; ++k)
@@ -336,14 +335,14 @@ final class PluginGlow
 			}
 			if (gap && n > 0)
 			{
-				if (n >= RtRenderer.MAX_GUIDE_POINTS)
+				if (n >= Renderer.MAX_GUIDE_POINTS)
 				{
 					break;
 				}
 				guidePacked[(n + 1) * 4 + 3] = -1f;
 				++n;
 			}
-			if (n >= RtRenderer.MAX_GUIDE_POINTS)
+			if (n >= Renderer.MAX_GUIDE_POINTS)
 			{
 				break;
 			}

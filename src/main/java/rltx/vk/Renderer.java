@@ -19,6 +19,26 @@ import rltx.scene.StaticScene;
  */
 public interface Renderer
 {
+	// ---- per-frame buffer capacities the front end packs to ----
+	// Part of the contract: a backend consumes buffers the front end sizes by these.
+
+	/** Local lights uploaded per frame, eight floats each. */
+	int MAX_LIGHTS = 256;
+	/** Route entries uploaded per frame after the bounding box, four floats each, and the wisps that may follow them. */
+	int MAX_GUIDE_POINTS = 256;
+	int MAX_WISPS = 16;
+	/** Smoke plumes marched per frame, four floats each. */
+	int MAX_PLUMES = 32;
+	/** Ground marker tiles uploaded per frame after the bounding box, four floats each. */
+	int MAX_MARKERS = 256;
+	/** Footprints kept, eight floats each. */
+	int MAX_PRINTS = 256;
+	/** Trees shedding leaves per frame, four floats each. */
+	int MAX_TREES = 64;
+	/** Occupancy layers of 64 by 64 cells, 128 words each: route, markers, footprints. */
+	int CELL_LAYERS = 3;
+	int CELL_WORDS = 128;
+
 	// ---- scene geometry and materials the front end uploads ----
 
 	void setStaticSet(int id, StaticScene scene, float[] transform);

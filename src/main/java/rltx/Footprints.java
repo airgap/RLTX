@@ -13,7 +13,6 @@ import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import rltx.vk.FrameParams;
 import rltx.vk.Renderer;
-import rltx.vk.RtRenderer;
 
 /** Footprints: the last steps of everyone in view, alternating feet, kept in a ring. */
 final class Footprints
@@ -21,7 +20,7 @@ final class Footprints
 	private final Client client;
 	private final RltxConfig config;
 	private final FrameParams frame;
-	private final float[] packed = new float[RtRenderer.MAX_PRINTS * 8];
+	private final float[] packed = new float[Renderer.MAX_PRINTS * 8];
 	private int count, next;
 	private final Map<Actor, float[]> lastStep = new HashMap<>();
 
@@ -120,8 +119,8 @@ final class Footprints
 		packed[o + 5] = hz;
 		packed[o + 6] = side;
 		packed[o + 7] = 0f;
-		next = (next + 1) % RtRenderer.MAX_PRINTS;
-		count = Math.min(count + 1, RtRenderer.MAX_PRINTS);
+		next = (next + 1) % Renderer.MAX_PRINTS;
+		count = Math.min(count + 1, Renderer.MAX_PRINTS);
 		last[0] = lp.getX();
 		last[1] = lp.getY();
 		last[2] = side;

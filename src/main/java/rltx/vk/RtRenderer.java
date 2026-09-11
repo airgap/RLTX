@@ -197,22 +197,8 @@ public final class RtRenderer implements Renderer
 	private static final int BINDING_GLASS_BEND = 62;
 	private static final int BINDING_COUNT = 63;
 	private static final int HEIGHTS_MAX = 4 * 185 * 185;
-	/** Local lights uploaded per frame, eight floats each. */
-	public static final int MAX_LIGHTS = 256;
-	/** Route entries uploaded per frame after the bounding box, four floats each, and the wisps that may follow them. */
-	public static final int MAX_GUIDE_POINTS = 256;
-	public static final int MAX_WISPS = 16;
-	/** Smoke plumes marched per frame, four floats each. */
-	public static final int MAX_PLUMES = 32;
-	/** Ground marker tiles uploaded per frame after the bounding box, four floats each. */
-	public static final int MAX_MARKERS = 256;
-	/** Footprints kept, eight floats each. */
-	public static final int MAX_PRINTS = 256;
-	/** Trees shedding leaves per frame, four floats each. */
-	public static final int MAX_TREES = 64;
-	/** Occupancy layers of 64 by 64 cells, 128 words each: route, markers, footprints. */
-	public static final int CELL_LAYERS = 3;
-	public static final int CELL_WORDS = 128;
+	// The per-frame buffer capacities the front end packs to are on the Renderer contract,
+	// inherited here; a backend consumes buffers sized by them.
 	private static final int MIST_GRID_MAX = 185 * 185 * 4;
 	private static final int MAX_TEXTURES = 272;
 	private static final int BYTES_PER_FACE_UV = GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
