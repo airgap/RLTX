@@ -21,7 +21,7 @@ layout(push_constant) uniform Push
 	vec4 row2;
 	vec4 viewport;  // x width, y height, z near, w far
 	vec4 fogColor;  // rgb the distance fades to
-	vec4 fogRange;  // x fog start, y fog end, in view-space world units
+	vec4 fogRange;  // x fog start, y fog end (view-space world units), z translucent flag (fragment only)
 } pc;
 
 layout(location = 0) out vec4 vColor;

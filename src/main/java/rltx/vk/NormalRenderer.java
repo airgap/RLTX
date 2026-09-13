@@ -100,6 +100,9 @@ public final class NormalRenderer implements Renderer
 	private static final int MAX_DYNAMIC_FACES = 1 << 19;
 	private static final int MAX_STATIC_FACES = 3 << 20;
 	private static final int PUSH_BYTES = 112;
+	// Byte offset of the fragment shader's translucent flag (fogRange.z) inside the push block, so the
+	// translucent pass can flip it without repacking the whole struct.
+	private static final int TRANSLUCENT_FLAG_OFFSET = 104;
 	private static final float NEAR = 32f;
 	private static final float FAR = 65536f;
 
@@ -123,8 +126,8 @@ public final class NormalRenderer implements Renderer
 	private int outputWidth, outputHeight;
 
 	private long renderPass;
-	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet;
-	private long pipelineLayout, pipeline;
+	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet, translucentDescriptorSet;
+	private long pipelineLayout, pipeline, blendPipeline;
 	private long skyPipelineLayout, skyPipeline;
 	private static final int SKY_PUSH_BYTES = 80;
 
@@ -134,6 +137,12 @@ public final class NormalRenderer implements Renderer
 	private VkBuf dynamicStagingPos, dynamicStagingCol, dynamicStagingUv, dynamicStagingTex;
 	private VkBuf positions, colors, uvs, texs;
 	private int dynamicFaceCount;
+
+	// The per-frame translucent geometry, alpha-blended after the opaque pass; its staging, device-local
+	// buffers and descriptor set mirror the opaque dynamic ones above.
+	private VkBuf translucentStagingPos, translucentStagingCol, translucentStagingUv, translucentStagingTex;
+	private VkBuf translucentPositions, translucentColors, translucentUvs, translucentTexs;
+	private int translucentFaceCount;
 
 	private VkBuf staticPositions, staticColors, staticUvs, staticTexs;
 	private int staticFaceCount;
@@ -150,6 +159,8 @@ public final class NormalRenderer implements Renderer
 	// whether it is drawn this frame. The view of each set (which levels and roofs are visible) comes
 	// from setStaticView; groups are recorded in buffer order so visible ones coalesce into few draws.
 	private int[] groupFirstVertex, groupVertexCount, groupLevel, groupRoof, groupSet;
+	// Per recorded group, whether it is translucent, so the opaque and translucent passes can split them.
+	private boolean[] groupTranslucent;
 	private int groupCount;
 	private final Map<Integer, View> views = new HashMap<>();
 
@@ -224,6 +235,14 @@ public final class NormalRenderer implements Renderer
 		colors = ctx.createBuffer(dynCol, deviceStorage, device);
 		uvs = ctx.createBuffer(dynUv, deviceStorage, device);
 		texs = ctx.createBuffer(dynCol, deviceStorage, device);
+		translucentStagingPos = ctx.createBuffer(dynPos, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		translucentStagingCol = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		translucentStagingUv = ctx.createBuffer(dynUv, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		translucentStagingTex = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		translucentPositions = ctx.createBuffer(dynPos, deviceStorage, device);
+		translucentColors = ctx.createBuffer(dynCol, deviceStorage, device);
+		translucentUvs = ctx.createBuffer(dynUv, deviceStorage, device);
+		translucentTexs = ctx.createBuffer(dynCol, deviceStorage, device);
 		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
 		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, device);
 		staticUvs = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
@@ -246,17 +265,19 @@ public final class NormalRenderer implements Renderer
 			descriptorSetLayout = pLayout.get(0);
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(8);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
-			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
+			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(12);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
+			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(3).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
 			descriptorPool = pPool.get(0);
 
 			dynamicDescriptorSet = allocateSet(stack);
 			staticDescriptorSet = allocateSet(stack);
+			translucentDescriptorSet = allocateSet(stack);
 			writeSet(stack, dynamicDescriptorSet, positions, colors, uvs, texs);
 			writeSet(stack, staticDescriptorSet, staticPositions, staticColors, staticUvs, staticTexs);
+			writeSet(stack, translucentDescriptorSet, translucentPositions, translucentColors, translucentUvs, translucentTexs);
 		}
 	}
 
@@ -388,9 +409,10 @@ public final class NormalRenderer implements Renderer
 
 			VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack)
 				.sampler(textureSampler).imageView(textureView).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
 			writes.get(0).sType$Default().dstSet(dynamicDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
 			writes.get(1).sType$Default().dstSet(staticDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
+			writes.get(2).sType$Default().dstSet(translucentDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
 			vkUpdateDescriptorSets(device, writes, null);
 		}
 	}
@@ -503,12 +525,21 @@ public final class NormalRenderer implements Renderer
 				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
 			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
 				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
-			VkPipelineDepthStencilStateCreateInfo depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
+			// Opaque writes depth; the translucent variant tests against it but does not write, so blended
+			// faces sort against the solid world without occluding one another by depth.
+			VkPipelineDepthStencilStateCreateInfo depthOpaque = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
 				.depthTestEnable(true).depthWriteEnable(true).depthCompareOp(VK_COMPARE_OP_LESS);
-			VkPipelineColorBlendAttachmentState.Buffer blendAtt = VkPipelineColorBlendAttachmentState.calloc(1, stack);
-			blendAtt.get(0).blendEnable(false)
-				.colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
-			VkPipelineColorBlendStateCreateInfo blend = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default().pAttachments(blendAtt);
+			VkPipelineDepthStencilStateCreateInfo depthBlend = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
+				.depthTestEnable(true).depthWriteEnable(false).depthCompareOp(VK_COMPARE_OP_LESS);
+			int writeAll = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+			VkPipelineColorBlendAttachmentState.Buffer blendAttOpaque = VkPipelineColorBlendAttachmentState.calloc(1, stack);
+			blendAttOpaque.get(0).blendEnable(false).colorWriteMask(writeAll);
+			VkPipelineColorBlendAttachmentState.Buffer blendAttTrans = VkPipelineColorBlendAttachmentState.calloc(1, stack);
+			blendAttTrans.get(0).blendEnable(true).colorWriteMask(writeAll)
+				.srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA).dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA).colorBlendOp(VK_BLEND_OP_ADD)
+				.srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_ZERO).alphaBlendOp(VK_BLEND_OP_ADD);
+			VkPipelineColorBlendStateCreateInfo blendOpaque = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default().pAttachments(blendAttOpaque);
+			VkPipelineColorBlendStateCreateInfo blendTrans = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default().pAttachments(blendAttTrans);
 			VkPipelineDynamicStateCreateInfo dynamic = VkPipelineDynamicStateCreateInfo.calloc(stack).sType$Default()
 				.pDynamicStates(stack.ints(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR));
 
@@ -521,7 +552,9 @@ public final class NormalRenderer implements Renderer
 			check(vkCreatePipelineLayout(device, layoutInfo, null, pLayout), "vkCreatePipelineLayout");
 			pipelineLayout = pLayout.get(0);
 
-			VkGraphicsPipelineCreateInfo.Buffer info = VkGraphicsPipelineCreateInfo.calloc(1, stack);
+			// Two pipelines from one layout and shader pair: the opaque one, then the alpha-blended
+			// variant that differs only in its depth-write and colour-blend state.
+			VkGraphicsPipelineCreateInfo.Buffer info = VkGraphicsPipelineCreateInfo.calloc(2, stack);
 			info.get(0).sType$Default()
 				.pStages(stages)
 				.pVertexInputState(vertexInput)
@@ -529,15 +562,29 @@ public final class NormalRenderer implements Renderer
 				.pViewportState(viewport)
 				.pRasterizationState(raster)
 				.pMultisampleState(multisample)
-				.pDepthStencilState(depth)
-				.pColorBlendState(blend)
+				.pDepthStencilState(depthOpaque)
+				.pColorBlendState(blendOpaque)
 				.pDynamicState(dynamic)
 				.layout(pipelineLayout)
 				.renderPass(renderPass)
 				.subpass(0);
-			LongBuffer pPipeline = stack.mallocLong(1);
+			info.get(1).sType$Default()
+				.pStages(stages)
+				.pVertexInputState(vertexInput)
+				.pInputAssemblyState(assembly)
+				.pViewportState(viewport)
+				.pRasterizationState(raster)
+				.pMultisampleState(multisample)
+				.pDepthStencilState(depthBlend)
+				.pColorBlendState(blendTrans)
+				.pDynamicState(dynamic)
+				.layout(pipelineLayout)
+				.renderPass(renderPass)
+				.subpass(0);
+			LongBuffer pPipeline = stack.mallocLong(2);
 			check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, info, null, pPipeline), "vkCreateGraphicsPipelines");
 			pipeline = pPipeline.get(0);
+			blendPipeline = pPipeline.get(1);
 
 			vkDestroyShaderModule(device, vert, null);
 			vkDestroyShaderModule(device, frag, null);
@@ -730,6 +777,7 @@ public final class NormalRenderer implements Renderer
 		groupLevel = new int[groups];
 		groupRoof = new int[groups];
 		groupSet = new int[groups];
+		groupTranslucent = new boolean[groups];
 		groupCount = 0;
 		for (View v : views.values())
 		{
@@ -775,6 +823,12 @@ public final class NormalRenderer implements Renderer
 					{
 						count = zoneFaces - base;
 					}
+					// Water is left to a separate feature: its faces stay baked in the buffer but are
+					// recorded by no group, so neither the opaque nor the translucent pass draws them.
+					if (zone.groupWater[g])
+					{
+						continue;
+					}
 					int lvl = zone.groupLevel[g];
 					int roof = zone.groupRoofId[g];
 					groupFirstVertex[groupCount] = (written + base) * 3;
@@ -782,6 +836,7 @@ public final class NormalRenderer implements Renderer
 					groupLevel[groupCount] = lvl;
 					groupRoof[groupCount] = roof;
 					groupSet[groupCount] = id;
+					groupTranslucent[groupCount] = zone.groupTranslucent[g];
 					++groupCount;
 					if (roof > 0 && lvl >= 0 && lvl < v.levelHasRoofs.length)
 					{
@@ -1037,8 +1092,8 @@ public final class NormalRenderer implements Renderer
 
 		waitPreviousFrame();
 
-		// The previous frame's read of the dynamic buffer is done, so refill it. Only the opaque dynamic
-		// geometry is drawn for now; translucent and water come with blending later.
+		// The previous frame's reads of the dynamic buffers are done, so refill them: opaque geometry into
+		// the dynamic buffers, translucent geometry into its own. Water is skipped until it has a pass.
 		dynamicFaceCount = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		if (dynamicFaceCount > 0)
 		{
@@ -1046,6 +1101,14 @@ public final class NormalRenderer implements Renderer
 			dynamicStagingCol.mapped.asIntBuffer().put(dynamic.colors(), 0, dynamicFaceCount);
 			dynamicStagingUv.mapped.asFloatBuffer().put(dynamic.uvs(), 0, dynamicFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE);
 			dynamicStagingTex.mapped.asIntBuffer().put(dynamic.textures(), 0, dynamicFaceCount);
+		}
+		translucentFaceCount = Math.min(translucent.faces(), MAX_DYNAMIC_FACES);
+		if (translucentFaceCount > 0)
+		{
+			translucentStagingPos.mapped.asFloatBuffer().put(translucent.positions(), 0, translucentFaceCount * GeometryBuffer.FLOATS_PER_FACE);
+			translucentStagingCol.mapped.asIntBuffer().put(translucent.colors(), 0, translucentFaceCount);
+			translucentStagingUv.mapped.asFloatBuffer().put(translucent.uvs(), 0, translucentFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE);
+			translucentStagingTex.mapped.asIntBuffer().put(translucent.textures(), 0, translucentFaceCount);
 		}
 
 		try (MemoryStack stack = stackPush())
@@ -1061,6 +1124,16 @@ public final class NormalRenderer implements Renderer
 				copy(cmd, stack, dynamicStagingCol, colors, (long) dynamicFaceCount * Integer.BYTES);
 				copy(cmd, stack, dynamicStagingUv, uvs, (long) dynamicFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
 				copy(cmd, stack, dynamicStagingTex, texs, (long) dynamicFaceCount * Integer.BYTES);
+			}
+			if (translucentFaceCount > 0)
+			{
+				copy(cmd, stack, translucentStagingPos, translucentPositions, (long) translucentFaceCount * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
+				copy(cmd, stack, translucentStagingCol, translucentColors, (long) translucentFaceCount * Integer.BYTES);
+				copy(cmd, stack, translucentStagingUv, translucentUvs, (long) translucentFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
+				copy(cmd, stack, translucentStagingTex, translucentTexs, (long) translucentFaceCount * Integer.BYTES);
+			}
+			if (dynamicFaceCount > 0 || translucentFaceCount > 0)
+			{
 				VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, stack).sType$Default()
 					.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
 				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, mb, null, null);
@@ -1114,47 +1187,36 @@ public final class NormalRenderer implements Renderer
 			pc.putFloat(r[6]).putFloat(r[7]).putFloat(r[8]).putFloat(0f);
 			pc.putFloat(outputWidth).putFloat(outputHeight).putFloat(NEAR).putFloat(FAR);
 			pc.putFloat(fogR).putFloat(fogG).putFloat(fogB).putFloat(1f);
+			// fogRange.z is the translucent flag the fragment shader reads: 0 opaque here, 1 for the pass below.
 			pc.putFloat(fogStart).putFloat(fogEnd).putFloat(0f).putFloat(0f);
 			pc.flip();
 			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc);
 
+			// Opaque pass: solid static groups, then the opaque dynamic buffer.
 			if (staticFaceCount > 0)
 			{
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(staticDescriptorSet), null);
-				// Draw only the groups the view keeps, coalescing consecutive visible ones into one draw
-				// each so a whole run of visible geometry costs a single call.
-				int runStart = -1, runCount = 0;
-				for (int i = 0; i < groupCount; ++i)
-				{
-					View v = views.get(groupSet[i]);
-					boolean visible = v == null || groupVisible(v, groupLevel[i], groupRoof[i]);
-					if (visible && runStart >= 0 && groupFirstVertex[i] == runStart + runCount)
-					{
-						runCount += groupVertexCount[i];
-					}
-					else
-					{
-						if (runStart >= 0)
-						{
-							vkCmdDraw(cmd, runCount, 1, runStart, 0);
-							runStart = -1;
-						}
-						if (visible)
-						{
-							runStart = groupFirstVertex[i];
-							runCount = groupVertexCount[i];
-						}
-					}
-				}
-				if (runStart >= 0)
-				{
-					vkCmdDraw(cmd, runCount, 1, runStart, 0);
-				}
+				drawStaticGroups(cmd, false);
 			}
 			if (dynamicFaceCount > 0)
 			{
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(dynamicDescriptorSet), null);
 				vkCmdDraw(cmd, dynamicFaceCount * 3, 1, 0, 0);
+			}
+
+			// Translucent pass over the opaque frame: same layout, the blend pipeline (depth-tested, no
+			// depth write), with the flag flipped so the fragment shader emits the real opacity.
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blendPipeline);
+			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, TRANSLUCENT_FLAG_OFFSET, stack.floats(1f));
+			if (staticFaceCount > 0)
+			{
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(staticDescriptorSet), null);
+				drawStaticGroups(cmd, true);
+			}
+			if (translucentFaceCount > 0)
+			{
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(translucentDescriptorSet), null);
+				vkCmdDraw(cmd, translucentFaceCount * 3, 1, 0, 0);
 			}
 
 			vkCmdEndRenderPass(cmd);
@@ -1174,6 +1236,44 @@ public final class NormalRenderer implements Renderer
 			}
 			check(vkQueueSubmit(queue, submit, fence), "vkQueueSubmit");
 			fencePending = true;
+		}
+	}
+
+	// Draws the recorded static groups of one opacity class that the current view keeps, coalescing
+	// consecutive visible ones into a single call. Water groups were never recorded, so they never draw;
+	// the caller has bound the pipeline, push flag and static descriptor set for the wanted class.
+	private void drawStaticGroups(VkCommandBuffer cmd, boolean wantTranslucent)
+	{
+		int runStart = -1, runCount = 0;
+		for (int i = 0; i < groupCount; ++i)
+		{
+			if (groupTranslucent[i] != wantTranslucent)
+			{
+				continue;
+			}
+			View v = views.get(groupSet[i]);
+			boolean visible = v == null || groupVisible(v, groupLevel[i], groupRoof[i]);
+			if (visible && runStart >= 0 && groupFirstVertex[i] == runStart + runCount)
+			{
+				runCount += groupVertexCount[i];
+			}
+			else
+			{
+				if (runStart >= 0)
+				{
+					vkCmdDraw(cmd, runCount, 1, runStart, 0);
+					runStart = -1;
+				}
+				if (visible)
+				{
+					runStart = groupFirstVertex[i];
+					runCount = groupVertexCount[i];
+				}
+			}
+		}
+		if (runStart >= 0)
+		{
+			vkCmdDraw(cmd, runCount, 1, runStart, 0);
 		}
 	}
 
@@ -1218,7 +1318,7 @@ public final class NormalRenderer implements Renderer
 	@Override public long waitNanos() { return waitNanos; }
 	@Override public double averageLogLuminance() { return Double.NaN; }
 	@Override public double lastGpuMillis() { return 0.0; }
-	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces"; }
+	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, +" + translucentFaceCount + " translucent"; }
 
 	// ---- lifecycle ----
 
@@ -1228,6 +1328,7 @@ public final class NormalRenderer implements Renderer
 		vkQueueWaitIdle(queue);
 		destroyTargets();
 		if (pipeline != 0) { vkDestroyPipeline(device, pipeline, null); pipeline = 0; }
+		if (blendPipeline != 0) { vkDestroyPipeline(device, blendPipeline, null); blendPipeline = 0; }
 		if (pipelineLayout != 0) { vkDestroyPipelineLayout(device, pipelineLayout, null); pipelineLayout = 0; }
 		if (skyPipeline != 0) { vkDestroyPipeline(device, skyPipeline, null); skyPipeline = 0; }
 		if (skyPipelineLayout != 0) { vkDestroyPipelineLayout(device, skyPipelineLayout, null); skyPipelineLayout = 0; }
@@ -1244,6 +1345,14 @@ public final class NormalRenderer implements Renderer
 		ctx.destroyBuffer(colors);
 		ctx.destroyBuffer(uvs);
 		ctx.destroyBuffer(texs);
+		ctx.destroyBuffer(translucentStagingPos);
+		ctx.destroyBuffer(translucentStagingCol);
+		ctx.destroyBuffer(translucentStagingUv);
+		ctx.destroyBuffer(translucentStagingTex);
+		ctx.destroyBuffer(translucentPositions);
+		ctx.destroyBuffer(translucentColors);
+		ctx.destroyBuffer(translucentUvs);
+		ctx.destroyBuffer(translucentTexs);
 		ctx.destroyBuffer(staticPositions);
 		ctx.destroyBuffer(staticColors);
 		ctx.destroyBuffer(staticUvs);
