@@ -446,6 +446,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 	// spent waiting for the GPU to finish the frame before.
 	private int statInfoFrames;
 	private long statCpuNanos, statWaitBase, frameCpuStart;
+	// Compositor/present timing (the paint callback, separate from the Vulkan submit path): UI texture
+	// upload, scene+UI GL draws, and buffer swap. Reveals the GL/UI cost the submit stat never sees.
+	private long statUiUploadNanos, statCompositeNanos, statSwapNanos, statPaintReport;
+	private int statPaintFrames;
 
 	@Provides
 	RltxConfig provideConfig(ConfigManager configManager)
@@ -2254,7 +2258,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		int canvasWidth = client.getCanvasWidth();
 		int canvasHeight = client.getCanvasHeight();
 		BufferProvider bufferProvider = client.getBufferProvider();
+		long paintStart = System.nanoTime();
 		compositor.updateUiTexture(bufferProvider.getPixels(), bufferProvider.getWidth(), bufferProvider.getHeight(), canvasWidth, canvasHeight);
+		long afterUpload = System.nanoTime();
+		statUiUploadNanos += afterUpload - paintStart;
 		if (config.chrome().sheet() && gameState == GameState.LOGGED_IN && renderer != null)
 		{
 			// The panes of this frame's interface become the sheets the next frame traces.
@@ -2318,6 +2325,8 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			captureStock();
 		}
 
+		long beforeSwap = System.nanoTime();
+		statCompositeNanos += beforeSwap - afterUpload;
 		try
 		{
 			awtContext.swapBuffers();
@@ -2343,6 +2352,22 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 			return;
 		}
 		GlCompositor.checkErrors("frame");
+
+		long afterSwap = System.nanoTime();
+		statSwapNanos += afterSwap - beforeSwap;
+		++statPaintFrames;
+		if (afterSwap - statPaintReport > 30_000_000_000L)
+		{
+			int n = Math.max(statPaintFrames, 1);
+			log.info("Compositor per frame: ui upload {} ms, scene+ui draw {} ms, swap+present {} ms (canvas {}x{})",
+				String.format("%.1f", statUiUploadNanos / 1e6 / n), String.format("%.1f", statCompositeNanos / 1e6 / n),
+				String.format("%.1f", statSwapNanos / 1e6 / n), canvasWidth, canvasHeight);
+			statPaintReport = afterSwap;
+			statPaintFrames = 0;
+			statUiUploadNanos = 0;
+			statCompositeNanos = 0;
+			statSwapNanos = 0;
+		}
 	}
 
 	// Viewport placement follows the GPU plugin, including its one pixel of
