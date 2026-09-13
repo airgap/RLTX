@@ -201,7 +201,14 @@ public final class NormalRenderer implements Renderer
 	// displaced dynamic copy.
 	private boolean[] groupTranslucent;
 	private boolean[] groupWater;
+	// Per recorded group, a world-space bounding sphere, baked once, tested against the view frustum each
+	// frame so groups off-screen or behind the camera are skipped instead of submitted every frame.
+	private float[] groupCenterX, groupCenterY, groupCenterZ, groupRadius;
 	private int groupCount;
+	// The frustum the current frame tests groups against: the camera position, the world->view rotation,
+	// and the half-extents per unit depth (view width/height over twice the internal zoom). Set in submit.
+	private float frustumCamX, frustumCamY, frustumCamZ, frustumSx, frustumSy;
+	private float[] frustumRot;
 	private final Map<Integer, View> views = new HashMap<>();
 	// Per set, which zones have their static water replaced by the dynamic displaced path this frame,
 	// as Waves reports through setDisplacedZones; indexed by the set's flat zone index.
@@ -601,7 +608,7 @@ public final class NormalRenderer implements Renderer
 			// closed surface's triangles before they rasterise, the largest lever on a scene that draws its
 			// whole loaded region each frame with no frustum cull yet.
 			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
-				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_BACK_BIT).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
+				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_BACK_BIT).frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE).lineWidth(1f);
 			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
 				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
 			// Opaque writes depth; the translucent variant tests against it but does not write, so blended
@@ -947,6 +954,33 @@ public final class NormalRenderer implements Renderer
 		return !v.hiddenRoofIds.contains(roof);
 	}
 
+	// Whether group i's world-space bounding sphere lies at least partly inside this frame's view frustum.
+	// The centre is rotated into view space (rel dotted with the rotation rows, as raster.vert projects),
+	// then tested against the near plane and the four side planes with the sphere radius as the margin, so
+	// only groups wholly outside are culled and nothing visible pops. The far plane is left to the fog.
+	private boolean groupInFrustum(int i)
+	{
+		float relX = groupCenterX[i] - frustumCamX;
+		float relY = groupCenterY[i] - frustumCamY;
+		float relZ = groupCenterZ[i] - frustumCamZ;
+		float[] r = frustumRot;
+		float vx = r[0] * relX + r[1] * relY + r[2] * relZ;
+		float vy = r[3] * relX + r[4] * relY + r[5] * relZ;
+		float vz = r[6] * relX + r[7] * relY + r[8] * relZ;
+		float rad = groupRadius[i];
+		if (vz + rad < NEAR)
+		{
+			return false;
+		}
+		float nx = 1f / (float) Math.sqrt(1f + frustumSx * frustumSx);
+		if ((frustumSx * vz - vx) * nx < -rad || (frustumSx * vz + vx) * nx < -rad)
+		{
+			return false;
+		}
+		float ny = 1f / (float) Math.sqrt(1f + frustumSy * frustumSy);
+		return (frustumSy * vz - vy) * ny >= -rad && (frustumSy * vz + vy) * ny >= -rad;
+	}
+
 	@Override
 	public boolean hasStaticSet(int id)
 	{
@@ -992,6 +1026,10 @@ public final class NormalRenderer implements Renderer
 		groupTranslucent = new boolean[groups];
 		groupZone = new int[groups];
 		groupWater = new boolean[groups];
+		groupCenterX = new float[groups];
+		groupCenterY = new float[groups];
+		groupCenterZ = new float[groups];
+		groupRadius = new float[groups];
 		groupCount = 0;
 		for (View v : views.values())
 		{
@@ -1053,6 +1091,27 @@ public final class NormalRenderer implements Renderer
 					groupTranslucent[groupCount] = zone.groupTranslucent[g];
 					groupWater[groupCount] = zone.groupWater[g];
 					groupZone[groupCount] = zi;
+					// The group's world-space bounding sphere from its faces (m is the set's transform, null
+					// for the identity main world), baked once here for the per-frame frustum test.
+					float[] zp = zone.geometry.positions();
+					float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
+					float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+					int pEnd = (base + count) * GeometryBuffer.FLOATS_PER_FACE;
+					for (int p = base * GeometryBuffer.FLOATS_PER_FACE; p < pEnd; p += 3)
+					{
+						float lx = zp[p], ly = zp[p + 1], lz = zp[p + 2];
+						float wx = m == null ? lx : m[0] * lx + m[1] * ly + m[2] * lz + m[3];
+						float wy = m == null ? ly : m[4] * lx + m[5] * ly + m[6] * lz + m[7];
+						float wz = m == null ? lz : m[8] * lx + m[9] * ly + m[10] * lz + m[11];
+						minX = Math.min(minX, wx); maxX = Math.max(maxX, wx);
+						minY = Math.min(minY, wy); maxY = Math.max(maxY, wy);
+						minZ = Math.min(minZ, wz); maxZ = Math.max(maxZ, wz);
+					}
+					float cX = (minX + maxX) * 0.5f, cY = (minY + maxY) * 0.5f, cZ = (minZ + maxZ) * 0.5f;
+					groupCenterX[groupCount] = cX;
+					groupCenterY[groupCount] = cY;
+					groupCenterZ[groupCount] = cZ;
+					groupRadius[groupCount] = (float) Math.sqrt((maxX - cX) * (maxX - cX) + (maxY - cY) * (maxY - cY) + (maxZ - cZ) * (maxZ - cZ));
 					++groupCount;
 					if (roof > 0 && lvl >= 0 && lvl < v.levelHasRoofs.length)
 					{
@@ -1524,6 +1583,15 @@ public final class NormalRenderer implements Renderer
 			// render scale drops the resolution. Every camera push below uses it.
 			float zoom = params.zoom * renderScale;
 
+			// The view frustum this frame, in the terms groupInFrustum tests a group's sphere against:
+			// the camera, the world->view rotation, and the half-extent per unit depth on each axis.
+			frustumCamX = params.cameraX;
+			frustumCamY = params.cameraY;
+			frustumCamZ = params.cameraZ;
+			frustumRot = params.forwardRotation;
+			frustumSx = outputWidth * 0.5f / zoom;
+			frustumSy = outputHeight * 0.5f / zoom;
+
 			// The sky fills the background before geometry draws over it; the login/idle pattern screen
 			// keeps its flat clear instead.
 			if (!params.pattern)
@@ -1643,7 +1711,7 @@ public final class NormalRenderer implements Renderer
 						View v = views.get(groupSet[i]);
 						boolean[] disp = displacedZones.get(groupSet[i]);
 						boolean displaced = disp != null && groupZone[i] < disp.length && disp[groupZone[i]];
-						boolean visible = !displaced && (v == null || groupVisible(v, groupLevel[i], groupRoof[i]));
+						boolean visible = !displaced && (v == null || groupVisible(v, groupLevel[i], groupRoof[i])) && groupInFrustum(i);
 						if (visible && runStart >= 0 && groupFirstVertex[i] == runStart + runCount)
 						{
 							runCount += groupVertexCount[i];
@@ -1714,7 +1782,7 @@ public final class NormalRenderer implements Renderer
 				continue;
 			}
 			View v = views.get(groupSet[i]);
-			boolean visible = v == null || groupVisible(v, groupLevel[i], groupRoof[i]);
+			boolean visible = (v == null || groupVisible(v, groupLevel[i], groupRoof[i])) && groupInFrustum(i);
 			if (visible && runStart >= 0 && groupFirstVertex[i] == runStart + runCount)
 			{
 				runCount += groupVertexCount[i];
