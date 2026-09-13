@@ -7,8 +7,13 @@ import static rltx.vk.VkUtil.check;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
+import lombok.extern.slf4j.Slf4j;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VkAttachmentDescription;
@@ -31,7 +36,6 @@ import org.lwjgl.vulkan.VkFramebufferCreateInfo;
 import org.lwjgl.vulkan.VkGraphicsPipelineCreateInfo;
 import org.lwjgl.vulkan.VkImageCreateInfo;
 import org.lwjgl.vulkan.VkImageMemoryRequirementsInfo2;
-import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkImageViewCreateInfo;
 import org.lwjgl.vulkan.VkMemoryAllocateInfo;
 import org.lwjgl.vulkan.VkMemoryDedicatedAllocateInfo;
@@ -68,24 +72,26 @@ import rltx.scene.StaticScene;
  * ({@link RtRenderer}) that fills the same externally-shared output image the GL compositor blits,
  * so the plugin drives it through the identical seam. See {@code docs/normal-mode.md}.
  *
- * <p><b>Increment 2a.</b> The first graphics pipeline in the engine. It rasterises the per-frame
- * dynamic geometry (actors and the like) flat-shaded by each face's own colour, with the camera
- * matched to {@code trace.comp}'s pinhole convention, into a render pass that clears to the scene's
- * background and z-buffers with a depth image. It does not yet draw the static world, light,
- * texture, or run the shared post chain; those are later increments, and static/environment uploads
- * are still accepted and ignored. Photo/readback paths fail loudly rather than return a blank frame.
+ * <p><b>Increment 2b.</b> Rasterises both the static world and the per-frame dynamic geometry
+ * flat-shaded by each face's own colour, with the camera matched to {@code trace.comp}'s pinhole
+ * convention, z-buffered through a depth image. The static scene is baked to world space and drawn
+ * whole — no level or roof culling yet, so roofs and upper floors show; that culling, plus lighting,
+ * textures, translucency, water and the shared post chain, are the increments after this. Photo and
+ * readback paths fail loudly rather than return a blank frame.
  *
- * <p>It reuses {@code VkContext} as-is, which today still requires ray-query device support, so
- * Normal mode runs on a ray-tracing GPU. Making those extensions optional (non-RT hardware) is a
- * separate step tracked in the design doc. Geometry lives in host-visible storage buffers, filled
- * each frame and pulled by the vertex shader through {@code gl_VertexIndex}; that is simple, not
- * fast, and will move to staged device-local buffers once the picture is right.
+ * <p>Geometry lives in host-visible storage buffers pulled by the vertex shader through
+ * {@code gl_VertexIndex}; simple, not fast. The static buffer is refilled only when the scene
+ * changes; the dynamic one every frame. Moving the static set to device-local memory and culling
+ * it are the next performance steps. It reuses {@code VkContext} as-is, which still requires
+ * ray-query support, so Normal runs on a ray-tracing GPU for now.
  */
+@Slf4j
 public final class NormalRenderer implements Renderer
 {
 	private static final int OUTPUT_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
 	private static final int DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
-	private static final int MAX_FACES = 1 << 19;
+	private static final int MAX_DYNAMIC_FACES = 1 << 19;
+	private static final int MAX_STATIC_FACES = 3 << 20;
 	private static final int PUSH_BYTES = 80;
 	private static final float NEAR = 32f;
 	private static final float FAR = 65536f;
@@ -110,10 +116,18 @@ public final class NormalRenderer implements Renderer
 	private int outputWidth, outputHeight;
 
 	private long renderPass;
-	private long descriptorSetLayout, descriptorPool, descriptorSet;
+	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet;
 	private long pipelineLayout, pipeline;
+
 	private VkBuf positions, colors;
-	private int faceCount;
+	private int dynamicFaceCount;
+
+	private VkBuf staticPositions, staticColors;
+	private int staticFaceCount;
+	// The scenes the front end has handed us, by id; the static buffer is rebuilt from all of them
+	// on any change. The transform places a set's local geometry into the world (null is identity).
+	private final Map<Integer, float[]> staticTransforms = new HashMap<>();
+	private final Map<Integer, StaticScene> staticScenes = new HashMap<>();
 
 	public NormalRenderer(VkContext ctx)
 	{
@@ -159,11 +173,11 @@ public final class NormalRenderer implements Renderer
 
 	private void createGeometryBuffers()
 	{
-		long posBytes = (long) MAX_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
-		long colBytes = (long) MAX_FACES * Integer.BYTES;
 		int host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-		positions = ctx.createBuffer(posBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-		colors = ctx.createBuffer(colBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+		positions = ctx.createBuffer((long) MAX_DYNAMIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+		colors = ctx.createBuffer((long) MAX_DYNAMIC_FACES * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
 	}
 
 	private void createDescriptors()
@@ -179,26 +193,37 @@ public final class NormalRenderer implements Renderer
 			descriptorSetLayout = pLayout.get(0);
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(1, stack);
-			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(2);
-			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(sizes);
+			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(4);
+			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
 			descriptorPool = pPool.get(0);
 
-			VkDescriptorSetAllocateInfo alloc = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
-				.descriptorPool(descriptorPool)
-				.pSetLayouts(stack.longs(descriptorSetLayout));
-			LongBuffer pSet = stack.mallocLong(1);
-			check(vkAllocateDescriptorSets(device, alloc, pSet), "vkAllocateDescriptorSets");
-			descriptorSet = pSet.get(0);
-
-			VkDescriptorBufferInfo.Buffer posInfo = VkDescriptorBufferInfo.calloc(1, stack).buffer(positions.buffer).offset(0).range(VK_WHOLE_SIZE);
-			VkDescriptorBufferInfo.Buffer colInfo = VkDescriptorBufferInfo.calloc(1, stack).buffer(colors.buffer).offset(0).range(VK_WHOLE_SIZE);
-			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
-			writes.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(posInfo);
-			writes.get(1).sType$Default().dstSet(descriptorSet).dstBinding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(colInfo);
-			vkUpdateDescriptorSets(device, writes, null);
+			dynamicDescriptorSet = allocateSet(stack);
+			staticDescriptorSet = allocateSet(stack);
+			writeSet(stack, dynamicDescriptorSet, positions, colors);
+			writeSet(stack, staticDescriptorSet, staticPositions, staticColors);
 		}
+	}
+
+	private long allocateSet(MemoryStack stack)
+	{
+		VkDescriptorSetAllocateInfo alloc = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
+			.descriptorPool(descriptorPool)
+			.pSetLayouts(stack.longs(descriptorSetLayout));
+		LongBuffer pSet = stack.mallocLong(1);
+		check(vkAllocateDescriptorSets(device, alloc, pSet), "vkAllocateDescriptorSets");
+		return pSet.get(0);
+	}
+
+	private void writeSet(MemoryStack stack, long set, VkBuf pos, VkBuf col)
+	{
+		VkDescriptorBufferInfo.Buffer posInfo = VkDescriptorBufferInfo.calloc(1, stack).buffer(pos.buffer).offset(0).range(VK_WHOLE_SIZE);
+		VkDescriptorBufferInfo.Buffer colInfo = VkDescriptorBufferInfo.calloc(1, stack).buffer(col.buffer).offset(0).range(VK_WHOLE_SIZE);
+		VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+		writes.get(0).sType$Default().dstSet(set).dstBinding(0).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(posInfo);
+		writes.get(1).sType$Default().dstSet(set).dstBinding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(colInfo);
+		vkUpdateDescriptorSets(device, writes, null);
 	}
 
 	private void createRenderPass()
@@ -351,6 +376,99 @@ public final class NormalRenderer implements Renderer
 		{
 			throw new IllegalStateException("Failed to read " + resource, e);
 		}
+	}
+
+	// ---- static geometry ----
+
+	@Override
+	public void setStaticSet(int id, StaticScene scene, float[] transform)
+	{
+		staticScenes.put(id, scene);
+		if (transform != null)
+		{
+			staticTransforms.put(id, transform);
+		}
+		else
+		{
+			staticTransforms.remove(id);
+		}
+		rebuildStatic();
+	}
+
+	@Override
+	public void removeStaticSet(int id)
+	{
+		if (staticScenes.remove(id) != null)
+		{
+			staticTransforms.remove(id);
+			rebuildStatic();
+		}
+	}
+
+	@Override
+	public boolean hasStaticSet(int id)
+	{
+		return staticScenes.containsKey(id);
+	}
+
+	// A zone changing in place is handled by the next full setStaticSet; live door/object edits will
+	// lag until then, which the culling pass will address.
+	@Override
+	public boolean updateZone(int id, int zx, int zz, StaticScene.Zone zone)
+	{
+		return true;
+	}
+
+	// Rebuild the whole static buffer from every set the front end holds, baking each set's geometry
+	// into world space. Called only on scene changes, so the per-vertex transform is not a hot path.
+	private void rebuildStatic()
+	{
+		vkQueueWaitIdle(queue);
+		FloatBuffer pos = staticPositions.mapped.asFloatBuffer();
+		IntBuffer col = staticColors.mapped.asIntBuffer();
+		int total = 0;
+		for (Map.Entry<Integer, StaticScene> entry : staticScenes.entrySet())
+		{
+			float[] m = staticTransforms.get(entry.getKey());
+			for (StaticScene.Zone zone : entry.getValue().zones)
+			{
+				if (zone == null)
+				{
+					continue;
+				}
+				int faces = zone.geometry.faces();
+				if (total + faces > MAX_STATIC_FACES)
+				{
+					log.warn("Static face pool full at {} faces; dropping the rest of the scene", total);
+					staticFaceCount = total;
+					return;
+				}
+				bake(zone.geometry, m, faces, pos, col);
+				total += faces;
+			}
+		}
+		staticFaceCount = total;
+	}
+
+	private static void bake(GeometryBuffer g, float[] m, int faces, FloatBuffer pos, IntBuffer col)
+	{
+		int floats = faces * GeometryBuffer.FLOATS_PER_FACE;
+		if (m == null)
+		{
+			pos.put(g.positions(), 0, floats);
+		}
+		else
+		{
+			float[] p = g.positions();
+			for (int i = 0; i < floats; i += 3)
+			{
+				float x = p[i], y = p[i + 1], z = p[i + 2];
+				pos.put(m[0] * x + m[1] * y + m[2] * z + m[3]);
+				pos.put(m[4] * x + m[5] * y + m[6] * z + m[7]);
+				pos.put(m[8] * x + m[9] * y + m[10] * z + m[11]);
+			}
+		}
+		col.put(g.colors(), 0, faces);
 	}
 
 	// ---- output sizing and the handles the GL compositor shares ----
@@ -537,13 +655,13 @@ public final class NormalRenderer implements Renderer
 
 		waitPreviousFrame();
 
-		// The previous frame's read of these buffers is now done, so refill them for this frame. Only
-		// the opaque dynamic geometry is drawn for now; translucent and water come with blending later.
-		faceCount = Math.min(dynamic.faces(), MAX_FACES);
-		if (faceCount > 0)
+		// The previous frame's read of the dynamic buffer is done, so refill it. Only the opaque dynamic
+		// geometry is drawn for now; translucent and water come with blending later.
+		dynamicFaceCount = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
+		if (dynamicFaceCount > 0)
 		{
-			positions.mapped.asFloatBuffer().put(dynamic.positions(), 0, faceCount * GeometryBuffer.FLOATS_PER_FACE);
-			colors.mapped.asIntBuffer().put(dynamic.colors(), 0, faceCount);
+			positions.mapped.asFloatBuffer().put(dynamic.positions(), 0, dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE);
+			colors.mapped.asIntBuffer().put(dynamic.colors(), 0, dynamicFaceCount);
 		}
 
 		try (MemoryStack stack = stackPush())
@@ -575,7 +693,6 @@ public final class NormalRenderer implements Renderer
 			vkCmdSetScissor(cmd, 0, scissor);
 
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(descriptorSet), null);
 
 			ByteBuffer pc = stack.malloc(PUSH_BYTES);
 			pc.putFloat(params.cameraX).putFloat(params.cameraY).putFloat(params.cameraZ).putFloat(params.zoom);
@@ -587,9 +704,15 @@ public final class NormalRenderer implements Renderer
 			pc.flip();
 			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, pc);
 
-			if (faceCount > 0)
+			if (staticFaceCount > 0)
 			{
-				vkCmdDraw(cmd, faceCount * 3, 1, 0, 0);
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(staticDescriptorSet), null);
+				vkCmdDraw(cmd, staticFaceCount * 3, 1, 0, 0);
+			}
+			if (dynamicFaceCount > 0)
+			{
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(dynamicDescriptorSet), null);
+				vkCmdDraw(cmd, dynamicFaceCount * 3, 1, 0, 0);
 			}
 
 			vkCmdEndRenderPass(cmd);
@@ -653,7 +776,7 @@ public final class NormalRenderer implements Renderer
 	@Override public long waitNanos() { return waitNanos; }
 	@Override public double averageLogLuminance() { return Double.NaN; }
 	@Override public double lastGpuMillis() { return 0.0; }
-	@Override public String passReport() { return "normal: raster " + faceCount + " faces"; }
+	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces"; }
 
 	// ---- lifecycle ----
 
@@ -669,17 +792,15 @@ public final class NormalRenderer implements Renderer
 		if (descriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null); descriptorSetLayout = 0; }
 		ctx.destroyBuffer(positions);
 		ctx.destroyBuffer(colors);
+		ctx.destroyBuffer(staticPositions);
+		ctx.destroyBuffer(staticColors);
 		if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
 		if (semaphoreVkDone != 0) { vkDestroySemaphore(device, semaphoreVkDone, null); semaphoreVkDone = 0; }
 		if (semaphoreGlDone != 0) { vkDestroySemaphore(device, semaphoreGlDone, null); semaphoreGlDone = 0; }
 	}
 
-	// ---- geometry, materials and environment: accepted and ignored until the raster path reaches them ----
+	// ---- environment inputs still accepted and ignored until the raster path reaches them ----
 
-	@Override public void setStaticSet(int id, StaticScene scene, float[] transform) { }
-	@Override public boolean updateZone(int id, int zx, int zz, StaticScene.Zone zone) { return true; }
-	@Override public void removeStaticSet(int id) { }
-	@Override public boolean hasStaticSet(int id) { return false; }
 	@Override public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds) { }
 	@Override public void setSwayedZones(int id, boolean[] swayed) { }
 	@Override public void setDisplacedZones(int id, boolean[] displaced) { }
