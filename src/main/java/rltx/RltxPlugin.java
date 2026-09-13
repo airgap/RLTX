@@ -1155,7 +1155,10 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 		boolean rr = !held && config.rayReconstruction();
 		if (renderer.ensureOutput(width, height, scale, dlss, rr))
 		{
-			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), width, height);
+			// The imported texture must match the presented image's real size: for the tracer that is the
+			// view size (it upscales internally), but the raster path presents the render-scaled image
+			// itself, which the compositor's linear blit then stretches to the canvas.
+			compositor.importSceneImage(renderer.outputHandle(), renderer.outputAllocationSize(), renderer.outputWidth(), renderer.outputHeight());
 		}
 
 		if (photo.focusProbePending())

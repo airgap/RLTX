@@ -134,6 +134,9 @@ public final class NormalRenderer implements Renderer
 	private long depthImage, depthMemory, depthView;
 	private long framebuffer;
 	private int outputWidth, outputHeight;
+	// The render scale the output was built at. client.getScale() (the camera zoom, in view pixels) is
+	// scaled by this because the frame projects at the reduced internal size, not the view size.
+	private float renderScale = 1f;
 
 	private long renderPass;
 	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet, translucentDescriptorSet, waterDescriptorSet;
@@ -1115,19 +1118,27 @@ public final class NormalRenderer implements Renderer
 	@Override
 	public boolean ensureOutput(int width, int height, float scale, int dlss, boolean rayReconstruction)
 	{
-		if (image != 0 && outputWidth == width && outputHeight == height)
+		// Render at a fraction of the view (the render-scale knob) and let the GL compositor's linear
+		// blit stretch the smaller image up to the canvas. This has no upscaler of the tracer's kind, so
+		// the presented image is itself the reduced size; fragment cost falls with the pixel count, which
+		// is what makes a 5120x1440 view playable where full-native rasterising is not. dlss and ray
+		// reconstruction do not apply to the raster path and are ignored.
+		int iw = Math.max(1, Math.round(width * scale));
+		int ih = Math.max(1, Math.round(height * scale));
+		renderScale = scale;
+		if (image != 0 && outputWidth == iw && outputHeight == ih)
 		{
 			return false;
 		}
 		vkQueueWaitIdle(queue);
 		destroyTargets();
-		createImage(width, height);
-		createDepth(width, height);
-		createFramebuffer(width, height);
-		createBloomTargets(width, height);
+		createImage(iw, ih);
+		createDepth(iw, ih);
+		createFramebuffer(iw, ih);
+		createBloomTargets(iw, ih);
 		writePostDescriptors();
-		outputWidth = width;
-		outputHeight = height;
+		outputWidth = iw;
+		outputHeight = ih;
 		return true;
 	}
 
@@ -1508,6 +1519,11 @@ public final class NormalRenderer implements Renderer
 			scissor.get(0).extent().set(outputWidth, outputHeight);
 			vkCmdSetScissor(cmd, 0, scissor);
 
+			// The zoom (focal length in view pixels) is scaled to the reduced render size the frame
+			// projects and reconstructs its camera rays at, so the field of view holds however far the
+			// render scale drops the resolution. Every camera push below uses it.
+			float zoom = params.zoom * renderScale;
+
 			// The sky fills the background before geometry draws over it; the login/idle pattern screen
 			// keeps its flat clear instead.
 			if (!params.pattern)
@@ -1518,7 +1534,7 @@ public final class NormalRenderer implements Renderer
 				sky.putFloat(inv[0]).putFloat(inv[1]).putFloat(inv[2]).putFloat(0f);
 				sky.putFloat(inv[3]).putFloat(inv[4]).putFloat(inv[5]).putFloat(0f);
 				sky.putFloat(inv[6]).putFloat(inv[7]).putFloat(inv[8]).putFloat(0f);
-				sky.putFloat(params.zoom).putFloat(outputWidth).putFloat(outputHeight).putFloat(params.sunUp);
+				sky.putFloat(zoom).putFloat(outputWidth).putFloat(outputHeight).putFloat(params.sunUp);
 				sky.putFloat(params.sunX).putFloat(params.sunY).putFloat(params.sunZ).putFloat(params.sunIntensity);
 				sky.flip();
 				vkCmdPushConstants(cmd, skyPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sky);
@@ -1528,7 +1544,7 @@ public final class NormalRenderer implements Renderer
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 			ByteBuffer pc = stack.malloc(PUSH_BYTES);
-			pc.putFloat(params.cameraX).putFloat(params.cameraY).putFloat(params.cameraZ).putFloat(params.zoom);
+			pc.putFloat(params.cameraX).putFloat(params.cameraY).putFloat(params.cameraZ).putFloat(zoom);
 			float[] r = params.forwardRotation;
 			pc.putFloat(r[0]).putFloat(r[1]).putFloat(r[2]).putFloat(0f);
 			pc.putFloat(r[3]).putFloat(r[4]).putFloat(r[5]).putFloat(0f);
@@ -1600,7 +1616,7 @@ public final class NormalRenderer implements Renderer
 			{
 				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
 				ByteBuffer wp = stack.malloc(WATER_PUSH_BYTES);
-				wp.putFloat(params.cameraX).putFloat(params.cameraY).putFloat(params.cameraZ).putFloat(params.zoom);
+				wp.putFloat(params.cameraX).putFloat(params.cameraY).putFloat(params.cameraZ).putFloat(zoom);
 				wp.putFloat(r[0]).putFloat(r[1]).putFloat(r[2]).putFloat(0f);
 				wp.putFloat(r[3]).putFloat(r[4]).putFloat(r[5]).putFloat(0f);
 				wp.putFloat(r[6]).putFloat(r[7]).putFloat(r[8]).putFloat(0f);
