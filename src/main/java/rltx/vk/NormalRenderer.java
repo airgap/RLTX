@@ -939,25 +939,23 @@ public final class NormalRenderer implements Renderer
 	@Override
 	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, GeometryBuffer water, boolean waitForGl, boolean signalGl)
 	{
-		// Distance fog fades geometry into the fog colour over the far part of the render distance, and
-		// the frame clears to that same colour so scenery beyond it fades away seamlessly. With no
-		// render distance set there is no fade, and the login/idle screen (frame.pattern) clears to a
-		// mid-grey the client's probe expects rather than to fog.
-		float fogStart, fogEnd, fogR, fogG, fogB;
+		// Distance fog fades geometry into the scene's background colour over the far part of the render
+		// distance, and the frame clears to that same colour so scenery beyond it fades away seamlessly.
+		// Background is what the client shows where no geometry is; the fog horizon colour is Uber's
+		// procedural-sky match and reads wrong as a flat fill, so it is not used here. With no render
+		// distance set there is no fade, and the login/idle screen (frame.pattern) clears to a mid-grey.
+		float fogR = params.backgroundR;
+		float fogG = params.backgroundG;
+		float fogB = params.backgroundB;
+		float fogStart, fogEnd;
 		if (params.renderDistance > 0f)
 		{
 			fogEnd = params.renderDistance;
 			fogStart = params.renderDistance * (1f - Math.min(Math.max(params.distanceFade, 0f), 1f));
-			fogR = params.fogR;
-			fogG = params.fogG;
-			fogB = params.fogB;
 		}
 		else
 		{
 			fogStart = fogEnd = 1e9f;
-			fogR = params.backgroundR;
-			fogG = params.backgroundG;
-			fogB = params.backgroundB;
 		}
 
 		float bgR, bgG, bgB;

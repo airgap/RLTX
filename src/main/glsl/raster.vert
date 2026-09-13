@@ -37,8 +37,9 @@ void main()
 	uint o = vid * 3u;
 	vec3 world = vec3(pos[o], pos[o + 1u], pos[o + 2u]);
 
+	// Packed as trace.comp reads it: red in the low byte, then green, then blue, then alpha.
 	uint c = col[face];
-	vColor = vec4(float((c >> 16) & 0xffu), float((c >> 8) & 0xffu), float(c & 0xffu), float((c >> 24) & 0xffu)) / 255.0;
+	vColor = vec4(float(c & 0xffu), float((c >> 8) & 0xffu), float((c >> 16) & 0xffu), float((c >> 24) & 0xffu)) / 255.0;
 	vUv = vec2(uvs[face * 6u + corner * 2u], uvs[face * 6u + corner * 2u + 1u]);
 	vTex = texs[face];
 
