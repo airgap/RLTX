@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -134,6 +135,20 @@ public final class NormalRenderer implements Renderer
 	// on any change. The transform places a set's local geometry into the world (null is identity).
 	private final Map<Integer, float[]> staticTransforms = new HashMap<>();
 	private final Map<Integer, StaticScene> staticScenes = new HashMap<>();
+
+	// Per baked group, its vertex range in the static buffer and the level/roof/set that decide
+	// whether it is drawn this frame. The view of each set (which levels and roofs are visible) comes
+	// from setStaticView; groups are recorded in buffer order so visible ones coalesce into few draws.
+	private int[] groupFirstVertex, groupVertexCount, groupLevel, groupRoof, groupSet;
+	private int groupCount;
+	private final Map<Integer, View> views = new HashMap<>();
+
+	private static final class View
+	{
+		int minLevel = 0, level = 3, maxLevel = 3;
+		Set<Integer> hiddenRoofIds = Collections.emptySet();
+		final boolean[] levelHasRoofs = new boolean[4];
+	}
 
 	public NormalRenderer(VkContext ctx)
 	{
@@ -413,8 +428,34 @@ public final class NormalRenderer implements Renderer
 		if (staticScenes.remove(id) != null)
 		{
 			staticTransforms.remove(id);
+			views.remove(id);
 			rebuildStatic();
 		}
+	}
+
+	@Override
+	public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds)
+	{
+		View v = views.computeIfAbsent(id, k -> new View());
+		v.minLevel = minLevel;
+		v.level = level;
+		v.maxLevel = maxLevel;
+		v.hiddenRoofIds = hiddenRoofIds == null ? Collections.emptySet() : hiddenRoofIds;
+	}
+
+	// The GPU plugin's rule: whole levels within range draw, minus roofs above the current level the
+	// client asked to hide.
+	private static boolean groupVisible(View v, int level, int roof)
+	{
+		if (level < v.minLevel || level > v.maxLevel)
+		{
+			return false;
+		}
+		if (roof == 0 || level >= v.levelHasRoofs.length || !v.levelHasRoofs[level] || v.hiddenRoofIds.isEmpty() || level <= v.level)
+		{
+			return true;
+		}
+		return !v.hiddenRoofIds.contains(roof);
 	}
 
 	@Override
@@ -436,7 +477,7 @@ public final class NormalRenderer implements Renderer
 	private void rebuildStatic()
 	{
 		vkQueueWaitIdle(queue);
-		int total = 0;
+		int total = 0, groups = 0;
 		for (StaticScene scene : staticScenes.values())
 		{
 			for (StaticScene.Zone zone : scene.zones)
@@ -444,6 +485,7 @@ public final class NormalRenderer implements Renderer
 				if (zone != null)
 				{
 					total += zone.geometry.faces();
+					groups += zone.groupCount();
 				}
 			}
 		}
@@ -453,12 +495,23 @@ public final class NormalRenderer implements Renderer
 			total = MAX_STATIC_FACES;
 		}
 		staticFaceCount = total;
+		groupFirstVertex = new int[groups];
+		groupVertexCount = new int[groups];
+		groupLevel = new int[groups];
+		groupRoof = new int[groups];
+		groupSet = new int[groups];
+		groupCount = 0;
+		for (View v : views.values())
+		{
+			java.util.Arrays.fill(v.levelHasRoofs, false);
+		}
 		if (total == 0)
 		{
 			return;
 		}
 
-		// Bake every set's zones into host-visible staging, then copy once into device-local VRAM.
+		// Bake every set's zones into host-visible staging, then copy once into device-local VRAM,
+		// recording each group's vertex range and level/roof so the draw can cull to the visible set.
 		VkBuf posStage = ctx.createBuffer((long) total * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		VkBuf colStage = ctx.createBuffer((long) total * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		FloatBuffer pos = posStage.mapped.asFloatBuffer();
@@ -466,16 +519,43 @@ public final class NormalRenderer implements Renderer
 		int written = 0;
 		for (Map.Entry<Integer, StaticScene> entry : staticScenes.entrySet())
 		{
-			float[] m = staticTransforms.get(entry.getKey());
+			int id = entry.getKey();
+			float[] m = staticTransforms.get(id);
+			View v = views.computeIfAbsent(id, k -> new View());
 			for (StaticScene.Zone zone : entry.getValue().zones)
 			{
 				if (zone == null || written >= total)
 				{
 					continue;
 				}
-				int faces = Math.min(zone.geometry.faces(), total - written);
-				bake(zone.geometry, m, faces, pos, col);
-				written += faces;
+				int zoneFaces = Math.min(zone.geometry.faces(), total - written);
+				for (int g = 0; g < zone.groupCount(); ++g)
+				{
+					int base = zone.groupFaceBase[g];
+					int count = zone.groupFaceCount[g];
+					if (base >= zoneFaces)
+					{
+						continue;
+					}
+					if (base + count > zoneFaces)
+					{
+						count = zoneFaces - base;
+					}
+					int lvl = zone.groupLevel[g];
+					int roof = zone.groupRoofId[g];
+					groupFirstVertex[groupCount] = (written + base) * 3;
+					groupVertexCount[groupCount] = count * 3;
+					groupLevel[groupCount] = lvl;
+					groupRoof[groupCount] = roof;
+					groupSet[groupCount] = id;
+					++groupCount;
+					if (roof > 0 && lvl >= 0 && lvl < v.levelHasRoofs.length)
+					{
+						v.levelHasRoofs[lvl] = true;
+					}
+				}
+				bake(zone.geometry, m, zoneFaces, pos, col);
+				written += zoneFaces;
 			}
 		}
 
@@ -760,7 +840,35 @@ public final class NormalRenderer implements Renderer
 			if (staticFaceCount > 0)
 			{
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(staticDescriptorSet), null);
-				vkCmdDraw(cmd, staticFaceCount * 3, 1, 0, 0);
+				// Draw only the groups the view keeps, coalescing consecutive visible ones into one draw
+				// each so a whole run of visible geometry costs a single call.
+				int runStart = -1, runCount = 0;
+				for (int i = 0; i < groupCount; ++i)
+				{
+					View v = views.get(groupSet[i]);
+					boolean visible = v == null || groupVisible(v, groupLevel[i], groupRoof[i]);
+					if (visible && runStart >= 0 && groupFirstVertex[i] == runStart + runCount)
+					{
+						runCount += groupVertexCount[i];
+					}
+					else
+					{
+						if (runStart >= 0)
+						{
+							vkCmdDraw(cmd, runCount, 1, runStart, 0);
+							runStart = -1;
+						}
+						if (visible)
+						{
+							runStart = groupFirstVertex[i];
+							runCount = groupVertexCount[i];
+						}
+					}
+				}
+				if (runStart >= 0)
+				{
+					vkCmdDraw(cmd, runCount, 1, runStart, 0);
+				}
 			}
 			if (dynamicFaceCount > 0)
 			{
@@ -856,7 +964,6 @@ public final class NormalRenderer implements Renderer
 
 	// ---- environment inputs still accepted and ignored until the raster path reaches them ----
 
-	@Override public void setStaticView(int id, float[] transform, int minLevel, int level, int maxLevel, Set<Integer> hiddenRoofIds) { }
 	@Override public void setSwayedZones(int id, boolean[] swayed) { }
 	@Override public void setDisplacedZones(int id, boolean[] displaced) { }
 	@Override public void setGroundRange(int first, int count) { }
