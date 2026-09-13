@@ -1,0 +1,85 @@
+#version 460
+
+// Final Normal-mode post over the presented image, done in place after the render pass: bloom
+// composite, an exposed filmic tone curve, colour grade and vignette. The raster pass wrote an
+// 8-bit display-space image (display colours, not linear HDR), so exposure and the tone curve here
+// re-grade a finished image rather than resolve HDR. The look is deliberately limited; a true HDR
+// post would need an offscreen float target, which Normal mode does not keep.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba8) uniform image2D presented;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D bloomBlur;
+
+layout(push_constant) uniform Push {
+  int width;
+  int height;
+  int pass;
+  float exposure;
+  float contrast;
+  float saturation;
+  float temperature;
+  float bloom;
+  float vignette;
+} pc;
+
+const int DOWN = 4;
+
+// The Narkowicz ACES approximation, the same curve atrous.comp and Environment.tonemap use, so a
+// Normal frame lands on the exposure the rest of the pipeline is tuned for.
+vec3 aces(vec3 c) {
+  return clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);
+}
+
+// The quarter-resolution blurred bloom sampled bilinearly at a full-resolution pixel.
+vec3 bloomAt(ivec2 p) {
+  ivec2 quarter = (ivec2(pc.width, pc.height) + DOWN - 1) / DOWN;
+  vec2 q = (vec2(p) + 0.5) / float(DOWN) - 0.5;
+  ivec2 i = ivec2(floor(q));
+  vec2 f = q - vec2(i);
+  ivec2 i0 = clamp(i, ivec2(0), quarter - 1);
+  ivec2 i1 = clamp(i + 1, ivec2(0), quarter - 1);
+  vec3 a = imageLoad(bloomBlur, ivec2(i0.x, i0.y)).rgb;
+  vec3 b = imageLoad(bloomBlur, ivec2(i1.x, i0.y)).rgb;
+  vec3 c = imageLoad(bloomBlur, ivec2(i0.x, i1.y)).rgb;
+  vec3 d = imageLoad(bloomBlur, ivec2(i1.x, i1.y)).rgb;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Saturation about luminance, contrast about mid grey, and a warm or cool tilt of the channels;
+// the same grade as the shared post.comp. All three knobs are neutral at contrast = saturation = 1,
+// temperature = 0.
+vec3 graded(vec3 c) {
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(lum), c, pc.saturation);
+  c = (c - 0.5) * pc.contrast + 0.5;
+  c *= vec3(1.0 + 0.12 * pc.temperature, 1.0 + 0.02 * pc.temperature, 1.0 - 0.12 * pc.temperature);
+  return clamp(c, 0.0, 1.0);
+}
+
+// Corner darkening reaching full strength in the very corners at any aspect ratio.
+vec3 vignetted(ivec2 p, vec3 c) {
+  vec2 size = vec2(pc.width, pc.height);
+  vec2 uv = ((vec2(p) + 0.5) / size - 0.5) * vec2(size.x / size.y, 1.0);
+  float r = length(uv) / length(vec2(size.x / size.y, 1.0) * 0.5);
+  return c * (1.0 - pc.vignette * pow(smoothstep(0.3, 1.0, r), 1.5));
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  if (p.x >= pc.width || p.y >= pc.height) {
+    return;
+  }
+  vec3 c = imageLoad(presented, p).rgb;
+  if (pc.bloom > 0.0) {
+    // Softened so a bright source glows without whiting out, as the shared bloom does.
+    vec3 b = bloomAt(p);
+    c += pc.bloom * (b / (1.0 + b));
+  }
+  c = aces(c * pc.exposure);
+  c = graded(c);
+  if (pc.vignette > 0.0) {
+    c = vignetted(p, c);
+  }
+  imageStore(presented, p, vec4(c, 1.0));
+}

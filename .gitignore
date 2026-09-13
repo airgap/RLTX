@@ -3,3 +3,6 @@ build/
 .idea/
 *.iml
 out/
+
+# Claude Code worktrees and local state
+.claude/
