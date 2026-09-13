@@ -83,8 +83,9 @@ import rltx.scene.StaticScene;
  * {@code trace.comp}'s pinhole convention, z-buffered through a depth image. The static scene is
  * baked to world space and culled by level and roof; faces are textured from the game's texture
  * array, modulating each face's baked colour; and the distance fades into the scene's fog colour.
- * Still to come: a lighting model, translucency, water, and the fuller sky, bloom and colour grade
- * of the shared post chain. Photo and readback paths fail loudly rather than return a blank frame.
+ * Water draws in its own blended pass with an animated Fresnel-reflective surface. Still to come: a
+ * lighting model, translucency, and the fuller sky, bloom and colour grade of the shared post chain.
+ * Photo and readback paths fail loudly rather than return a blank frame.
  *
  * <p>Geometry lives in host-visible storage buffers pulled by the vertex shader through
  * {@code gl_VertexIndex}; simple, not fast. The static buffer is refilled only when the scene
@@ -106,6 +107,11 @@ public final class NormalRenderer implements Renderer
 	// Byte offset of the fragment shader's translucent flag (fogRange.z) inside the push block, so the
 	// translucent pass can flip it without repacking the whole struct.
 	private static final int TRANSLUCENT_FLAG_OFFSET = 104;
+	// The dynamic water buffer holds only the near zones Waves subdivides, capped in Waves at 80k faces.
+	private static final int MAX_WATER_FACES = 1 << 17;
+	// The water pass carries the opaque push plus the sun direction/intensity and sunUp its reflection
+	// needs, and the wave time and strength; eight vec4s, staying within the 128-byte push minimum.
+	private static final int WATER_PUSH_BYTES = 128;
 	private static final float NEAR = 32f;
 	private static final float FAR = 65536f;
 
@@ -129,10 +135,13 @@ public final class NormalRenderer implements Renderer
 	private int outputWidth, outputHeight;
 
 	private long renderPass;
-	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet, translucentDescriptorSet;
+	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet, translucentDescriptorSet, waterDescriptorSet;
 	private long pipelineLayout, pipeline, blendPipeline;
 	private long skyPipelineLayout, skyPipeline;
 	private static final int SKY_PUSH_BYTES = 80;
+	// The water pass reuses the opaque descriptor set layout (bindings 0-3 geometry, 4 sampler) but has
+	// its own pipeline: alpha blending on, depth write off, and the water.frag reflection shader.
+	private long waterPipelineLayout, waterPipeline;
 
 	// Dynamic geometry is written to host-visible staging each frame and copied into the device-local
 	// buffers the vertex shader reads; static is device-local too, uploaded once per scene change.
@@ -148,6 +157,12 @@ public final class NormalRenderer implements Renderer
 	private VkBuf translucentPositions, translucentColors, translucentUvs, translucentTexs, translucentNormals;
 	private int translucentFaceCount;
 
+	// The per-frame dynamic water faces (the near zones Waves subdivides) get their own device-local
+	// buffers and staging, filled and drawn like the opaque dynamic set but through the water pipeline.
+	private VkBuf waterStagingPos, waterStagingCol, waterStagingUv, waterStagingTex;
+	private VkBuf waterPositions, waterColors, waterUvs, waterTexs;
+	private int waterFaceCount;
+
 	private VkBuf staticPositions, staticColors, staticUvs, staticTexs, staticNormals;
 	private int staticFaceCount;
 
@@ -162,11 +177,17 @@ public final class NormalRenderer implements Renderer
 	// Per baked group, its vertex range in the static buffer and the level/roof/set that decide
 	// whether it is drawn this frame. The view of each set (which levels and roofs are visible) comes
 	// from setStaticView; groups are recorded in buffer order so visible ones coalesce into few draws.
-	private int[] groupFirstVertex, groupVertexCount, groupLevel, groupRoof, groupSet;
-	// Per recorded group, whether it is translucent, so the opaque and translucent passes can split them.
+	private int[] groupFirstVertex, groupVertexCount, groupLevel, groupRoof, groupSet, groupZone;
+	// Per recorded group, its opacity class: translucent (blend pass) or water (water pass); neither = the
+	// opaque pass. groupZone lets the water pass skip a zone whose static water Waves replaced with a
+	// displaced dynamic copy.
 	private boolean[] groupTranslucent;
+	private boolean[] groupWater;
 	private int groupCount;
 	private final Map<Integer, View> views = new HashMap<>();
+	// Per set, which zones have their static water replaced by the dynamic displaced path this frame,
+	// as Waves reports through setDisplacedZones; indexed by the set's flat zone index.
+	private final Map<Integer, boolean[]> displacedZones = new HashMap<>();
 
 	private static final class View
 	{
@@ -197,6 +218,7 @@ public final class NormalRenderer implements Renderer
 		createRenderPass();
 		createPipeline();
 		createSkyPipeline();
+		createWaterPipeline();
 	}
 
 	private void createSyncObjects()
@@ -253,6 +275,17 @@ public final class NormalRenderer implements Renderer
 		translucentUvs = ctx.createBuffer(dynUv, deviceStorage, device);
 		translucentTexs = ctx.createBuffer(dynCol, deviceStorage, device);
 		translucentNormals = ctx.createBuffer(dynNrm, deviceStorage, device);
+		long watPos = (long) MAX_WATER_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
+		long watCol = (long) MAX_WATER_FACES * Integer.BYTES;
+		long watUv = (long) MAX_WATER_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
+		waterStagingPos = ctx.createBuffer(watPos, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		waterStagingCol = ctx.createBuffer(watCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		waterStagingUv = ctx.createBuffer(watUv, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		waterStagingTex = ctx.createBuffer(watCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		waterPositions = ctx.createBuffer(watPos, deviceStorage, device);
+		waterColors = ctx.createBuffer(watCol, deviceStorage, device);
+		waterUvs = ctx.createBuffer(watUv, deviceStorage, device);
+		waterTexs = ctx.createBuffer(watCol, deviceStorage, device);
 		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
 		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, device);
 		staticUvs = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
@@ -277,12 +310,12 @@ public final class NormalRenderer implements Renderer
 			check(vkCreateDescriptorSetLayout(device, layoutInfo, null, pLayout), "vkCreateDescriptorSetLayout");
 			descriptorSetLayout = pLayout.get(0);
 
+			// Four sets: opaque dynamic, static (opaque/translucent/water share it), translucent, and
+			// dynamic water. Five storage buffers (pos, col, uv, tex, normals) and a sampler per set.
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-			// Five storage buffers (pos, col, uv, tex, normals) per set across the static, dynamic and
-			// translucent sets, plus a sampler each.
-			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(15);
-			sizes.get(1).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(3);
-			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(3).pPoolSizes(sizes);
+			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(20);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(4);
+			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(4).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
 			descriptorPool = pPool.get(0);
@@ -290,9 +323,13 @@ public final class NormalRenderer implements Renderer
 			dynamicDescriptorSet = allocateSet(stack);
 			staticDescriptorSet = allocateSet(stack);
 			translucentDescriptorSet = allocateSet(stack);
+			waterDescriptorSet = allocateSet(stack);
 			writeSet(stack, dynamicDescriptorSet, positions, colors, uvs, texs, normals);
 			writeSet(stack, staticDescriptorSet, staticPositions, staticColors, staticUvs, staticTexs, staticNormals);
 			writeSet(stack, translucentDescriptorSet, translucentPositions, translucentColors, translucentUvs, translucentTexs, translucentNormals);
+			// water.frag computes its own normals, so binding 5 is unused for it; bind staticNormals just
+			// to satisfy the shared layout.
+			writeSet(stack, waterDescriptorSet, waterPositions, waterColors, waterUvs, waterTexs, staticNormals);
 		}
 	}
 
@@ -427,10 +464,11 @@ public final class NormalRenderer implements Renderer
 
 			VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack)
 				.sampler(textureSampler).imageView(textureView).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
+			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
 			writes.get(0).sType$Default().dstSet(dynamicDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
 			writes.get(1).sType$Default().dstSet(staticDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
 			writes.get(2).sType$Default().dstSet(translucentDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
+			writes.get(3).sType$Default().dstSet(waterDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
 			vkUpdateDescriptorSets(device, writes, null);
 		}
 	}
@@ -671,6 +709,78 @@ public final class NormalRenderer implements Renderer
 		}
 	}
 
+	// The water pass: the same textured face stream as the opaque pipeline, but blended over what is
+	// already drawn (so the bed shows through), with the depth test kept and depth writes dropped so
+	// the surface neither writes into nor rejects against the depth of the frame's other water. It
+	// shares the opaque descriptor set layout; only the shaders and blend/depth state differ.
+	private void createWaterPipeline()
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			long vert = loadShaderModule("/rltx/water.vert.spv");
+			long frag = loadShaderModule("/rltx/water.frag.spv");
+			ByteBuffer main = stack.UTF8("main");
+
+			VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
+			stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vert).pName(main);
+			stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(frag).pName(main);
+
+			VkPipelineVertexInputStateCreateInfo vertexInput = VkPipelineVertexInputStateCreateInfo.calloc(stack).sType$Default();
+			VkPipelineInputAssemblyStateCreateInfo assembly = VkPipelineInputAssemblyStateCreateInfo.calloc(stack).sType$Default()
+				.topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+			VkPipelineViewportStateCreateInfo viewport = VkPipelineViewportStateCreateInfo.calloc(stack).sType$Default()
+				.viewportCount(1).scissorCount(1);
+			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
+				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
+			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
+				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
+			// Depth test against the opaque scene so nearer geometry hides the water; no depth write so
+			// the surface stays translucent and does not occlude anything drawn after it.
+			VkPipelineDepthStencilStateCreateInfo depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
+				.depthTestEnable(true).depthWriteEnable(false).depthCompareOp(VK_COMPARE_OP_LESS);
+			VkPipelineColorBlendAttachmentState.Buffer blendAtt = VkPipelineColorBlendAttachmentState.calloc(1, stack);
+			// Source-alpha-over on colour, but the destination alpha is kept (the opaque pass left it at
+			// 1) so the shared scene image stays fully opaque where the glass/UI pass samples it back.
+			blendAtt.get(0).blendEnable(true)
+				.srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA).dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA).colorBlendOp(VK_BLEND_OP_ADD)
+				.srcAlphaBlendFactor(VK_BLEND_FACTOR_ZERO).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE).alphaBlendOp(VK_BLEND_OP_ADD)
+				.colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+			VkPipelineColorBlendStateCreateInfo blend = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default().pAttachments(blendAtt);
+			VkPipelineDynamicStateCreateInfo dynamic = VkPipelineDynamicStateCreateInfo.calloc(stack).sType$Default()
+				.pDynamicStates(stack.ints(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR));
+
+			VkPushConstantRange.Buffer push = VkPushConstantRange.calloc(1, stack);
+			push.get(0).stageFlags(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT).offset(0).size(WATER_PUSH_BYTES);
+			VkPipelineLayoutCreateInfo layoutInfo = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+				.pSetLayouts(stack.longs(descriptorSetLayout))
+				.pPushConstantRanges(push);
+			LongBuffer pLayout = stack.mallocLong(1);
+			check(vkCreatePipelineLayout(device, layoutInfo, null, pLayout), "vkCreatePipelineLayout water");
+			waterPipelineLayout = pLayout.get(0);
+
+			VkGraphicsPipelineCreateInfo.Buffer info = VkGraphicsPipelineCreateInfo.calloc(1, stack);
+			info.get(0).sType$Default()
+				.pStages(stages)
+				.pVertexInputState(vertexInput)
+				.pInputAssemblyState(assembly)
+				.pViewportState(viewport)
+				.pRasterizationState(raster)
+				.pMultisampleState(multisample)
+				.pDepthStencilState(depth)
+				.pColorBlendState(blend)
+				.pDynamicState(dynamic)
+				.layout(waterPipelineLayout)
+				.renderPass(renderPass)
+				.subpass(0);
+			LongBuffer pPipeline = stack.mallocLong(1);
+			check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, info, null, pPipeline), "vkCreateGraphicsPipelines water");
+			waterPipeline = pPipeline.get(0);
+
+			vkDestroyShaderModule(device, vert, null);
+			vkDestroyShaderModule(device, frag, null);
+		}
+	}
+
 	private long loadShaderModule(String resource)
 	{
 		try (InputStream in = NormalRenderer.class.getResourceAsStream(resource))
@@ -796,6 +906,8 @@ public final class NormalRenderer implements Renderer
 		groupRoof = new int[groups];
 		groupSet = new int[groups];
 		groupTranslucent = new boolean[groups];
+		groupZone = new int[groups];
+		groupWater = new boolean[groups];
 		groupCount = 0;
 		for (View v : views.values())
 		{
@@ -824,8 +936,10 @@ public final class NormalRenderer implements Renderer
 			int id = entry.getKey();
 			float[] m = staticTransforms.get(id);
 			View v = views.computeIfAbsent(id, k -> new View());
-			for (StaticScene.Zone zone : entry.getValue().zones)
+			StaticScene.Zone[] zones = entry.getValue().zones;
+			for (int zi = 0; zi < zones.length; ++zi)
 			{
+				StaticScene.Zone zone = zones[zi];
 				if (zone == null || written >= total)
 				{
 					continue;
@@ -843,12 +957,6 @@ public final class NormalRenderer implements Renderer
 					{
 						count = zoneFaces - base;
 					}
-					// Water is left to a separate feature: its faces stay baked in the buffer but are
-					// recorded by no group, so neither the opaque nor the translucent pass draws them.
-					if (zone.groupWater[g])
-					{
-						continue;
-					}
 					int lvl = zone.groupLevel[g];
 					int roof = zone.groupRoofId[g];
 					groupFirstVertex[groupCount] = (written + base) * 3;
@@ -856,7 +964,11 @@ public final class NormalRenderer implements Renderer
 					groupLevel[groupCount] = lvl;
 					groupRoof[groupCount] = roof;
 					groupSet[groupCount] = id;
+					// Opacity class: the opaque pass draws neither, the translucent pass draws translucent,
+					// the water pass draws water. groupZone lets the water pass skip a displaced zone.
 					groupTranslucent[groupCount] = zone.groupTranslucent[g];
+					groupWater[groupCount] = zone.groupWater[g];
+					groupZone[groupCount] = zi;
 					++groupCount;
 					if (roof > 0 && lvl >= 0 && lvl < v.levelHasRoofs.length)
 					{
@@ -1117,8 +1229,9 @@ public final class NormalRenderer implements Renderer
 
 		waitPreviousFrame();
 
-		// The previous frame's reads of the dynamic buffers are done, so refill them: opaque geometry into
-		// the dynamic buffers, translucent geometry into its own. Water is skipped until it has a pass.
+		// The previous frame's reads of the dynamic buffers are done, so refill them: opaque geometry
+		// draws in the opaque pass, translucent in the blend pass, and the per-frame water set in the
+		// water pass below.
 		dynamicFaceCount = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		if (dynamicFaceCount > 0)
 		{
@@ -1136,6 +1249,14 @@ public final class NormalRenderer implements Renderer
 			translucentStagingUv.mapped.asFloatBuffer().put(translucent.uvs(), 0, translucentFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE);
 			translucentStagingTex.mapped.asIntBuffer().put(translucent.textures(), 0, translucentFaceCount);
 			translucentStagingNrm.mapped.asIntBuffer().put(translucent.normals(), 0, translucentFaceCount * GeometryBuffer.NORMALS_PER_FACE);
+		}
+		waterFaceCount = Math.min(water.faces(), MAX_WATER_FACES);
+		if (waterFaceCount > 0)
+		{
+			waterStagingPos.mapped.asFloatBuffer().put(water.positions(), 0, waterFaceCount * GeometryBuffer.FLOATS_PER_FACE);
+			waterStagingCol.mapped.asIntBuffer().put(water.colors(), 0, waterFaceCount);
+			waterStagingUv.mapped.asFloatBuffer().put(water.uvs(), 0, waterFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE);
+			waterStagingTex.mapped.asIntBuffer().put(water.textures(), 0, waterFaceCount);
 		}
 
 		try (MemoryStack stack = stackPush())
@@ -1161,7 +1282,14 @@ public final class NormalRenderer implements Renderer
 				copy(cmd, stack, translucentStagingTex, translucentTexs, (long) translucentFaceCount * Integer.BYTES);
 				copy(cmd, stack, translucentStagingNrm, translucentNormals, (long) translucentFaceCount * GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES);
 			}
-			if (dynamicFaceCount > 0 || translucentFaceCount > 0)
+			if (waterFaceCount > 0)
+			{
+				copy(cmd, stack, waterStagingPos, waterPositions, (long) waterFaceCount * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
+				copy(cmd, stack, waterStagingCol, waterColors, (long) waterFaceCount * Integer.BYTES);
+				copy(cmd, stack, waterStagingUv, waterUvs, (long) waterFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
+				copy(cmd, stack, waterStagingTex, waterTexs, (long) waterFaceCount * Integer.BYTES);
+			}
+			if (dynamicFaceCount > 0 || translucentFaceCount > 0 || waterFaceCount > 0)
 			{
 				VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, stack).sType$Default()
 					.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
@@ -1239,7 +1367,9 @@ public final class NormalRenderer implements Renderer
 			}
 
 			// Translucent pass over the opaque frame: same layout, the blend pipeline (depth-tested, no
-			// depth write), with the flag flipped so the fragment shader emits the real opacity.
+			// depth write), with the flag flipped so the fragment shader emits the real opacity. It shares
+			// the opaque pipeline layout, so the full push is still live and only the flag is repushed; it
+			// runs before water so that push stays valid (water binds its own layout).
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blendPipeline);
 			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, TRANSLUCENT_FLAG_OFFSET, stack.floats(1f));
 			if (staticFaceCount > 0)
@@ -1251,6 +1381,71 @@ public final class NormalRenderer implements Renderer
 			{
 				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(translucentDescriptorSet), null);
 				vkCmdDraw(cmd, translucentFaceCount * 3, 1, 0, 0);
+			}
+
+			// The water pass draws after everything opaque, blended over it with the depth test kept and
+			// depth writes dropped, so the surface takes on the scene beneath it. It reads its own push
+			// constants (the opaque set plus the sun, sky tint and wave time/strength). Both the static
+			// water groups (from the shared static buffers) and the per-frame dynamic water are drawn here.
+			{
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
+				ByteBuffer wp = stack.malloc(WATER_PUSH_BYTES);
+				wp.putFloat(params.cameraX).putFloat(params.cameraY).putFloat(params.cameraZ).putFloat(params.zoom);
+				wp.putFloat(r[0]).putFloat(r[1]).putFloat(r[2]).putFloat(0f);
+				wp.putFloat(r[3]).putFloat(r[4]).putFloat(r[5]).putFloat(0f);
+				wp.putFloat(r[6]).putFloat(r[7]).putFloat(r[8]).putFloat(0f);
+				wp.putFloat(outputWidth).putFloat(outputHeight).putFloat(NEAR).putFloat(FAR);
+				// fogColor.w carries sunUp for the reflection's day/night dimming (see water.frag).
+				wp.putFloat(fogR).putFloat(fogG).putFloat(fogB).putFloat(params.sunUp);
+				wp.putFloat(fogStart).putFloat(fogEnd).putFloat(params.timeSeconds).putFloat(params.waveStrength);
+				wp.putFloat(params.sunX).putFloat(params.sunY).putFloat(params.sunZ).putFloat(params.sunIntensity);
+				wp.flip();
+				vkCmdPushConstants(cmd, waterPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, wp);
+
+				if (staticFaceCount > 0)
+				{
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipelineLayout, 0, stack.longs(staticDescriptorSet), null);
+					// Same run-coalescing draw as the opaque pass, but keeping only water groups the view
+					// shows whose zone Waves has not replaced with a displaced dynamic copy this frame.
+					int runStart = -1, runCount = 0;
+					for (int i = 0; i < groupCount; ++i)
+					{
+						if (!groupWater[i])
+						{
+							continue;
+						}
+						View v = views.get(groupSet[i]);
+						boolean[] disp = displacedZones.get(groupSet[i]);
+						boolean displaced = disp != null && groupZone[i] < disp.length && disp[groupZone[i]];
+						boolean visible = !displaced && (v == null || groupVisible(v, groupLevel[i], groupRoof[i]));
+						if (visible && runStart >= 0 && groupFirstVertex[i] == runStart + runCount)
+						{
+							runCount += groupVertexCount[i];
+						}
+						else
+						{
+							if (runStart >= 0)
+							{
+								vkCmdDraw(cmd, runCount, 1, runStart, 0);
+								runStart = -1;
+							}
+							if (visible)
+							{
+								runStart = groupFirstVertex[i];
+								runCount = groupVertexCount[i];
+							}
+						}
+					}
+					if (runStart >= 0)
+					{
+						vkCmdDraw(cmd, runCount, 1, runStart, 0);
+					}
+				}
+				if (waterFaceCount > 0)
+				{
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipelineLayout, 0, stack.longs(waterDescriptorSet), null);
+					vkCmdDraw(cmd, waterFaceCount * 3, 1, 0, 0);
+				}
 			}
 
 			vkCmdEndRenderPass(cmd);
@@ -1281,7 +1476,8 @@ public final class NormalRenderer implements Renderer
 		int runStart = -1, runCount = 0;
 		for (int i = 0; i < groupCount; ++i)
 		{
-			if (groupTranslucent[i] != wantTranslucent)
+			// Water is drawn only by the water pass, never the opaque or translucent passes.
+			if (groupWater[i] || groupTranslucent[i] != wantTranslucent)
 			{
 				continue;
 			}
@@ -1352,7 +1548,7 @@ public final class NormalRenderer implements Renderer
 	@Override public long waitNanos() { return waitNanos; }
 	@Override public double averageLogLuminance() { return Double.NaN; }
 	@Override public double lastGpuMillis() { return 0.0; }
-	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, +" + translucentFaceCount + " translucent"; }
+	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, " + translucentFaceCount + " translucent, " + waterFaceCount + " water"; }
 
 	// ---- lifecycle ----
 
@@ -1366,6 +1562,8 @@ public final class NormalRenderer implements Renderer
 		if (pipelineLayout != 0) { vkDestroyPipelineLayout(device, pipelineLayout, null); pipelineLayout = 0; }
 		if (skyPipeline != 0) { vkDestroyPipeline(device, skyPipeline, null); skyPipeline = 0; }
 		if (skyPipelineLayout != 0) { vkDestroyPipelineLayout(device, skyPipelineLayout, null); skyPipelineLayout = 0; }
+		if (waterPipeline != 0) { vkDestroyPipeline(device, waterPipeline, null); waterPipeline = 0; }
+		if (waterPipelineLayout != 0) { vkDestroyPipelineLayout(device, waterPipelineLayout, null); waterPipelineLayout = 0; }
 		if (renderPass != 0) { vkDestroyRenderPass(device, renderPass, null); renderPass = 0; }
 		if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
 		if (descriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null); descriptorSetLayout = 0; }
@@ -1391,6 +1589,14 @@ public final class NormalRenderer implements Renderer
 		ctx.destroyBuffer(translucentUvs);
 		ctx.destroyBuffer(translucentTexs);
 		ctx.destroyBuffer(translucentNormals);
+		ctx.destroyBuffer(waterStagingPos);
+		ctx.destroyBuffer(waterStagingCol);
+		ctx.destroyBuffer(waterStagingUv);
+		ctx.destroyBuffer(waterStagingTex);
+		ctx.destroyBuffer(waterPositions);
+		ctx.destroyBuffer(waterColors);
+		ctx.destroyBuffer(waterUvs);
+		ctx.destroyBuffer(waterTexs);
 		ctx.destroyBuffer(staticPositions);
 		ctx.destroyBuffer(staticColors);
 		ctx.destroyBuffer(staticUvs);
@@ -1404,7 +1610,22 @@ public final class NormalRenderer implements Renderer
 	// ---- environment inputs still accepted and ignored until the raster path reaches them ----
 
 	@Override public void setSwayedZones(int id, boolean[] swayed) { }
-	@Override public void setDisplacedZones(int id, boolean[] displaced) { }
+
+	// Which zones' static water Waves has replaced with a displaced dynamic copy this frame; the water
+	// pass skips those static groups so near water is not drawn twice (blended over itself).
+	@Override
+	public void setDisplacedZones(int id, boolean[] displaced)
+	{
+		if (displaced == null)
+		{
+			displacedZones.remove(id);
+		}
+		else
+		{
+			displacedZones.put(id, displaced);
+		}
+	}
+
 	@Override public void setGroundRange(int first, int count) { }
 	@Override public void setMaterials(float[] table) { }
 	@Override public void setReliefArray(int layers, int size, int levels, ByteBuffer heights) { }
