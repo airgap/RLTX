@@ -18,6 +18,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VkAttachmentDescription;
 import org.lwjgl.vulkan.VkAttachmentReference;
+import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkClearValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
@@ -38,6 +39,7 @@ import org.lwjgl.vulkan.VkImageCreateInfo;
 import org.lwjgl.vulkan.VkImageMemoryRequirementsInfo2;
 import org.lwjgl.vulkan.VkImageViewCreateInfo;
 import org.lwjgl.vulkan.VkMemoryAllocateInfo;
+import org.lwjgl.vulkan.VkMemoryBarrier;
 import org.lwjgl.vulkan.VkMemoryDedicatedAllocateInfo;
 import org.lwjgl.vulkan.VkMemoryDedicatedRequirements;
 import org.lwjgl.vulkan.VkMemoryRequirements2;
@@ -119,6 +121,10 @@ public final class NormalRenderer implements Renderer
 	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet;
 	private long pipelineLayout, pipeline;
 
+	// Dynamic geometry is written to host-visible staging each frame and copied into the device-local
+	// buffers the vertex shader reads; static is device-local too, uploaded once per scene change.
+	// Device-local memory is why this is not the PCIe-bound crawl a host-visible shader read would be.
+	private VkBuf dynamicStagingPos, dynamicStagingCol;
 	private VkBuf positions, colors;
 	private int dynamicFaceCount;
 
@@ -171,13 +177,19 @@ public final class NormalRenderer implements Renderer
 		}
 	}
 
+	private static final int HOST = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
 	private void createGeometryBuffers()
 	{
-		int host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-		positions = ctx.createBuffer((long) MAX_DYNAMIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-		colors = ctx.createBuffer((long) MAX_DYNAMIC_FACES * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
-		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
+		int deviceStorage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		long dynPos = (long) MAX_DYNAMIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
+		long dynCol = (long) MAX_DYNAMIC_FACES * Integer.BYTES;
+		dynamicStagingPos = ctx.createBuffer(dynPos, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		dynamicStagingCol = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		positions = ctx.createBuffer(dynPos, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		colors = ctx.createBuffer(dynCol, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	}
 
 	private void createDescriptors()
@@ -424,30 +436,60 @@ public final class NormalRenderer implements Renderer
 	private void rebuildStatic()
 	{
 		vkQueueWaitIdle(queue);
-		FloatBuffer pos = staticPositions.mapped.asFloatBuffer();
-		IntBuffer col = staticColors.mapped.asIntBuffer();
 		int total = 0;
+		for (StaticScene scene : staticScenes.values())
+		{
+			for (StaticScene.Zone zone : scene.zones)
+			{
+				if (zone != null)
+				{
+					total += zone.geometry.faces();
+				}
+			}
+		}
+		if (total > MAX_STATIC_FACES)
+		{
+			log.warn("Static geometry is {} faces, above the {}-face cap; the rest is dropped", total, MAX_STATIC_FACES);
+			total = MAX_STATIC_FACES;
+		}
+		staticFaceCount = total;
+		if (total == 0)
+		{
+			return;
+		}
+
+		// Bake every set's zones into host-visible staging, then copy once into device-local VRAM.
+		VkBuf posStage = ctx.createBuffer((long) total * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		VkBuf colStage = ctx.createBuffer((long) total * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		FloatBuffer pos = posStage.mapped.asFloatBuffer();
+		IntBuffer col = colStage.mapped.asIntBuffer();
+		int written = 0;
 		for (Map.Entry<Integer, StaticScene> entry : staticScenes.entrySet())
 		{
 			float[] m = staticTransforms.get(entry.getKey());
 			for (StaticScene.Zone zone : entry.getValue().zones)
 			{
-				if (zone == null)
+				if (zone == null || written >= total)
 				{
 					continue;
 				}
-				int faces = zone.geometry.faces();
-				if (total + faces > MAX_STATIC_FACES)
-				{
-					log.warn("Static face pool full at {} faces; dropping the rest of the scene", total);
-					staticFaceCount = total;
-					return;
-				}
+				int faces = Math.min(zone.geometry.faces(), total - written);
 				bake(zone.geometry, m, faces, pos, col);
-				total += faces;
+				written += faces;
 			}
 		}
-		staticFaceCount = total;
+
+		VkCommandBuffer up = ctx.beginOneTime(commandPool);
+		try (MemoryStack stack = stackPush())
+		{
+			VkBufferCopy.Buffer pc = VkBufferCopy.calloc(1, stack).size((long) total * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
+			vkCmdCopyBuffer(up, posStage.buffer, staticPositions.buffer, pc);
+			VkBufferCopy.Buffer cc = VkBufferCopy.calloc(1, stack).size((long) total * Integer.BYTES);
+			vkCmdCopyBuffer(up, colStage.buffer, staticColors.buffer, cc);
+		}
+		ctx.endOneTimeAndWait(up, queue, commandPool);
+		ctx.destroyBuffer(posStage);
+		ctx.destroyBuffer(colStage);
 	}
 
 	private static void bake(GeometryBuffer g, float[] m, int faces, FloatBuffer pos, IntBuffer col)
@@ -660,8 +702,8 @@ public final class NormalRenderer implements Renderer
 		dynamicFaceCount = Math.min(dynamic.faces(), MAX_DYNAMIC_FACES);
 		if (dynamicFaceCount > 0)
 		{
-			positions.mapped.asFloatBuffer().put(dynamic.positions(), 0, dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE);
-			colors.mapped.asIntBuffer().put(dynamic.colors(), 0, dynamicFaceCount);
+			dynamicStagingPos.mapped.asFloatBuffer().put(dynamic.positions(), 0, dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE);
+			dynamicStagingCol.mapped.asIntBuffer().put(dynamic.colors(), 0, dynamicFaceCount);
 		}
 
 		try (MemoryStack stack = stackPush())
@@ -670,6 +712,17 @@ public final class NormalRenderer implements Renderer
 			VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
 				.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			check(vkBeginCommandBuffer(cmd, begin), "vkBeginCommandBuffer");
+
+			if (dynamicFaceCount > 0)
+			{
+				VkBufferCopy.Buffer pcopy = VkBufferCopy.calloc(1, stack).size((long) dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
+				vkCmdCopyBuffer(cmd, dynamicStagingPos.buffer, positions.buffer, pcopy);
+				VkBufferCopy.Buffer ccopy = VkBufferCopy.calloc(1, stack).size((long) dynamicFaceCount * Integer.BYTES);
+				vkCmdCopyBuffer(cmd, dynamicStagingCol.buffer, colors.buffer, ccopy);
+				VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, stack).sType$Default()
+					.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
+				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, mb, null, null);
+			}
 
 			VkClearValue.Buffer clears = VkClearValue.calloc(2, stack);
 			clears.get(0).color().float32(stack.floats(bgR, bgG, bgB, 1f));
@@ -790,6 +843,8 @@ public final class NormalRenderer implements Renderer
 		if (renderPass != 0) { vkDestroyRenderPass(device, renderPass, null); renderPass = 0; }
 		if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
 		if (descriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null); descriptorSetLayout = 0; }
+		ctx.destroyBuffer(dynamicStagingPos);
+		ctx.destroyBuffer(dynamicStagingCol);
 		ctx.destroyBuffer(positions);
 		ctx.destroyBuffer(colors);
 		ctx.destroyBuffer(staticPositions);
