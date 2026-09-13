@@ -245,9 +245,20 @@ public final class NormalRenderer implements Renderer
 	@Override
 	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, GeometryBuffer water, boolean waitForGl, boolean signalGl)
 	{
-		bgR = params.backgroundR;
-		bgG = params.backgroundG;
-		bgB = params.backgroundB;
+		// The login/idle screen sends frame.pattern with no scene background; Uber's trace
+		// shader draws its gradient-checker from it, which this clear-only backend cannot
+		// reproduce yet. Approximate it with the pattern's mid-grey so the screen is not
+		// black (the login probe expects a ~0x7f centre); a real raster pattern lands later.
+		if (params.pattern)
+		{
+			bgR = bgG = bgB = 0.5f;
+		}
+		else
+		{
+			bgR = params.backgroundR;
+			bgG = params.backgroundG;
+			bgB = params.backgroundB;
+		}
 		waitPreviousFrame();
 		try (MemoryStack stack = stackPush())
 		{

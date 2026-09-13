@@ -545,7 +545,9 @@ public class RltxPlugin extends Plugin implements DrawCallbacks
 					log.info("DLSS unavailable: {}", Ngx.unavailableReason());
 				}
 				vk = VkContext.create(compositor.deviceUuid());
-				renderer = config.renderBackend() == RltxConfig.RendererBackend.NORMAL
+				RltxConfig.RendererBackend backend = config.renderBackend();
+				log.info("RLTX renderer backend: {}", backend);
+				renderer = backend == RltxConfig.RendererBackend.NORMAL
 					? new NormalRenderer(vk)
 					: new RtRenderer(vk);
 				environment.attach(renderer);
