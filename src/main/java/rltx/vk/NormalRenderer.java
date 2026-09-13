@@ -20,10 +20,12 @@ import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VkAttachmentDescription;
 import org.lwjgl.vulkan.VkAttachmentReference;
 import org.lwjgl.vulkan.VkBufferCopy;
+import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkClearValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
+import org.lwjgl.vulkan.VkDescriptorImageInfo;
 import org.lwjgl.vulkan.VkDescriptorPoolCreateInfo;
 import org.lwjgl.vulkan.VkDescriptorPoolSize;
 import org.lwjgl.vulkan.VkDescriptorSetAllocateInfo;
@@ -37,6 +39,7 @@ import org.lwjgl.vulkan.VkFenceCreateInfo;
 import org.lwjgl.vulkan.VkFramebufferCreateInfo;
 import org.lwjgl.vulkan.VkGraphicsPipelineCreateInfo;
 import org.lwjgl.vulkan.VkImageCreateInfo;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkImageMemoryRequirementsInfo2;
 import org.lwjgl.vulkan.VkImageViewCreateInfo;
 import org.lwjgl.vulkan.VkMemoryAllocateInfo;
@@ -60,6 +63,7 @@ import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkRect2D;
 import org.lwjgl.vulkan.VkRenderPassBeginInfo;
 import org.lwjgl.vulkan.VkRenderPassCreateInfo;
+import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import org.lwjgl.vulkan.VkSemaphoreCreateInfo;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkSubmitInfo;
@@ -75,12 +79,12 @@ import rltx.scene.StaticScene;
  * ({@link RtRenderer}) that fills the same externally-shared output image the GL compositor blits,
  * so the plugin drives it through the identical seam. See {@code docs/normal-mode.md}.
  *
- * <p><b>Increment 2b.</b> Rasterises both the static world and the per-frame dynamic geometry
- * flat-shaded by each face's own colour, with the camera matched to {@code trace.comp}'s pinhole
- * convention, z-buffered through a depth image. The static scene is baked to world space and drawn
- * whole — no level or roof culling yet, so roofs and upper floors show; that culling, plus lighting,
- * textures, translucency, water and the shared post chain, are the increments after this. Photo and
- * readback paths fail loudly rather than return a blank frame.
+ * <p>Rasterises the static world and the per-frame dynamic geometry with the camera matched to
+ * {@code trace.comp}'s pinhole convention, z-buffered through a depth image. The static scene is
+ * baked to world space and culled by level and roof; faces are textured from the game's texture
+ * array, modulating each face's baked colour. Still to come: a lighting model, translucency, water,
+ * and the shared post chain (sky, fog, bloom, colour grade). Photo and readback paths fail loudly
+ * rather than return a blank frame.
  *
  * <p>Geometry lives in host-visible storage buffers pulled by the vertex shader through
  * {@code gl_VertexIndex}; simple, not fast. The static buffer is refilled only when the scene
@@ -125,12 +129,16 @@ public final class NormalRenderer implements Renderer
 	// Dynamic geometry is written to host-visible staging each frame and copied into the device-local
 	// buffers the vertex shader reads; static is device-local too, uploaded once per scene change.
 	// Device-local memory is why this is not the PCIe-bound crawl a host-visible shader read would be.
-	private VkBuf dynamicStagingPos, dynamicStagingCol;
-	private VkBuf positions, colors;
+	private VkBuf dynamicStagingPos, dynamicStagingCol, dynamicStagingUv, dynamicStagingTex;
+	private VkBuf positions, colors, uvs, texs;
 	private int dynamicFaceCount;
 
-	private VkBuf staticPositions, staticColors;
+	private VkBuf staticPositions, staticColors, staticUvs, staticTexs;
 	private int staticFaceCount;
+
+	// The game's texture array (sampler2DArray at binding 4) and its sampler. A 1x1 dummy stands in
+	// until setTextureArray uploads the real one, so the sampler binding is always valid.
+	private long textureImage, textureMemory, textureView, textureSampler;
 	// The scenes the front end has handed us, by id; the static buffer is rebuilt from all of them
 	// on any change. The transform places a set's local geometry into the world (null is identity).
 	private final Map<Integer, float[]> staticTransforms = new HashMap<>();
@@ -165,6 +173,8 @@ public final class NormalRenderer implements Renderer
 		createSyncObjects();
 		createGeometryBuffers();
 		createDescriptors();
+		createSampler();
+		uploadTextureArray(1, 1, 1, whitePixel());
 		createRenderPass();
 		createPipeline();
 	}
@@ -197,30 +207,42 @@ public final class NormalRenderer implements Renderer
 	private void createGeometryBuffers()
 	{
 		int deviceStorage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		int device = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 		long dynPos = (long) MAX_DYNAMIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
 		long dynCol = (long) MAX_DYNAMIC_FACES * Integer.BYTES;
+		long dynUv = (long) MAX_DYNAMIC_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
 		dynamicStagingPos = ctx.createBuffer(dynPos, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		dynamicStagingCol = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
-		positions = ctx.createBuffer(dynPos, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		colors = ctx.createBuffer(dynCol, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		dynamicStagingUv = ctx.createBuffer(dynUv, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		dynamicStagingTex = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		positions = ctx.createBuffer(dynPos, deviceStorage, device);
+		colors = ctx.createBuffer(dynCol, deviceStorage, device);
+		uvs = ctx.createBuffer(dynUv, deviceStorage, device);
+		texs = ctx.createBuffer(dynCol, deviceStorage, device);
+		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
+		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, device);
+		staticUvs = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
+		staticTexs = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, device);
 	}
 
 	private void createDescriptors()
 	{
 		try (MemoryStack stack = stackPush())
 		{
-			VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(2, stack);
-			binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
-			binds.get(1).binding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
+			VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
+			for (int i = 0; i < 4; ++i)
+			{
+				binds.get(i).binding(i).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
+			}
+			binds.get(4).binding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT);
 			VkDescriptorSetLayoutCreateInfo layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
 			LongBuffer pLayout = stack.mallocLong(1);
 			check(vkCreateDescriptorSetLayout(device, layoutInfo, null, pLayout), "vkCreateDescriptorSetLayout");
 			descriptorSetLayout = pLayout.get(0);
 
-			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(1, stack);
-			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(4);
+			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
+			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(8);
+			sizes.get(1).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
 			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool");
@@ -228,8 +250,8 @@ public final class NormalRenderer implements Renderer
 
 			dynamicDescriptorSet = allocateSet(stack);
 			staticDescriptorSet = allocateSet(stack);
-			writeSet(stack, dynamicDescriptorSet, positions, colors);
-			writeSet(stack, staticDescriptorSet, staticPositions, staticColors);
+			writeSet(stack, dynamicDescriptorSet, positions, colors, uvs, texs);
+			writeSet(stack, staticDescriptorSet, staticPositions, staticColors, staticUvs, staticTexs);
 		}
 	}
 
@@ -243,14 +265,154 @@ public final class NormalRenderer implements Renderer
 		return pSet.get(0);
 	}
 
-	private void writeSet(MemoryStack stack, long set, VkBuf pos, VkBuf col)
+	private void writeSet(MemoryStack stack, long set, VkBuf pos, VkBuf col, VkBuf uv, VkBuf tex)
 	{
-		VkDescriptorBufferInfo.Buffer posInfo = VkDescriptorBufferInfo.calloc(1, stack).buffer(pos.buffer).offset(0).range(VK_WHOLE_SIZE);
-		VkDescriptorBufferInfo.Buffer colInfo = VkDescriptorBufferInfo.calloc(1, stack).buffer(col.buffer).offset(0).range(VK_WHOLE_SIZE);
-		VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
-		writes.get(0).sType$Default().dstSet(set).dstBinding(0).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(posInfo);
-		writes.get(1).sType$Default().dstSet(set).dstBinding(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(colInfo);
+		VkBuf[] bufs = {pos, col, uv, tex};
+		VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
+		for (int i = 0; i < 4; ++i)
+		{
+			VkDescriptorBufferInfo.Buffer bi = VkDescriptorBufferInfo.calloc(1, stack).buffer(bufs[i].buffer).offset(0).range(VK_WHOLE_SIZE);
+			writes.get(i).sType$Default().dstSet(set).dstBinding(i).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(bi);
+		}
 		vkUpdateDescriptorSets(device, writes, null);
+	}
+
+	private void createSampler()
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkSamplerCreateInfo info = VkSamplerCreateInfo.calloc(stack).sType$Default()
+				.magFilter(VK_FILTER_LINEAR)
+				.minFilter(VK_FILTER_LINEAR)
+				.mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR)
+				.addressModeU(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+				.addressModeV(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+				.addressModeW(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+				.maxLod(VK_LOD_CLAMP_NONE);
+			LongBuffer pSampler = stack.mallocLong(1);
+			check(vkCreateSampler(device, info, null, pSampler), "vkCreateSampler");
+			textureSampler = pSampler.get(0);
+		}
+	}
+
+	private static ByteBuffer whitePixel()
+	{
+		ByteBuffer b = MemoryUtil.memAlloc(4);
+		b.put((byte) 0x7f).put((byte) 0x7f).put((byte) 0x7f).put((byte) 0xff).flip();
+		return b;
+	}
+
+	// Uploads the game's texture array (or the 1x1 stand-in) and points both descriptor sets at it.
+	// Layout is level-major: level 0 for all layers, then level 1 for all layers, and so on, the same
+	// packing the tracer's uploadArray expects. Called on the client thread, so blocking is fine.
+	@Override
+	public void setTextureArray(int layers, int size, int levels, ByteBuffer rgba)
+	{
+		uploadTextureArray(layers, size, levels, rgba);
+	}
+
+	private void uploadTextureArray(int layers, int size, int levels, ByteBuffer rgba)
+	{
+		vkQueueWaitIdle(queue);
+		destroyTexture();
+		try (MemoryStack stack = stackPush())
+		{
+			VkImageCreateInfo imageInfo = VkImageCreateInfo.calloc(stack).sType$Default()
+				.imageType(VK_IMAGE_TYPE_2D)
+				.format(OUTPUT_FORMAT)
+				.mipLevels(levels)
+				.arrayLayers(layers)
+				.samples(VK_SAMPLE_COUNT_1_BIT)
+				.tiling(VK_IMAGE_TILING_OPTIMAL)
+				.usage(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+				.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
+				.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+			imageInfo.extent().width(size).height(size).depth(1);
+			LongBuffer pImage = stack.mallocLong(1);
+			check(vkCreateImage(device, imageInfo, null, pImage), "vkCreateImage texture");
+			textureImage = pImage.get(0);
+
+			VkMemoryRequirements2 req = VkMemoryRequirements2.calloc(stack).sType$Default();
+			VkImageMemoryRequirementsInfo2 reqInfo = VkImageMemoryRequirementsInfo2.calloc(stack).sType$Default().image(textureImage);
+			vkGetImageMemoryRequirements2(device, reqInfo, req);
+			VkMemoryAllocateInfo alloc = VkMemoryAllocateInfo.calloc(stack).sType$Default()
+				.allocationSize(req.memoryRequirements().size())
+				.memoryTypeIndex(ctx.findMemoryType(req.memoryRequirements().memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+			LongBuffer pMemory = stack.mallocLong(1);
+			check(vkAllocateMemory(device, alloc, null, pMemory), "vkAllocateMemory texture");
+			textureMemory = pMemory.get(0);
+			check(vkBindImageMemory(device, textureImage, textureMemory, 0), "vkBindImageMemory texture");
+
+			long bytes = 0;
+			for (int level = 0; level < levels; ++level)
+			{
+				bytes += (long) layers * (size >> level) * (size >> level) * 4;
+			}
+			VkBuf staging = ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+			MemoryUtil.memCopy(MemoryUtil.memAddress(rgba), MemoryUtil.memAddress(staging.mapped), bytes);
+
+			VkCommandBuffer up = ctx.beginOneTime(commandPool);
+			textureBarrier(up, layers, levels, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+			VkBufferImageCopy.Buffer regions = VkBufferImageCopy.calloc(levels, stack);
+			long offset = 0;
+			for (int level = 0; level < levels; ++level)
+			{
+				int extent = size >> level;
+				regions.get(level).bufferOffset(offset).bufferRowLength(0).bufferImageHeight(0);
+				regions.get(level).imageSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(level).baseArrayLayer(0).layerCount(layers);
+				regions.get(level).imageExtent().width(extent).height(extent).depth(1);
+				offset += (long) layers * extent * extent * 4;
+			}
+			vkCmdCopyBufferToImage(up, staging.buffer, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions);
+			textureBarrier(up, layers, levels, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+			ctx.endOneTimeAndWait(up, queue, commandPool);
+			ctx.destroyBuffer(staging);
+			MemoryUtil.memFree(rgba);
+
+			VkImageViewCreateInfo viewInfo = VkImageViewCreateInfo.calloc(stack).sType$Default()
+				.image(textureImage)
+				.viewType(VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+				.format(OUTPUT_FORMAT);
+			viewInfo.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(levels).baseArrayLayer(0).layerCount(layers);
+			LongBuffer pView = stack.mallocLong(1);
+			check(vkCreateImageView(device, viewInfo, null, pView), "vkCreateImageView texture");
+			textureView = pView.get(0);
+
+			VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack)
+				.sampler(textureSampler).imageView(textureView).imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(2, stack);
+			writes.get(0).sType$Default().dstSet(dynamicDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
+			writes.get(1).sType$Default().dstSet(staticDescriptorSet).dstBinding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).pImageInfo(imgInfo);
+			vkUpdateDescriptorSets(device, writes, null);
+		}
+	}
+
+	private void textureBarrier(VkCommandBuffer c, int layers, int levels, int oldLayout, int newLayout, int srcStage, int srcAccess, int dstStage, int dstAccess)
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, stack);
+			b.get(0).sType$Default()
+				.srcAccessMask(srcAccess).dstAccessMask(dstAccess)
+				.oldLayout(oldLayout).newLayout(newLayout)
+				.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+				.image(textureImage);
+			b.get(0).subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(levels).baseArrayLayer(0).layerCount(layers);
+			vkCmdPipelineBarrier(c, srcStage, dstStage, 0, null, null, b);
+		}
+	}
+
+	private void destroyTexture()
+	{
+		if (textureImage != 0)
+		{
+			vkDestroyImageView(device, textureView, null);
+			vkDestroyImage(device, textureImage, null);
+			vkFreeMemory(device, textureMemory, null);
+			textureImage = textureMemory = textureView = 0;
+		}
 	}
 
 	private void createRenderPass()
@@ -514,8 +676,12 @@ public final class NormalRenderer implements Renderer
 		// recording each group's vertex range and level/roof so the draw can cull to the visible set.
 		VkBuf posStage = ctx.createBuffer((long) total * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		VkBuf colStage = ctx.createBuffer((long) total * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		VkBuf uvStage = ctx.createBuffer((long) total * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		VkBuf texStage = ctx.createBuffer((long) total * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		FloatBuffer pos = posStage.mapped.asFloatBuffer();
 		IntBuffer col = colStage.mapped.asIntBuffer();
+		FloatBuffer uv = uvStage.mapped.asFloatBuffer();
+		IntBuffer tex = texStage.mapped.asIntBuffer();
 		int written = 0;
 		for (Map.Entry<Integer, StaticScene> entry : staticScenes.entrySet())
 		{
@@ -554,7 +720,7 @@ public final class NormalRenderer implements Renderer
 						v.levelHasRoofs[lvl] = true;
 					}
 				}
-				bake(zone.geometry, m, zoneFaces, pos, col);
+				bake(zone.geometry, m, zoneFaces, pos, col, uv, tex);
 				written += zoneFaces;
 			}
 		}
@@ -562,17 +728,25 @@ public final class NormalRenderer implements Renderer
 		VkCommandBuffer up = ctx.beginOneTime(commandPool);
 		try (MemoryStack stack = stackPush())
 		{
-			VkBufferCopy.Buffer pc = VkBufferCopy.calloc(1, stack).size((long) total * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
-			vkCmdCopyBuffer(up, posStage.buffer, staticPositions.buffer, pc);
-			VkBufferCopy.Buffer cc = VkBufferCopy.calloc(1, stack).size((long) total * Integer.BYTES);
-			vkCmdCopyBuffer(up, colStage.buffer, staticColors.buffer, cc);
+			copy(up, stack, posStage, staticPositions, (long) total * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
+			copy(up, stack, colStage, staticColors, (long) total * Integer.BYTES);
+			copy(up, stack, uvStage, staticUvs, (long) total * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
+			copy(up, stack, texStage, staticTexs, (long) total * Integer.BYTES);
 		}
 		ctx.endOneTimeAndWait(up, queue, commandPool);
 		ctx.destroyBuffer(posStage);
 		ctx.destroyBuffer(colStage);
+		ctx.destroyBuffer(uvStage);
+		ctx.destroyBuffer(texStage);
 	}
 
-	private static void bake(GeometryBuffer g, float[] m, int faces, FloatBuffer pos, IntBuffer col)
+	private static void copy(VkCommandBuffer c, MemoryStack stack, VkBuf src, VkBuf dst, long bytes)
+	{
+		VkBufferCopy.Buffer region = VkBufferCopy.calloc(1, stack).size(bytes);
+		vkCmdCopyBuffer(c, src.buffer, dst.buffer, region);
+	}
+
+	private static void bake(GeometryBuffer g, float[] m, int faces, FloatBuffer pos, IntBuffer col, FloatBuffer uv, IntBuffer tex)
 	{
 		int floats = faces * GeometryBuffer.FLOATS_PER_FACE;
 		if (m == null)
@@ -591,6 +765,8 @@ public final class NormalRenderer implements Renderer
 			}
 		}
 		col.put(g.colors(), 0, faces);
+		uv.put(g.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
+		tex.put(g.textures(), 0, faces);
 	}
 
 	// ---- output sizing and the handles the GL compositor shares ----
@@ -784,6 +960,8 @@ public final class NormalRenderer implements Renderer
 		{
 			dynamicStagingPos.mapped.asFloatBuffer().put(dynamic.positions(), 0, dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE);
 			dynamicStagingCol.mapped.asIntBuffer().put(dynamic.colors(), 0, dynamicFaceCount);
+			dynamicStagingUv.mapped.asFloatBuffer().put(dynamic.uvs(), 0, dynamicFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE);
+			dynamicStagingTex.mapped.asIntBuffer().put(dynamic.textures(), 0, dynamicFaceCount);
 		}
 
 		try (MemoryStack stack = stackPush())
@@ -795,10 +973,10 @@ public final class NormalRenderer implements Renderer
 
 			if (dynamicFaceCount > 0)
 			{
-				VkBufferCopy.Buffer pcopy = VkBufferCopy.calloc(1, stack).size((long) dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
-				vkCmdCopyBuffer(cmd, dynamicStagingPos.buffer, positions.buffer, pcopy);
-				VkBufferCopy.Buffer ccopy = VkBufferCopy.calloc(1, stack).size((long) dynamicFaceCount * Integer.BYTES);
-				vkCmdCopyBuffer(cmd, dynamicStagingCol.buffer, colors.buffer, ccopy);
+				copy(cmd, stack, dynamicStagingPos, positions, (long) dynamicFaceCount * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES);
+				copy(cmd, stack, dynamicStagingCol, colors, (long) dynamicFaceCount * Integer.BYTES);
+				copy(cmd, stack, dynamicStagingUv, uvs, (long) dynamicFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
+				copy(cmd, stack, dynamicStagingTex, texs, (long) dynamicFaceCount * Integer.BYTES);
 				VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, stack).sType$Default()
 					.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
 				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, mb, null, null);
@@ -951,12 +1129,20 @@ public final class NormalRenderer implements Renderer
 		if (renderPass != 0) { vkDestroyRenderPass(device, renderPass, null); renderPass = 0; }
 		if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
 		if (descriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null); descriptorSetLayout = 0; }
+		destroyTexture();
+		if (textureSampler != 0) { vkDestroySampler(device, textureSampler, null); textureSampler = 0; }
 		ctx.destroyBuffer(dynamicStagingPos);
 		ctx.destroyBuffer(dynamicStagingCol);
+		ctx.destroyBuffer(dynamicStagingUv);
+		ctx.destroyBuffer(dynamicStagingTex);
 		ctx.destroyBuffer(positions);
 		ctx.destroyBuffer(colors);
+		ctx.destroyBuffer(uvs);
+		ctx.destroyBuffer(texs);
 		ctx.destroyBuffer(staticPositions);
 		ctx.destroyBuffer(staticColors);
+		ctx.destroyBuffer(staticUvs);
+		ctx.destroyBuffer(staticTexs);
 		if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
 		if (semaphoreVkDone != 0) { vkDestroySemaphore(device, semaphoreVkDone, null); semaphoreVkDone = 0; }
 		if (semaphoreGlDone != 0) { vkDestroySemaphore(device, semaphoreGlDone, null); semaphoreGlDone = 0; }
@@ -968,7 +1154,6 @@ public final class NormalRenderer implements Renderer
 	@Override public void setDisplacedZones(int id, boolean[] displaced) { }
 	@Override public void setGroundRange(int first, int count) { }
 	@Override public void setMaterials(float[] table) { }
-	@Override public void setTextureArray(int layers, int size, int levels, ByteBuffer rgba) { }
 	@Override public void setReliefArray(int layers, int size, int levels, ByteBuffer heights) { }
 	@Override public void setTextureAnimation(float[] uvPerCycle) { }
 	@Override public void setTerrainHeights(float[] heights) { }

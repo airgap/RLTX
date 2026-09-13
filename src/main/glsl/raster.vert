@@ -1,14 +1,17 @@
 #version 460
 
 // Draws the game's triangle soup the same way the tracer sees it: a non-indexed vertex stream of
-// faces*3 vertices, positions three floats each, one packed RGBA colour per face. The camera matches
-// trace.comp's convention exactly — a pinhole where a view direction is ((px - w/2)/zoom, (py - h/2)/
-// zoom, 1) rotated into the world, so here we invert it: rotate a world point into view with the
-// forward rotation and project by the same zoom. Left-handed, +Z into the screen, +Y down, which is
-// already Vulkan's clip Y direction, so no flip.
+// faces*3 vertices, positions three floats each, one packed RGBA colour per face, six UV floats per
+// face (two per corner) and one texture id per face. The camera matches trace.comp's convention
+// exactly — a pinhole where a view direction is ((px - w/2)/zoom, (py - h/2)/zoom, 1) rotated into
+// the world, so here we invert it: rotate a world point into view with the forward rotation and
+// project by the same zoom. Left-handed, +Z into the screen, +Y down, which is already Vulkan's clip
+// Y direction, so no flip.
 
 layout(std430, set = 0, binding = 0) readonly buffer Positions { float pos[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Colors { uint col[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Uvs { float uvs[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Texs { uint texs[]; };
 
 layout(push_constant) uniform Push
 {
@@ -20,15 +23,21 @@ layout(push_constant) uniform Push
 } pc;
 
 layout(location = 0) out vec4 vColor;
+layout(location = 1) out vec2 vUv;
+layout(location = 2) flat out uint vTex;
 
 void main()
 {
 	uint vid = uint(gl_VertexIndex);
+	uint face = vid / 3u;
+	uint corner = vid % 3u;
 	uint o = vid * 3u;
 	vec3 world = vec3(pos[o], pos[o + 1u], pos[o + 2u]);
 
-	uint c = col[vid / 3u];
+	uint c = col[face];
 	vColor = vec4(float((c >> 16) & 0xffu), float((c >> 8) & 0xffu), float(c & 0xffu), float((c >> 24) & 0xffu)) / 255.0;
+	vUv = vec2(uvs[face * 6u + corner * 2u], uvs[face * 6u + corner * 2u + 1u]);
+	vTex = texs[face];
 
 	vec3 rel = world - pc.camZoom.xyz;
 	vec3 v = vec3(dot(pc.row0.xyz, rel), dot(pc.row1.xyz, rel), dot(pc.row2.xyz, rel));
@@ -39,8 +48,6 @@ void main()
 	float near = pc.viewport.z;
 	float far = pc.viewport.w;
 
-	// Screen = (v.x/v.z*zoom + w/2, v.y/v.z*zoom + h/2). In clip space, before the divide by v.z:
-	// x,y carry the 2*zoom/dim scale, w is v.z, and z maps [near,far] to [0,1].
 	gl_Position = vec4(
 		v.x * (2.0 * zoom / w),
 		v.y * (2.0 * zoom / h),
