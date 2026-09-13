@@ -99,7 +99,10 @@ public final class NormalRenderer implements Renderer
 	private static final int DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 	private static final int MAX_DYNAMIC_FACES = 1 << 19;
 	private static final int MAX_STATIC_FACES = 3 << 20;
-	private static final int PUSH_BYTES = 112;
+	// Camera + fog block (112) plus the sun direction, sun colour and sky ambient added for lighting:
+	// three vec4 at offsets 112/128/144. 160 bytes, within the 256-byte push range of the
+	// ray-tracing-class GPUs Normal targets (above the 128-byte Vulkan minimum guarantee).
+	private static final int PUSH_BYTES = 160;
 	private static final float NEAR = 32f;
 	private static final float FAR = 65536f;
 
@@ -131,11 +134,11 @@ public final class NormalRenderer implements Renderer
 	// Dynamic geometry is written to host-visible staging each frame and copied into the device-local
 	// buffers the vertex shader reads; static is device-local too, uploaded once per scene change.
 	// Device-local memory is why this is not the PCIe-bound crawl a host-visible shader read would be.
-	private VkBuf dynamicStagingPos, dynamicStagingCol, dynamicStagingUv, dynamicStagingTex;
-	private VkBuf positions, colors, uvs, texs;
+	private VkBuf dynamicStagingPos, dynamicStagingCol, dynamicStagingUv, dynamicStagingTex, dynamicStagingNrm;
+	private VkBuf positions, colors, uvs, texs, normals;
 	private int dynamicFaceCount;
 
-	private VkBuf staticPositions, staticColors, staticUvs, staticTexs;
+	private VkBuf staticPositions, staticColors, staticUvs, staticTexs, staticNormals;
 	private int staticFaceCount;
 
 	// The game's texture array (sampler2DArray at binding 4) and its sampler. A 1x1 dummy stands in
@@ -216,37 +219,45 @@ public final class NormalRenderer implements Renderer
 		long dynPos = (long) MAX_DYNAMIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES;
 		long dynCol = (long) MAX_DYNAMIC_FACES * Integer.BYTES;
 		long dynUv = (long) MAX_DYNAMIC_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES;
+		// One packed normal per vertex, so faces*3 ints, unlike the one-int-per-face colour/texture.
+		long dynNrm = (long) MAX_DYNAMIC_FACES * GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES;
 		dynamicStagingPos = ctx.createBuffer(dynPos, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		dynamicStagingCol = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		dynamicStagingUv = ctx.createBuffer(dynUv, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		dynamicStagingTex = ctx.createBuffer(dynCol, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		dynamicStagingNrm = ctx.createBuffer(dynNrm, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		positions = ctx.createBuffer(dynPos, deviceStorage, device);
 		colors = ctx.createBuffer(dynCol, deviceStorage, device);
 		uvs = ctx.createBuffer(dynUv, deviceStorage, device);
 		texs = ctx.createBuffer(dynCol, deviceStorage, device);
+		normals = ctx.createBuffer(dynNrm, deviceStorage, device);
 		staticPositions = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
 		staticColors = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, device);
 		staticUvs = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES, deviceStorage, device);
 		staticTexs = ctx.createBuffer((long) MAX_STATIC_FACES * Integer.BYTES, deviceStorage, device);
+		staticNormals = ctx.createBuffer((long) MAX_STATIC_FACES * GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES, deviceStorage, device);
 	}
 
 	private void createDescriptors()
 	{
 		try (MemoryStack stack = stackPush())
 		{
-			VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(5, stack);
+			VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(6, stack);
 			for (int i = 0; i < 4; ++i)
 			{
 				binds.get(i).binding(i).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
 			}
 			binds.get(4).binding(4).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT);
+			// Binding 5: packed vertex normals, read in the vertex shader for the lighting term.
+			binds.get(5).binding(5).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
 			VkDescriptorSetLayoutCreateInfo layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
 			LongBuffer pLayout = stack.mallocLong(1);
 			check(vkCreateDescriptorSetLayout(device, layoutInfo, null, pLayout), "vkCreateDescriptorSetLayout");
 			descriptorSetLayout = pLayout.get(0);
 
 			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(8);
+			// Five storage buffers (pos, col, uv, tex, normals) per set across the two sets.
+			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(10);
 			sizes.get(1).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
 			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(2).pPoolSizes(sizes);
 			LongBuffer pPool = stack.mallocLong(1);
@@ -255,8 +266,8 @@ public final class NormalRenderer implements Renderer
 
 			dynamicDescriptorSet = allocateSet(stack);
 			staticDescriptorSet = allocateSet(stack);
-			writeSet(stack, dynamicDescriptorSet, positions, colors, uvs, texs);
-			writeSet(stack, staticDescriptorSet, staticPositions, staticColors, staticUvs, staticTexs);
+			writeSet(stack, dynamicDescriptorSet, positions, colors, uvs, texs, normals);
+			writeSet(stack, staticDescriptorSet, staticPositions, staticColors, staticUvs, staticTexs, staticNormals);
 		}
 	}
 
@@ -270,14 +281,17 @@ public final class NormalRenderer implements Renderer
 		return pSet.get(0);
 	}
 
-	private void writeSet(MemoryStack stack, long set, VkBuf pos, VkBuf col, VkBuf uv, VkBuf tex)
+	private void writeSet(MemoryStack stack, long set, VkBuf pos, VkBuf col, VkBuf uv, VkBuf tex, VkBuf nrm)
 	{
-		VkBuf[] bufs = {pos, col, uv, tex};
-		VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
-		for (int i = 0; i < 4; ++i)
+		// Bindings 0-3 are pos/col/uv/tex; binding 5 is the normals (binding 4 is the sampler, written
+		// in uploadTextureArray). Five storage-buffer writes, the normal one skipping over binding 4.
+		VkBuf[] bufs = {pos, col, uv, tex, nrm};
+		int[] bindings = {0, 1, 2, 3, 5};
+		VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
+		for (int i = 0; i < 5; ++i)
 		{
 			VkDescriptorBufferInfo.Buffer bi = VkDescriptorBufferInfo.calloc(1, stack).buffer(bufs[i].buffer).offset(0).range(VK_WHOLE_SIZE);
-			writes.get(i).sType$Default().dstSet(set).dstBinding(i).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(bi);
+			writes.get(i).sType$Default().dstSet(set).dstBinding(bindings[i]).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(bi);
 		}
 		vkUpdateDescriptorSets(device, writes, null);
 	}
@@ -746,10 +760,12 @@ public final class NormalRenderer implements Renderer
 		VkBuf colStage = ctx.createBuffer((long) total * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		VkBuf uvStage = ctx.createBuffer((long) total * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		VkBuf texStage = ctx.createBuffer((long) total * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
+		VkBuf nrmStage = ctx.createBuffer((long) total * GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, HOST);
 		FloatBuffer pos = posStage.mapped.asFloatBuffer();
 		IntBuffer col = colStage.mapped.asIntBuffer();
 		FloatBuffer uv = uvStage.mapped.asFloatBuffer();
 		IntBuffer tex = texStage.mapped.asIntBuffer();
+		IntBuffer nrm = nrmStage.mapped.asIntBuffer();
 		int written = 0;
 		for (Map.Entry<Integer, StaticScene> entry : staticScenes.entrySet())
 		{
@@ -788,7 +804,7 @@ public final class NormalRenderer implements Renderer
 						v.levelHasRoofs[lvl] = true;
 					}
 				}
-				bake(zone.geometry, m, zoneFaces, pos, col, uv, tex);
+				bake(zone.geometry, m, zoneFaces, pos, col, uv, tex, nrm);
 				written += zoneFaces;
 			}
 		}
@@ -800,12 +816,14 @@ public final class NormalRenderer implements Renderer
 			copy(up, stack, colStage, staticColors, (long) total * Integer.BYTES);
 			copy(up, stack, uvStage, staticUvs, (long) total * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
 			copy(up, stack, texStage, staticTexs, (long) total * Integer.BYTES);
+			copy(up, stack, nrmStage, staticNormals, (long) total * GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES);
 		}
 		ctx.endOneTimeAndWait(up, queue, commandPool);
 		ctx.destroyBuffer(posStage);
 		ctx.destroyBuffer(colStage);
 		ctx.destroyBuffer(uvStage);
 		ctx.destroyBuffer(texStage);
+		ctx.destroyBuffer(nrmStage);
 	}
 
 	private static void copy(VkCommandBuffer c, MemoryStack stack, VkBuf src, VkBuf dst, long bytes)
@@ -814,7 +832,7 @@ public final class NormalRenderer implements Renderer
 		vkCmdCopyBuffer(c, src.buffer, dst.buffer, region);
 	}
 
-	private static void bake(GeometryBuffer g, float[] m, int faces, FloatBuffer pos, IntBuffer col, FloatBuffer uv, IntBuffer tex)
+	private static void bake(GeometryBuffer g, float[] m, int faces, FloatBuffer pos, IntBuffer col, FloatBuffer uv, IntBuffer tex, IntBuffer nrm)
 	{
 		int floats = faces * GeometryBuffer.FLOATS_PER_FACE;
 		if (m == null)
@@ -835,6 +853,9 @@ public final class NormalRenderer implements Renderer
 		col.put(g.colors(), 0, faces);
 		uv.put(g.uvs(), 0, faces * GeometryBuffer.UV_FLOATS_PER_FACE);
 		tex.put(g.textures(), 0, faces);
+		// Packed normals are copied as-is, not rotated by m. The main-world transform is identity, so
+		// its normals are already world-space; a rotated set's would need m applied here (a later step).
+		nrm.put(g.normals(), 0, faces * GeometryBuffer.NORMALS_PER_FACE);
 	}
 
 	// ---- output sizing and the handles the GL compositor shares ----
@@ -1046,6 +1067,7 @@ public final class NormalRenderer implements Renderer
 			dynamicStagingCol.mapped.asIntBuffer().put(dynamic.colors(), 0, dynamicFaceCount);
 			dynamicStagingUv.mapped.asFloatBuffer().put(dynamic.uvs(), 0, dynamicFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE);
 			dynamicStagingTex.mapped.asIntBuffer().put(dynamic.textures(), 0, dynamicFaceCount);
+			dynamicStagingNrm.mapped.asIntBuffer().put(dynamic.normals(), 0, dynamicFaceCount * GeometryBuffer.NORMALS_PER_FACE);
 		}
 
 		try (MemoryStack stack = stackPush())
@@ -1061,6 +1083,7 @@ public final class NormalRenderer implements Renderer
 				copy(cmd, stack, dynamicStagingCol, colors, (long) dynamicFaceCount * Integer.BYTES);
 				copy(cmd, stack, dynamicStagingUv, uvs, (long) dynamicFaceCount * GeometryBuffer.UV_FLOATS_PER_FACE * Float.BYTES);
 				copy(cmd, stack, dynamicStagingTex, texs, (long) dynamicFaceCount * Integer.BYTES);
+				copy(cmd, stack, dynamicStagingNrm, normals, (long) dynamicFaceCount * GeometryBuffer.NORMALS_PER_FACE * Integer.BYTES);
 				VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, stack).sType$Default()
 					.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
 				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, mb, null, null);
@@ -1115,6 +1138,11 @@ public final class NormalRenderer implements Renderer
 			pc.putFloat(outputWidth).putFloat(outputHeight).putFloat(NEAR).putFloat(FAR);
 			pc.putFloat(fogR).putFloat(fogG).putFloat(fogB).putFloat(1f);
 			pc.putFloat(fogStart).putFloat(fogEnd).putFloat(0f).putFloat(0f);
+			// Lighting: the direction to the sun, the sun's colour scaled by intensity, and the sky
+			// ambient, all world-space and matching trace.comp's convention (dot with the normal > 0 is lit).
+			pc.putFloat(params.sunX).putFloat(params.sunY).putFloat(params.sunZ).putFloat(0f);
+			pc.putFloat(params.sunR * params.sunIntensity).putFloat(params.sunG * params.sunIntensity).putFloat(params.sunB * params.sunIntensity).putFloat(0f);
+			pc.putFloat(params.skyAmbientR).putFloat(params.skyAmbientG).putFloat(params.skyAmbientB).putFloat(0f);
 			pc.flip();
 			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc);
 
@@ -1240,14 +1268,17 @@ public final class NormalRenderer implements Renderer
 		ctx.destroyBuffer(dynamicStagingCol);
 		ctx.destroyBuffer(dynamicStagingUv);
 		ctx.destroyBuffer(dynamicStagingTex);
+		ctx.destroyBuffer(dynamicStagingNrm);
 		ctx.destroyBuffer(positions);
 		ctx.destroyBuffer(colors);
 		ctx.destroyBuffer(uvs);
 		ctx.destroyBuffer(texs);
+		ctx.destroyBuffer(normals);
 		ctx.destroyBuffer(staticPositions);
 		ctx.destroyBuffer(staticColors);
 		ctx.destroyBuffer(staticUvs);
 		ctx.destroyBuffer(staticTexs);
+		ctx.destroyBuffer(staticNormals);
 		if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
 		if (semaphoreVkDone != 0) { vkDestroySemaphore(device, semaphoreVkDone, null); semaphoreVkDone = 0; }
 		if (semaphoreGlDone != 0) { vkDestroySemaphore(device, semaphoreGlDone, null); semaphoreGlDone = 0; }
