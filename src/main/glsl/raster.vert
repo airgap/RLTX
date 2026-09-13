@@ -6,7 +6,7 @@
 // exactly — a pinhole where a view direction is ((px - w/2)/zoom, (py - h/2)/zoom, 1) rotated into
 // the world, so here we invert it: rotate a world point into view with the forward rotation and
 // project by the same zoom. Left-handed, +Z into the screen, +Y down, which is already Vulkan's clip
-// Y direction, so no flip.
+// Y direction, so no flip. The view-space depth is passed on for distance fog.
 
 layout(std430, set = 0, binding = 0) readonly buffer Positions { float pos[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Colors { uint col[]; };
@@ -20,11 +20,14 @@ layout(push_constant) uniform Push
 	vec4 row1;
 	vec4 row2;
 	vec4 viewport;  // x width, y height, z near, w far
+	vec4 fogColor;  // rgb the distance fades to
+	vec4 fogRange;  // x fog start, y fog end, in view-space world units
 } pc;
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUv;
 layout(location = 2) flat out uint vTex;
+layout(location = 3) out float vDepth;
 
 void main()
 {
@@ -41,6 +44,7 @@ void main()
 
 	vec3 rel = world - pc.camZoom.xyz;
 	vec3 v = vec3(dot(pc.row0.xyz, rel), dot(pc.row1.xyz, rel), dot(pc.row2.xyz, rel));
+	vDepth = v.z;
 
 	float zoom = pc.camZoom.w;
 	float w = pc.viewport.x;

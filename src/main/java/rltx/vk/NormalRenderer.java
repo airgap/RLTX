@@ -82,9 +82,9 @@ import rltx.scene.StaticScene;
  * <p>Rasterises the static world and the per-frame dynamic geometry with the camera matched to
  * {@code trace.comp}'s pinhole convention, z-buffered through a depth image. The static scene is
  * baked to world space and culled by level and roof; faces are textured from the game's texture
- * array, modulating each face's baked colour. Still to come: a lighting model, translucency, water,
- * and the shared post chain (sky, fog, bloom, colour grade). Photo and readback paths fail loudly
- * rather than return a blank frame.
+ * array, modulating each face's baked colour; and the distance fades into the scene's fog colour.
+ * Still to come: a lighting model, translucency, water, and the fuller sky, bloom and colour grade
+ * of the shared post chain. Photo and readback paths fail loudly rather than return a blank frame.
  *
  * <p>Geometry lives in host-visible storage buffers pulled by the vertex shader through
  * {@code gl_VertexIndex}; simple, not fast. The static buffer is refilled only when the scene
@@ -99,7 +99,7 @@ public final class NormalRenderer implements Renderer
 	private static final int DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 	private static final int MAX_DYNAMIC_FACES = 1 << 19;
 	private static final int MAX_STATIC_FACES = 3 << 20;
-	private static final int PUSH_BYTES = 80;
+	private static final int PUSH_BYTES = 112;
 	private static final float NEAR = 32f;
 	private static final float FAR = 65536f;
 
@@ -507,7 +507,7 @@ public final class NormalRenderer implements Renderer
 				.pDynamicStates(stack.ints(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR));
 
 			VkPushConstantRange.Buffer push = VkPushConstantRange.calloc(1, stack);
-			push.get(0).stageFlags(VK_SHADER_STAGE_VERTEX_BIT).offset(0).size(PUSH_BYTES);
+			push.get(0).stageFlags(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT).offset(0).size(PUSH_BYTES);
 			VkPipelineLayoutCreateInfo layoutInfo = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
 				.pSetLayouts(stack.longs(descriptorSetLayout))
 				.pPushConstantRanges(push);
@@ -936,9 +936,27 @@ public final class NormalRenderer implements Renderer
 	@Override
 	public void submit(FrameParams params, GeometryBuffer dynamic, GeometryBuffer translucent, GeometryBuffer water, boolean waitForGl, boolean signalGl)
 	{
-		// The login/idle screen sends frame.pattern with no scene background; Uber's trace shader draws
-		// its gradient-checker from it, which this backend cannot reproduce yet. Approximate it with the
-		// pattern's mid-grey so the screen is not black (the login probe expects a ~0x7f centre).
+		// Distance fog fades geometry into the fog colour over the far part of the render distance, and
+		// the frame clears to that same colour so scenery beyond it fades away seamlessly. With no
+		// render distance set there is no fade, and the login/idle screen (frame.pattern) clears to a
+		// mid-grey the client's probe expects rather than to fog.
+		float fogStart, fogEnd, fogR, fogG, fogB;
+		if (params.renderDistance > 0f)
+		{
+			fogEnd = params.renderDistance;
+			fogStart = params.renderDistance * (1f - Math.min(Math.max(params.distanceFade, 0f), 1f));
+			fogR = params.fogR;
+			fogG = params.fogG;
+			fogB = params.fogB;
+		}
+		else
+		{
+			fogStart = fogEnd = 1e9f;
+			fogR = params.backgroundR;
+			fogG = params.backgroundG;
+			fogB = params.backgroundB;
+		}
+
 		float bgR, bgG, bgB;
 		if (params.pattern)
 		{
@@ -946,9 +964,9 @@ public final class NormalRenderer implements Renderer
 		}
 		else
 		{
-			bgR = params.backgroundR;
-			bgG = params.backgroundG;
-			bgB = params.backgroundB;
+			bgR = fogR;
+			bgG = fogG;
+			bgB = fogB;
 		}
 
 		waitPreviousFrame();
@@ -1012,8 +1030,10 @@ public final class NormalRenderer implements Renderer
 			pc.putFloat(r[3]).putFloat(r[4]).putFloat(r[5]).putFloat(0f);
 			pc.putFloat(r[6]).putFloat(r[7]).putFloat(r[8]).putFloat(0f);
 			pc.putFloat(outputWidth).putFloat(outputHeight).putFloat(NEAR).putFloat(FAR);
+			pc.putFloat(fogR).putFloat(fogG).putFloat(fogB).putFloat(1f);
+			pc.putFloat(fogStart).putFloat(fogEnd).putFloat(0f).putFloat(0f);
 			pc.flip();
-			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, pc);
+			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc);
 
 			if (staticFaceCount > 0)
 			{
