@@ -174,7 +174,9 @@ public final class NormalRenderer implements Renderer
 		createGeometryBuffers();
 		createDescriptors();
 		createSampler();
-		uploadTextureArray(1, 1, 1, whitePixel());
+		ByteBuffer dummy = whitePixel();
+		uploadTextureArray(1, 1, 1, dummy);
+		MemoryUtil.memFree(dummy);
 		createRenderPass();
 		createPipeline();
 	}
@@ -369,7 +371,8 @@ public final class NormalRenderer implements Renderer
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 			ctx.endOneTimeAndWait(up, queue, commandPool);
 			ctx.destroyBuffer(staging);
-			MemoryUtil.memFree(rgba);
+			// The rgba buffer belongs to the caller — the plugin reuses it for the avatar renderer and
+			// frees it itself — so it is not freed here, matching RtRenderer.uploadArray.
 
 			VkImageViewCreateInfo viewInfo = VkImageViewCreateInfo.calloc(stack).sType$Default()
 				.image(textureImage)
