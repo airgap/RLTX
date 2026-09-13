@@ -593,8 +593,12 @@ public final class NormalRenderer implements Renderer
 				.topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 			VkPipelineViewportStateCreateInfo viewport = VkPipelineViewportStateCreateInfo.calloc(stack).sType$Default()
 				.viewportCount(1).scissorCount(1);
+			// Cull back faces as the vanilla renderer and the tracer do (see cullBackfaces): the scene and
+			// model geometry is wound to match the GPU plugin's culling, so this drops roughly half of every
+			// closed surface's triangles before they rasterise, the largest lever on a scene that draws its
+			// whole loaded region each frame with no frustum cull yet.
 			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
-				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
+				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_BACK_BIT).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
 			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
 				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
 			// Opaque writes depth; the translucent variant tests against it but does not write, so blended
