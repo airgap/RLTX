@@ -1531,7 +1531,8 @@ public final class NormalRenderer implements Renderer
 			pc.putFloat(r[6]).putFloat(r[7]).putFloat(r[8]).putFloat(0f);
 			pc.putFloat(outputWidth).putFloat(outputHeight).putFloat(NEAR).putFloat(FAR);
 			pc.putFloat(fogR).putFloat(fogG).putFloat(fogB).putFloat(1f);
-			// fogRange.z is the translucent flag the fragment shader reads: 0 opaque here, 1 for the pass below.
+			// fogRange.z is the draw mode the fragment shader reads: 0 opaque here, 2 for the cutout
+			// sub-pass and 1 for the blend pass below (both repush only this field).
 			pc.putFloat(fogStart).putFloat(fogEnd).putFloat(0f).putFloat(0f);
 			// Lighting: the direction to the sun, the sun's colour scaled by intensity, and the sky
 			// ambient, all world-space and matching trace.comp's convention (dot with the normal > 0 is lit).
@@ -1553,10 +1554,28 @@ public final class NormalRenderer implements Renderer
 				vkCmdDraw(cmd, dynamicFaceCount * 3, 1, 0, 0);
 			}
 
-			// Translucent pass over the opaque frame: same layout, the blend pipeline (depth-tested, no
-			// depth write), with the flag flipped so the fragment shader emits the real opacity. It shares
-			// the opaque pipeline layout, so the full push is still live and only the flag is repushed; it
-			// runs before water so that push stays valid (water binds its own layout).
+			// Cutout sub-pass, still in the opaque phase: the cutout faces of the translucent bucket
+			// (foliage, fences — full vertex alpha over a holey texture) drawn with the opaque pipeline so
+			// they alpha-test and write depth, sorting correctly instead of blending back-over-front, and
+			// letting later faces depth-reject against them instead of overdrawing. mode 2 discards the
+			// bucket's fractional-alpha faces, which the blend pass below takes.
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, TRANSLUCENT_FLAG_OFFSET, stack.floats(2f));
+			if (staticFaceCount > 0)
+			{
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(staticDescriptorSet), null);
+				drawStaticGroups(cmd, true);
+			}
+			if (translucentFaceCount > 0)
+			{
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(translucentDescriptorSet), null);
+				vkCmdDraw(cmd, translucentFaceCount * 3, 1, 0, 0);
+			}
+
+			// Blend pass over the opaque+cutout frame: same layout, the blend pipeline (depth-tested, no
+			// depth write), mode 1 so only the fractional-alpha faces blend. The cutout faces redrawn here
+			// fail the depth test against what the sub-pass wrote (and the shader discards them anyway), so
+			// this is cheap. It runs before water so this push stays valid (water binds its own layout).
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, blendPipeline);
 			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, TRANSLUCENT_FLAG_OFFSET, stack.floats(1f));
 			if (staticFaceCount > 0)

@@ -15,7 +15,7 @@ layout(push_constant) uniform Push
 	vec4 row2;
 	vec4 viewport;
 	vec4 fogColor;  // rgb the distance fades to
-	vec4 fogRange;  // x start, y end, z translucent flag (0 opaque, 1 translucent)
+	vec4 fogRange;  // x start, y end, z draw mode (0 opaque, 1 blend, 2 cutout sub-pass)
 	vec4 sunDir;    // xyz world-space direction to the sun
 	vec4 sunColour; // rgb sun colour times intensity
 	vec4 ambient;   // rgb sky ambient
@@ -35,7 +35,23 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
-	bool translucent = pc.fogRange.z > 0.5;
+	// Draw mode in fogRange.z: 0 the opaque pass, 1 the blend pass, 2 the cutout sub-pass of the opaque
+	// phase. The translucent bucket holds both cutout faces (full vertex alpha over a holey texture:
+	// foliage, fences) and genuinely translucent faces (fractional alpha). Cutout faces must be alpha-
+	// tested with depth writes so they sort by depth instead of blending back-over-front, so the cutout
+	// sub-pass (mode 2, opaque pipeline) draws them and the blend pass (mode 1) draws only the fractional
+	// ones. Each face belongs to exactly one, split on its vertex alpha, so each mode drops the other's.
+	float mode = pc.fogRange.z;
+	bool blend = mode > 0.5 && mode < 1.5;
+	if (blend && vColor.a >= 0.998)
+	{
+		discard;  // a full-alpha cutout face, drawn depth-written in the cutout sub-pass
+	}
+	if (mode > 1.5 && vColor.a < 0.998)
+	{
+		discard;  // a fractional face, left to the blend pass
+	}
+
 	vec3 rgb = vColor.rgb;
 	float texA = 1.0;
 	if (vTex > 0u)
@@ -45,8 +61,8 @@ void main()
 		rgb *= texel.rgb * 2.0;
 	}
 
-	// Opaque faces drop the sub-half texel as a cutout; translucent faces blend it instead.
-	if (!translucent && texA < 0.5)
+	// The opaque and cutout passes drop the sub-half texel as a hole; the blend pass keeps it.
+	if (!blend && texA < 0.5)
 	{
 		discard;
 	}
@@ -63,5 +79,5 @@ void main()
 	float fog = clamp((vDepth - pc.fogRange.x) / max(pc.fogRange.y - pc.fogRange.x, 1e-3), 0.0, 1.0);
 	rgb = mix(rgb, pc.fogColor.rgb, fog);
 
-	outColor = vec4(rgb, translucent ? clamp(vColor.a * texA, 0.0, 1.0) : 1.0);
+	outColor = vec4(rgb, blend ? clamp(vColor.a * texA, 0.0, 1.0) : 1.0);
 }
