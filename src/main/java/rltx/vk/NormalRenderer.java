@@ -100,6 +100,10 @@ public final class NormalRenderer implements Renderer
 {
 	private static final int OUTPUT_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
 	private static final int DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+	// Multisampling: geometry rasterises into a 4x colour+depth target and the render pass resolves it
+	// down into the single-sampled external image the compositor shares. 4x is universally supported and
+	// cheap given the render is a few ms; it removes the stair-step edges that read as a cheap rasteriser.
+	private static final int MSAA_SAMPLES = VK_SAMPLE_COUNT_4_BIT;
 	private static final int MAX_DYNAMIC_FACES = 1 << 19;
 	private static final int MAX_STATIC_FACES = 3 << 20;
 	// Camera + fog block (112) plus the sun direction, sun colour and sky ambient added for lighting:
@@ -133,6 +137,8 @@ public final class NormalRenderer implements Renderer
 	// and the framebuffer over them. Recreated on resize.
 	private long image, memory, view, allocationSize, handle;
 	private long depthImage, depthMemory, depthView;
+	// The 4x multisampled colour target geometry draws into, resolved into `image` by the render pass.
+	private long msaaColorImage, msaaColorMemory, msaaColorView;
 	private long framebuffer;
 	private int outputWidth, outputHeight;
 	// The render scale the output was built at. client.getScale() (the camera zoom, in view pixels) is
@@ -547,19 +553,31 @@ public final class NormalRenderer implements Renderer
 	{
 		try (MemoryStack stack = stackPush())
 		{
-			VkAttachmentDescription.Buffer att = VkAttachmentDescription.calloc(2, stack);
+			// Three attachments: the 4x colour geometry draws into (0), the single-sampled external image
+			// the subpass resolves into (1), and the 4x depth (2). The MSAA colour and depth are discarded
+			// after the pass; only the resolved image is kept, in GENERAL for the post chain and compositor.
+			VkAttachmentDescription.Buffer att = VkAttachmentDescription.calloc(3, stack);
 			att.get(0)
 				.format(OUTPUT_FORMAT)
-				.samples(VK_SAMPLE_COUNT_1_BIT)
+				.samples(MSAA_SAMPLES)
 				.loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR)
+				.storeOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
+				.stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+				.stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
+				.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+				.finalLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+			att.get(1)
+				.format(OUTPUT_FORMAT)
+				.samples(VK_SAMPLE_COUNT_1_BIT)
+				.loadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
 				.storeOp(VK_ATTACHMENT_STORE_OP_STORE)
 				.stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
 				.stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
 				.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
 				.finalLayout(VK_IMAGE_LAYOUT_GENERAL);
-			att.get(1)
+			att.get(2)
 				.format(DEPTH_FORMAT)
-				.samples(VK_SAMPLE_COUNT_1_BIT)
+				.samples(MSAA_SAMPLES)
 				.loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR)
 				.storeOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
 				.stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
@@ -569,13 +587,16 @@ public final class NormalRenderer implements Renderer
 
 			VkAttachmentReference.Buffer colorRef = VkAttachmentReference.calloc(1, stack);
 			colorRef.get(0).attachment(0).layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-			VkAttachmentReference depthRef = VkAttachmentReference.calloc(stack).attachment(1).layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+			VkAttachmentReference.Buffer resolveRef = VkAttachmentReference.calloc(1, stack);
+			resolveRef.get(0).attachment(1).layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+			VkAttachmentReference depthRef = VkAttachmentReference.calloc(stack).attachment(2).layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 			VkSubpassDescription.Buffer subpass = VkSubpassDescription.calloc(1, stack);
 			subpass.get(0)
 				.pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS)
 				.colorAttachmentCount(1)
 				.pColorAttachments(colorRef)
+				.pResolveAttachments(resolveRef)
 				.pDepthStencilAttachment(depthRef);
 
 			// Hold the clear/writes until OpenGL's read of last frame is done (the wait semaphore lands
@@ -628,7 +649,7 @@ public final class NormalRenderer implements Renderer
 			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
 				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_BACK_BIT).frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE).lineWidth(1f);
 			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
-				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
+				.rasterizationSamples(MSAA_SAMPLES);
 			// Opaque writes depth; the translucent variant tests against it but does not write, so blended
 			// faces sort against the solid world without occluding one another by depth.
 			VkPipelineDepthStencilStateCreateInfo depthOpaque = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
@@ -715,7 +736,7 @@ public final class NormalRenderer implements Renderer
 			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
 				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
 			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
-				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
+				.rasterizationSamples(MSAA_SAMPLES);
 			// No depth test or write: the sky fills the background and geometry draws over it.
 			VkPipelineDepthStencilStateCreateInfo depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
 				.depthTestEnable(false).depthWriteEnable(false);
@@ -781,7 +802,7 @@ public final class NormalRenderer implements Renderer
 			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
 				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
 			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
-				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
+				.rasterizationSamples(MSAA_SAMPLES);
 			// Depth test against the opaque scene so nearer geometry hides the water; no depth write so
 			// the surface stays translucent and does not occlude anything drawn after it.
 			VkPipelineDepthStencilStateCreateInfo depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
@@ -1210,6 +1231,7 @@ public final class NormalRenderer implements Renderer
 		vkQueueWaitIdle(queue);
 		destroyTargets();
 		createImage(iw, ih);
+		createMsaaColor(iw, ih);
 		createDepth(iw, ih);
 		createFramebuffer(iw, ih);
 		createBloomTargets(iw, ih);
@@ -1375,7 +1397,7 @@ public final class NormalRenderer implements Renderer
 				.format(DEPTH_FORMAT)
 				.mipLevels(1)
 				.arrayLayers(1)
-				.samples(VK_SAMPLE_COUNT_1_BIT)
+				.samples(MSAA_SAMPLES)
 				.tiling(VK_IMAGE_TILING_OPTIMAL)
 				.usage(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
 				.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
@@ -1407,13 +1429,57 @@ public final class NormalRenderer implements Renderer
 		}
 	}
 
+	// The multisampled colour target geometry rasterises into; never stored or read outside the render
+	// pass (the pass resolves it into `image`), device-local.
+	private void createMsaaColor(int width, int height)
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkImageCreateInfo imageInfo = VkImageCreateInfo.calloc(stack).sType$Default()
+				.imageType(VK_IMAGE_TYPE_2D)
+				.format(OUTPUT_FORMAT)
+				.mipLevels(1)
+				.arrayLayers(1)
+				.samples(MSAA_SAMPLES)
+				.tiling(VK_IMAGE_TILING_OPTIMAL)
+				.usage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+				.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
+				.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+			imageInfo.extent().width(width).height(height).depth(1);
+			LongBuffer pImage = stack.mallocLong(1);
+			check(vkCreateImage(device, imageInfo, null, pImage), "vkCreateImage msaa");
+			msaaColorImage = pImage.get(0);
+
+			VkMemoryRequirements2 req = VkMemoryRequirements2.calloc(stack).sType$Default();
+			VkImageMemoryRequirementsInfo2 reqInfo = VkImageMemoryRequirementsInfo2.calloc(stack).sType$Default().image(msaaColorImage);
+			vkGetImageMemoryRequirements2(device, reqInfo, req);
+			VkMemoryAllocateInfo alloc = VkMemoryAllocateInfo.calloc(stack).sType$Default()
+				.allocationSize(req.memoryRequirements().size())
+				.memoryTypeIndex(ctx.findMemoryType(req.memoryRequirements().memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+			LongBuffer pMemory = stack.mallocLong(1);
+			check(vkAllocateMemory(device, alloc, null, pMemory), "vkAllocateMemory msaa");
+			msaaColorMemory = pMemory.get(0);
+			check(vkBindImageMemory(device, msaaColorImage, msaaColorMemory, 0), "vkBindImageMemory msaa");
+
+			VkImageViewCreateInfo viewInfo = VkImageViewCreateInfo.calloc(stack).sType$Default()
+				.image(msaaColorImage)
+				.viewType(VK_IMAGE_VIEW_TYPE_2D)
+				.format(OUTPUT_FORMAT);
+			viewInfo.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+			LongBuffer pView = stack.mallocLong(1);
+			check(vkCreateImageView(device, viewInfo, null, pView), "vkCreateImageView msaa");
+			msaaColorView = pView.get(0);
+		}
+	}
+
 	private void createFramebuffer(int width, int height)
 	{
 		try (MemoryStack stack = stackPush())
 		{
+			// Order matches the render pass attachments: 0 multisampled colour, 1 resolve (external image), 2 depth.
 			VkFramebufferCreateInfo info = VkFramebufferCreateInfo.calloc(stack).sType$Default()
 				.renderPass(renderPass)
-				.pAttachments(stack.longs(view, depthView))
+				.pAttachments(stack.longs(msaaColorView, view, depthView))
 				.width(width)
 				.height(height)
 				.layers(1);
@@ -1436,6 +1502,13 @@ public final class NormalRenderer implements Renderer
 			vkDestroyImage(device, depthImage, null);
 			vkFreeMemory(device, depthMemory, null);
 			depthImage = depthMemory = depthView = 0;
+		}
+		if (msaaColorImage != 0)
+		{
+			vkDestroyImageView(device, msaaColorView, null);
+			vkDestroyImage(device, msaaColorImage, null);
+			vkFreeMemory(device, msaaColorMemory, null);
+			msaaColorImage = msaaColorMemory = msaaColorView = 0;
 		}
 		if (image != 0)
 		{
@@ -1577,9 +1650,11 @@ public final class NormalRenderer implements Renderer
 				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, mb, null, null);
 			}
 
-			VkClearValue.Buffer clears = VkClearValue.calloc(2, stack);
+			// One clear per attachment in render-pass order: 0 multisampled colour, 1 resolve (load
+			// don't-care, its slot unused), 2 depth.
+			VkClearValue.Buffer clears = VkClearValue.calloc(3, stack);
 			clears.get(0).color().float32(stack.floats(bgR, bgG, bgB, 1f));
-			clears.get(1).depthStencil().set(1f, 0);
+			clears.get(2).depthStencil().set(1f, 0);
 			VkRect2D area = VkRect2D.calloc(stack);
 			area.offset().set(0, 0);
 			area.extent().set(outputWidth, outputHeight);
