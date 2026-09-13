@@ -1,0 +1,48 @@
+#version 460
+
+// Separable Gaussian blur of the Normal-mode bloom bright pass, at quarter resolution. Pass 0
+// blurs scratch A into B horizontally; pass 1 blurs B back into A vertically, leaving the finished
+// bloom in A for the compose pass to read.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1, rgba16f) uniform image2D bloomA;
+layout(set = 0, binding = 2, rgba16f) uniform image2D bloomB;
+
+layout(push_constant) uniform Push {
+  int width;
+  int height;
+  int pass;
+  float exposure;
+  float contrast;
+  float saturation;
+  float temperature;
+  float bloom;
+  float vignette;
+} pc;
+
+const int DOWN = 4;
+const int RADIUS = 6;
+const float WEIGHTS[7] = float[7](0.1329, 0.1257, 0.1063, 0.0805, 0.0545, 0.0330, 0.0179);
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 quarter = (ivec2(pc.width, pc.height) + DOWN - 1) / DOWN;
+  if (q.x >= quarter.x || q.y >= quarter.y) {
+    return;
+  }
+  vec3 sum = vec3(0.0);
+  if (pc.pass == 0) {
+    for (int i = -RADIUS; i <= RADIUS; ++i) {
+      ivec2 s = clamp(q + ivec2(i, 0), ivec2(0), quarter - 1);
+      sum += WEIGHTS[abs(i)] * imageLoad(bloomA, s).rgb;
+    }
+    imageStore(bloomB, q, vec4(sum, 1.0));
+  } else {
+    for (int i = -RADIUS; i <= RADIUS; ++i) {
+      ivec2 s = clamp(q + ivec2(0, i), ivec2(0), quarter - 1);
+      sum += WEIGHTS[abs(i)] * imageLoad(bloomB, s).rgb;
+    }
+    imageStore(bloomA, q, vec4(sum, 1.0));
+  }
+}

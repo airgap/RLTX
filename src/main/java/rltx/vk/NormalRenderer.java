@@ -24,6 +24,7 @@ import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkClearValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
+import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
 import org.lwjgl.vulkan.VkDescriptorImageInfo;
 import org.lwjgl.vulkan.VkDescriptorPoolCreateInfo;
@@ -128,6 +129,20 @@ public final class NormalRenderer implements Renderer
 	private long skyPipelineLayout, skyPipeline;
 	private static final int SKY_PUSH_BYTES = 80;
 
+	// Post-processing: a compute pass that tonemaps, colour-grades and blooms the presented image
+	// in place after the render pass ends and before the queue submit. Bloom uses two quarter-
+	// resolution scratch images — a bright pass then a separable blur. The presented image is 8-bit
+	// display-space, so this is a limited look pass, not a physically-correct HDR post. Kept wholly
+	// after the render pass so it does not touch the geometry/draw path other features edit.
+	private long bloomImageA, bloomMemoryA, bloomViewA;
+	private long bloomImageB, bloomMemoryB, bloomViewB;
+	private int bloomWidth, bloomHeight;
+	private long postDescriptorSetLayout, postDescriptorPool, postDescriptorSet;
+	private long postPipelineLayout, postBrightPipeline, postBlurPipeline, postComposePipeline;
+	private static final int POST_PUSH_BYTES = 36;
+	private static final int BLOOM_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+	private static final int BLOOM_DOWNSCALE = 4;
+
 	// Dynamic geometry is written to host-visible staging each frame and copied into the device-local
 	// buffers the vertex shader reads; static is device-local too, uploaded once per scene change.
 	// Device-local memory is why this is not the PCIe-bound crawl a host-visible shader read would be.
@@ -182,6 +197,7 @@ public final class NormalRenderer implements Renderer
 		createRenderPass();
 		createPipeline();
 		createSkyPipeline();
+		createPostPipeline();
 	}
 
 	private void createSyncObjects()
@@ -606,6 +622,67 @@ public final class NormalRenderer implements Renderer
 		}
 	}
 
+	// The in-place post chain: one descriptor set of three storage images (the presented image and
+	// the two bloom scratch images) and one push range shared by all three compute pipelines. The
+	// scratch images are bound per resize in ensureOutput/writePostDescriptors.
+	private void createPostPipeline()
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(3, stack);
+			for (int i = 0; i < 3; ++i)
+			{
+				binds.get(i).binding(i).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT);
+			}
+			VkDescriptorSetLayoutCreateInfo layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
+			LongBuffer pLayout = stack.mallocLong(1);
+			check(vkCreateDescriptorSetLayout(device, layoutInfo, null, pLayout), "vkCreateDescriptorSetLayout post");
+			postDescriptorSetLayout = pLayout.get(0);
+
+			VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(1, stack);
+			sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(3);
+			VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(sizes);
+			LongBuffer pPool = stack.mallocLong(1);
+			check(vkCreateDescriptorPool(device, poolInfo, null, pPool), "vkCreateDescriptorPool post");
+			postDescriptorPool = pPool.get(0);
+
+			VkDescriptorSetAllocateInfo alloc = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default()
+				.descriptorPool(postDescriptorPool)
+				.pSetLayouts(stack.longs(postDescriptorSetLayout));
+			LongBuffer pSet = stack.mallocLong(1);
+			check(vkAllocateDescriptorSets(device, alloc, pSet), "vkAllocateDescriptorSets post");
+			postDescriptorSet = pSet.get(0);
+
+			VkPushConstantRange.Buffer push = VkPushConstantRange.calloc(1, stack);
+			push.get(0).stageFlags(VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(POST_PUSH_BYTES);
+			VkPipelineLayoutCreateInfo pipelineLayoutInfo = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+				.pSetLayouts(stack.longs(postDescriptorSetLayout))
+				.pPushConstantRanges(push);
+			LongBuffer pPipelineLayout = stack.mallocLong(1);
+			check(vkCreatePipelineLayout(device, pipelineLayoutInfo, null, pPipelineLayout), "vkCreatePipelineLayout post");
+			postPipelineLayout = pPipelineLayout.get(0);
+		}
+		postBrightPipeline = createComputePipeline("/rltx/normalpost_bright.comp.spv");
+		postBlurPipeline = createComputePipeline("/rltx/normalpost_blur.comp.spv");
+		postComposePipeline = createComputePipeline("/rltx/normalpost.comp.spv");
+	}
+
+	private long createComputePipeline(String resource)
+	{
+		long module = loadShaderModule(resource);
+		try (MemoryStack stack = stackPush())
+		{
+			VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
+				.stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
+			VkComputePipelineCreateInfo.Buffer info = VkComputePipelineCreateInfo.calloc(1, stack);
+			info.get(0).sType$Default().stage(stage).layout(postPipelineLayout);
+			LongBuffer pPipeline = stack.mallocLong(1);
+			check(vkCreateComputePipelines(device, VK_NULL_HANDLE, info, null, pPipeline), "vkCreateComputePipelines");
+			vkDestroyShaderModule(device, module, null);
+			return pPipeline.get(0);
+		}
+	}
+
 	private long loadShaderModule(String resource)
 	{
 		try (InputStream in = NormalRenderer.class.getResourceAsStream(resource))
@@ -851,9 +928,104 @@ public final class NormalRenderer implements Renderer
 		createImage(width, height);
 		createDepth(width, height);
 		createFramebuffer(width, height);
+		createBloomTargets(width, height);
+		writePostDescriptors();
 		outputWidth = width;
 		outputHeight = height;
 		return true;
+	}
+
+	// The two quarter-resolution bloom scratch images. They live only in GENERAL layout (storage
+	// reads and writes), so they are transitioned there once here and never move again; their
+	// contents are fully rewritten each frame the bloom runs, so no cross-frame hazard needs them.
+	private void createBloomTargets(int width, int height)
+	{
+		bloomWidth = (width + BLOOM_DOWNSCALE - 1) / BLOOM_DOWNSCALE;
+		bloomHeight = (height + BLOOM_DOWNSCALE - 1) / BLOOM_DOWNSCALE;
+		long[] a = createStorageImage(bloomWidth, bloomHeight);
+		bloomImageA = a[0];
+		bloomMemoryA = a[1];
+		bloomViewA = a[2];
+		long[] b = createStorageImage(bloomWidth, bloomHeight);
+		bloomImageB = b[0];
+		bloomMemoryB = b[1];
+		bloomViewB = b[2];
+
+		VkCommandBuffer up = ctx.beginOneTime(commandPool);
+		try (MemoryStack stack = stackPush())
+		{
+			VkImageMemoryBarrier.Buffer barriers = VkImageMemoryBarrier.calloc(2, stack);
+			long[] images = {bloomImageA, bloomImageB};
+			for (int i = 0; i < 2; ++i)
+			{
+				barriers.get(i).sType$Default()
+					.srcAccessMask(0).dstAccessMask(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)
+					.oldLayout(VK_IMAGE_LAYOUT_UNDEFINED).newLayout(VK_IMAGE_LAYOUT_GENERAL)
+					.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+					.image(images[i]);
+				barriers.get(i).subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+			}
+			vkCmdPipelineBarrier(up, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, null, null, barriers);
+		}
+		ctx.endOneTimeAndWait(up, queue, commandPool);
+	}
+
+	// A device-local storage image plus its view. Not exported; only compute touches it.
+	private long[] createStorageImage(int width, int height)
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkImageCreateInfo imageInfo = VkImageCreateInfo.calloc(stack).sType$Default()
+				.imageType(VK_IMAGE_TYPE_2D)
+				.format(BLOOM_FORMAT)
+				.mipLevels(1)
+				.arrayLayers(1)
+				.samples(VK_SAMPLE_COUNT_1_BIT)
+				.tiling(VK_IMAGE_TILING_OPTIMAL)
+				.usage(VK_IMAGE_USAGE_STORAGE_BIT)
+				.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
+				.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+			imageInfo.extent().width(width).height(height).depth(1);
+			LongBuffer pImage = stack.mallocLong(1);
+			check(vkCreateImage(device, imageInfo, null, pImage), "vkCreateImage bloom");
+			long img = pImage.get(0);
+
+			VkMemoryRequirements2 req = VkMemoryRequirements2.calloc(stack).sType$Default();
+			VkImageMemoryRequirementsInfo2 reqInfo = VkImageMemoryRequirementsInfo2.calloc(stack).sType$Default().image(img);
+			vkGetImageMemoryRequirements2(device, reqInfo, req);
+			VkMemoryAllocateInfo alloc = VkMemoryAllocateInfo.calloc(stack).sType$Default()
+				.allocationSize(req.memoryRequirements().size())
+				.memoryTypeIndex(ctx.findMemoryType(req.memoryRequirements().memoryTypeBits(), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
+			LongBuffer pMemory = stack.mallocLong(1);
+			check(vkAllocateMemory(device, alloc, null, pMemory), "vkAllocateMemory bloom");
+			long mem = pMemory.get(0);
+			check(vkBindImageMemory(device, img, mem, 0), "vkBindImageMemory bloom");
+
+			VkImageViewCreateInfo viewInfo = VkImageViewCreateInfo.calloc(stack).sType$Default()
+				.image(img)
+				.viewType(VK_IMAGE_VIEW_TYPE_2D)
+				.format(BLOOM_FORMAT);
+			viewInfo.subresourceRange().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+			LongBuffer pView = stack.mallocLong(1);
+			check(vkCreateImageView(device, viewInfo, null, pView), "vkCreateImageView bloom");
+			return new long[]{img, mem, pView.get(0)};
+		}
+	}
+
+	// Points the post set at the current presented image (binding 0) and bloom scratch (1, 2).
+	private void writePostDescriptors()
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			long[] views = {view, bloomViewA, bloomViewB};
+			VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
+			for (int i = 0; i < 3; ++i)
+			{
+				VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack).imageView(views[i]).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+				writes.get(i).sType$Default().dstSet(postDescriptorSet).dstBinding(i).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(1).pImageInfo(info);
+			}
+			vkUpdateDescriptorSets(device, writes, null);
+		}
 	}
 
 	private void createImage(int width, int height)
@@ -988,6 +1160,21 @@ public final class NormalRenderer implements Renderer
 			vkFreeMemory(device, memory, null);
 			image = memory = view = handle = allocationSize = 0;
 		}
+		if (bloomImageA != 0)
+		{
+			vkDestroyImageView(device, bloomViewA, null);
+			vkDestroyImage(device, bloomImageA, null);
+			vkFreeMemory(device, bloomMemoryA, null);
+			bloomImageA = bloomMemoryA = bloomViewA = 0;
+		}
+		if (bloomImageB != 0)
+		{
+			vkDestroyImageView(device, bloomViewB, null);
+			vkDestroyImage(device, bloomImageB, null);
+			vkFreeMemory(device, bloomMemoryB, null);
+			bloomImageB = bloomMemoryB = bloomViewB = 0;
+		}
+		bloomWidth = bloomHeight = 0;
 	}
 
 	@Override public long outputHandle() { return handle; }
@@ -1158,6 +1345,12 @@ public final class NormalRenderer implements Renderer
 			}
 
 			vkCmdEndRenderPass(cmd);
+
+			// Post-processing, in place over the presented image: the render pass left it in GENERAL,
+			// which a compute shader can read and write, and it is left GENERAL again for the
+			// compositor. All of it runs after the draw so it stays clear of the geometry path.
+			recordPost(cmd, params);
+
 			check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
 			VkSubmitInfo submit = VkSubmitInfo.calloc(stack).sType$Default()
@@ -1188,6 +1381,74 @@ public final class NormalRenderer implements Renderer
 		waitNanos += System.nanoTime() - start;
 		check(vkResetFences(device, fence), "vkResetFences");
 		fencePending = false;
+	}
+
+	// Bright pass -> separable blur -> compose (tonemap + grade + vignette + bloom), all over the
+	// presented image which the render pass left in GENERAL. The bloom chain is skipped when the
+	// bloom knob is zero; the compose pass always runs (exposure and grade apply every frame).
+	private void recordPost(VkCommandBuffer cmd, FrameParams params)
+	{
+		int fullX = (outputWidth + 7) / 8;
+		int fullY = (outputHeight + 7) / 8;
+		int quartX = (bloomWidth + 7) / 8;
+		int quartY = (bloomHeight + 7) / 8;
+		boolean bloomOn = params.bloom > 0f;
+		try (MemoryStack stack = stackPush())
+		{
+			// Make the render pass's colour writes available to the compute reads (image stays GENERAL).
+			memoryBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postPipelineLayout, 0, stack.longs(postDescriptorSet), null);
+
+			if (bloomOn)
+			{
+				pushPost(cmd, stack, 0, params);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postBrightPipeline);
+				vkCmdDispatch(cmd, quartX, quartY, 1);
+				computeBarrier(cmd);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postBlurPipeline);
+				pushPost(cmd, stack, 0, params); // horizontal: A -> B
+				vkCmdDispatch(cmd, quartX, quartY, 1);
+				computeBarrier(cmd);
+				pushPost(cmd, stack, 1, params); // vertical: B -> A
+				vkCmdDispatch(cmd, quartX, quartY, 1);
+				computeBarrier(cmd);
+			}
+
+			pushPost(cmd, stack, 0, params);
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, postComposePipeline);
+			vkCmdDispatch(cmd, fullX, fullY, 1);
+
+			// Flush the compute writes for the compositor's read; compute is now the last writer of the
+			// presented image, in place of the render pass's own external dependency.
+			memoryBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
+		}
+	}
+
+	private void pushPost(VkCommandBuffer cmd, MemoryStack stack, int pass, FrameParams params)
+	{
+		ByteBuffer pc = stack.malloc(POST_PUSH_BYTES);
+		pc.putInt(outputWidth).putInt(outputHeight).putInt(pass)
+			.putFloat(params.exposure).putFloat(params.contrast).putFloat(params.saturation)
+			.putFloat(params.temperature).putFloat(params.bloom).putFloat(params.vignette);
+		pc.flip();
+		vkCmdPushConstants(cmd, postPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pc);
+	}
+
+	private void memoryBarrier(VkCommandBuffer c, int srcStage, int srcAccess, int dstStage, int dstAccess)
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			VkMemoryBarrier.Buffer b = VkMemoryBarrier.calloc(1, stack).sType$Default().srcAccessMask(srcAccess).dstAccessMask(dstAccess);
+			vkCmdPipelineBarrier(c, srcStage, dstStage, 0, b, null, null);
+		}
+	}
+
+	private void computeBarrier(VkCommandBuffer c)
+	{
+		memoryBarrier(c, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 	}
 
 	@Override
@@ -1231,6 +1492,12 @@ public final class NormalRenderer implements Renderer
 		if (pipelineLayout != 0) { vkDestroyPipelineLayout(device, pipelineLayout, null); pipelineLayout = 0; }
 		if (skyPipeline != 0) { vkDestroyPipeline(device, skyPipeline, null); skyPipeline = 0; }
 		if (skyPipelineLayout != 0) { vkDestroyPipelineLayout(device, skyPipelineLayout, null); skyPipelineLayout = 0; }
+		if (postBrightPipeline != 0) { vkDestroyPipeline(device, postBrightPipeline, null); postBrightPipeline = 0; }
+		if (postBlurPipeline != 0) { vkDestroyPipeline(device, postBlurPipeline, null); postBlurPipeline = 0; }
+		if (postComposePipeline != 0) { vkDestroyPipeline(device, postComposePipeline, null); postComposePipeline = 0; }
+		if (postPipelineLayout != 0) { vkDestroyPipelineLayout(device, postPipelineLayout, null); postPipelineLayout = 0; }
+		if (postDescriptorPool != 0) { vkDestroyDescriptorPool(device, postDescriptorPool, null); postDescriptorPool = 0; }
+		if (postDescriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, postDescriptorSetLayout, null); postDescriptorSetLayout = 0; }
 		if (renderPass != 0) { vkDestroyRenderPass(device, renderPass, null); renderPass = 0; }
 		if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
 		if (descriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null); descriptorSetLayout = 0; }
