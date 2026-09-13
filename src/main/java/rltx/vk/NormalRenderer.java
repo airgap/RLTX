@@ -209,6 +209,9 @@ public final class NormalRenderer implements Renderer
 	// and the half-extents per unit depth (view width/height over twice the internal zoom). Set in submit.
 	private float frustumCamX, frustumCamY, frustumCamZ, frustumSx, frustumSy;
 	private float[] frustumRot;
+	// Per-frame diagnostics: static vertices actually submitted (after frustum + view culling) and the
+	// number of draw calls the coalescing broke them into, reported by passReport.
+	private int submittedStaticVerts, staticDrawCalls;
 	private final Map<Integer, View> views = new HashMap<>();
 	// Per set, which zones have their static water replaced by the dynamic displaced path this frame,
 	// as Waves reports through setDisplacedZones; indexed by the set's flat zone index.
@@ -1591,6 +1594,8 @@ public final class NormalRenderer implements Renderer
 			frustumRot = params.forwardRotation;
 			frustumSx = outputWidth * 0.5f / zoom;
 			frustumSy = outputHeight * 0.5f / zoom;
+			submittedStaticVerts = 0;
+			staticDrawCalls = 0;
 
 			// The sky fills the background before geometry draws over it; the login/idle pattern screen
 			// keeps its flat clear instead.
@@ -1792,6 +1797,8 @@ public final class NormalRenderer implements Renderer
 				if (runStart >= 0)
 				{
 					vkCmdDraw(cmd, runCount, 1, runStart, 0);
+					submittedStaticVerts += runCount;
+					++staticDrawCalls;
 					runStart = -1;
 				}
 				if (visible)
@@ -1804,6 +1811,8 @@ public final class NormalRenderer implements Renderer
 		if (runStart >= 0)
 		{
 			vkCmdDraw(cmd, runCount, 1, runStart, 0);
+			submittedStaticVerts += runCount;
+			++staticDrawCalls;
 		}
 	}
 
@@ -1922,7 +1931,7 @@ public final class NormalRenderer implements Renderer
 	@Override public long waitNanos() { return waitNanos; }
 	@Override public double averageLogLuminance() { return Double.NaN; }
 	@Override public double lastGpuMillis() { return 0.0; }
-	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, " + translucentFaceCount + " translucent, " + waterFaceCount + " water"; }
+	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, " + translucentFaceCount + " translucent, " + waterFaceCount + " water; submitted " + (submittedStaticVerts / 3) + " static faces in " + staticDrawCalls + " draws"; }
 
 	// ---- lifecycle ----
 
