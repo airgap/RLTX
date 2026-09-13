@@ -37,6 +37,7 @@ import org.lwjgl.vulkan.VkExportSemaphoreCreateInfo;
 import org.lwjgl.vulkan.VkExternalMemoryImageCreateInfo;
 import org.lwjgl.vulkan.VkExportMemoryAllocateInfo;
 import org.lwjgl.vulkan.VkFenceCreateInfo;
+import org.lwjgl.vulkan.VkQueryPoolCreateInfo;
 import org.lwjgl.vulkan.VkFramebufferCreateInfo;
 import org.lwjgl.vulkan.VkGraphicsPipelineCreateInfo;
 import org.lwjgl.vulkan.VkImageCreateInfo;
@@ -212,6 +213,13 @@ public final class NormalRenderer implements Renderer
 	// Per-frame diagnostics: static vertices actually submitted (after frustum + view culling) and the
 	// number of draw calls the coalescing broke them into, reported by passReport.
 	private int submittedStaticVerts, staticDrawCalls;
+	// GPU timing: a timestamp per pass boundary read back a frame late, so passReport can name where the
+	// frame's GPU time actually goes instead of it being inferred.
+	private long timestampPool;
+	private double lastGpuMillis;
+	private static final String[] PASS_NAMES = {"sky", "opaque", "cutout", "blend", "water", "post"};
+	private static final int STAMPS = PASS_NAMES.length + 1;
+	private final double[] passMillis = new double[PASS_NAMES.length];
 	private final Map<Integer, View> views = new HashMap<>();
 	// Per set, which zones have their static water replaced by the dynamic displaced path this frame,
 	// as Waves reports through setDisplacedZones; indexed by the set's flat zone index.
@@ -258,6 +266,13 @@ public final class NormalRenderer implements Renderer
 			LongBuffer pFence = stack.mallocLong(1);
 			check(vkCreateFence(device, fenceInfo, null, pFence), "vkCreateFence");
 			fence = pFence.get(0);
+
+			VkQueryPoolCreateInfo queryInfo = VkQueryPoolCreateInfo.calloc(stack).sType$Default()
+				.queryType(VK_QUERY_TYPE_TIMESTAMP)
+				.queryCount(STAMPS);
+			LongBuffer pPool = stack.mallocLong(1);
+			check(vkCreateQueryPool(device, queryInfo, null, pPool), "vkCreateQueryPool");
+			timestampPool = pPool.get(0);
 
 			VkExportSemaphoreCreateInfo export = VkExportSemaphoreCreateInfo.calloc(stack).sType$Default()
 				.handleTypes(ExternalHandles.SEMAPHORE_HANDLE_TYPE);
@@ -1529,6 +1544,8 @@ public final class NormalRenderer implements Renderer
 			VkCommandBufferBeginInfo begin = VkCommandBufferBeginInfo.calloc(stack).sType$Default()
 				.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 			check(vkBeginCommandBuffer(cmd, begin), "vkBeginCommandBuffer");
+			vkCmdResetQueryPool(cmd, timestampPool, 0, STAMPS);
+			stamp(cmd, 0);
 
 			if (dynamicFaceCount > 0)
 			{
@@ -1635,6 +1652,7 @@ public final class NormalRenderer implements Renderer
 			pc.flip();
 			vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc);
 
+			stamp(cmd, 1);
 			// Opaque pass: solid static groups, then the opaque dynamic buffer.
 			if (staticFaceCount > 0)
 			{
@@ -1647,6 +1665,7 @@ public final class NormalRenderer implements Renderer
 				vkCmdDraw(cmd, dynamicFaceCount * 3, 1, 0, 0);
 			}
 
+			stamp(cmd, 2);
 			// Cutout sub-pass, still in the opaque phase: the cutout faces of the translucent bucket
 			// (foliage, fences — full vertex alpha over a holey texture) drawn with the opaque pipeline so
 			// they alpha-test and write depth, sorting correctly instead of blending back-over-front, and
@@ -1665,6 +1684,7 @@ public final class NormalRenderer implements Renderer
 				vkCmdDraw(cmd, translucentFaceCount * 3, 1, 0, 0);
 			}
 
+			stamp(cmd, 3);
 			// Blend pass over the opaque+cutout frame: same layout, the blend pipeline (depth-tested, no
 			// depth write), mode 1 so only the fractional-alpha faces blend. The cutout faces redrawn here
 			// fail the depth test against what the sub-pass wrote (and the shader discards them anyway), so
@@ -1682,6 +1702,7 @@ public final class NormalRenderer implements Renderer
 				vkCmdDraw(cmd, translucentFaceCount * 3, 1, 0, 0);
 			}
 
+			stamp(cmd, 4);
 			// The water pass draws after everything opaque, blended over it with the depth test kept and
 			// depth writes dropped, so the surface takes on the scene beneath it. It reads its own push
 			// constants (the opaque set plus the sun, sky tint and wave time/strength). Both the static
@@ -1747,12 +1768,14 @@ public final class NormalRenderer implements Renderer
 				}
 			}
 
+			stamp(cmd, 5);
 			vkCmdEndRenderPass(cmd);
 
 			// Post-processing, in place over the presented image: the render pass left it in GENERAL,
 			// which a compute shader can read and write, and it is left GENERAL again for the
 			// compositor. All of it runs after the draw so it stays clear of the geometry path.
 			recordPost(cmd, params);
+			stamp(cmd, 6);
 
 			check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
 
@@ -1827,6 +1850,25 @@ public final class NormalRenderer implements Renderer
 		waitNanos += System.nanoTime() - start;
 		check(vkResetFences(device, fence), "vkResetFences");
 		fencePending = false;
+
+		// The just-finished frame's timestamps are now available; convert them to per-pass milliseconds.
+		try (MemoryStack stack = stackPush())
+		{
+			LongBuffer stamps = stack.mallocLong(STAMPS);
+			if (vkGetQueryPoolResults(device, timestampPool, 0, STAMPS, stamps, Long.BYTES, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+			{
+				lastGpuMillis = (stamps.get(STAMPS - 1) - stamps.get(0)) * ctx.timestampPeriod / 1_000_000.0;
+				for (int i = 0; i < PASS_NAMES.length; ++i)
+				{
+					passMillis[i] = (stamps.get(i + 1) - stamps.get(i)) * ctx.timestampPeriod / 1_000_000.0;
+				}
+			}
+		}
+	}
+
+	private void stamp(VkCommandBuffer cmd, int index)
+	{
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool, index);
 	}
 
 	// Bright pass -> separable blur -> compose (tonemap + grade + vignette + bloom), all over the
@@ -1930,8 +1972,16 @@ public final class NormalRenderer implements Renderer
 
 	@Override public long waitNanos() { return waitNanos; }
 	@Override public double averageLogLuminance() { return Double.NaN; }
-	@Override public double lastGpuMillis() { return 0.0; }
-	@Override public String passReport() { return "normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, " + translucentFaceCount + " translucent, " + waterFaceCount + " water; submitted " + (submittedStaticVerts / 3) + " static faces in " + staticDrawCalls + " draws"; }
+	@Override public double lastGpuMillis() { return lastGpuMillis; }
+	@Override public String passReport()
+	{
+		StringBuilder b = new StringBuilder("normal: raster " + staticFaceCount + "+" + dynamicFaceCount + " faces, " + translucentFaceCount + " translucent, " + waterFaceCount + " water; submitted " + (submittedStaticVerts / 3) + " static faces in " + staticDrawCalls + " draws; gpu");
+		for (int i = 0; i < PASS_NAMES.length; ++i)
+		{
+			b.append(' ').append(PASS_NAMES[i]).append(' ').append(String.format("%.1f", passMillis[i]));
+		}
+		return b.toString();
+	}
 
 	// ---- lifecycle ----
 
@@ -1992,6 +2042,7 @@ public final class NormalRenderer implements Renderer
 		ctx.destroyBuffer(staticTexs);
 		ctx.destroyBuffer(staticNormals);
 		if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
+		if (timestampPool != 0) { vkDestroyQueryPool(device, timestampPool, null); timestampPool = 0; }
 		if (semaphoreVkDone != 0) { vkDestroySemaphore(device, semaphoreVkDone, null); semaphoreVkDone = 0; }
 		if (semaphoreGlDone != 0) { vkDestroySemaphore(device, semaphoreGlDone, null); semaphoreGlDone = 0; }
 	}
