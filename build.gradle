@@ -43,8 +43,9 @@ tasks.withType(JavaCompile).configureEach {
 
 def spvDir = layout.buildDirectory.dir('generated/spv')
 
-// One SPIR-V compile task per compute shader in src/main/glsl.
-def shaderTasks = fileTree('src/main/glsl').matching { include '*.comp' }.files.sort().collect { src ->
+// One SPIR-V compile task per shader in src/main/glsl. glslangValidator infers the stage from
+// the extension, so compute, vertex and fragment shaders share this task.
+def shaderTasks = fileTree('src/main/glsl').matching { include '*.comp', '*.vert', '*.frag' }.files.sort().collect { src ->
 	def out = spvDir.get().file("rltx/${src.name}.spv").asFile
 	tasks.register("compileShader_${src.name.replace('.', '_')}", Exec) {
 		inputs.file src
