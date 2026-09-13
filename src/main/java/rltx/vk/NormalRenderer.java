@@ -1758,9 +1758,15 @@ public final class NormalRenderer implements Renderer
 
 	private void pushPost(VkCommandBuffer cmd, MemoryStack stack, int pass, FrameParams params)
 	{
+		// The raster pass already writes a finished display-space frame (albedo times capped light), not
+		// linear HDR, so the shared HDR exposure (config default 1.8, and frozen there since Normal feeds
+		// no luminance meter for auto-exposure) would only lift the whole image and wash its colours out
+		// through the ACES curve. Post applies a neutral exposure and lets ACES do a gentle highlight
+		// rolloff; scene brightness is the lighting's job here, not the grade's.
+		float postExposure = 1f;
 		ByteBuffer pc = stack.malloc(POST_PUSH_BYTES);
 		pc.putInt(outputWidth).putInt(outputHeight).putInt(pass)
-			.putFloat(params.exposure).putFloat(params.contrast).putFloat(params.saturation)
+			.putFloat(postExposure).putFloat(params.contrast).putFloat(params.saturation)
 			.putFloat(params.temperature).putFloat(params.bloom).putFloat(params.vignette);
 		pc.flip();
 		vkCmdPushConstants(cmd, postPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pc);
