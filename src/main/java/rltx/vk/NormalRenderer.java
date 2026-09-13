@@ -125,6 +125,8 @@ public final class NormalRenderer implements Renderer
 	private long renderPass;
 	private long descriptorSetLayout, descriptorPool, dynamicDescriptorSet, staticDescriptorSet;
 	private long pipelineLayout, pipeline;
+	private long skyPipelineLayout, skyPipeline;
+	private static final int SKY_PUSH_BYTES = 80;
 
 	// Dynamic geometry is written to host-visible staging each frame and copied into the device-local
 	// buffers the vertex shader reads; static is device-local too, uploaded once per scene change.
@@ -179,6 +181,7 @@ public final class NormalRenderer implements Renderer
 		MemoryUtil.memFree(dummy);
 		createRenderPass();
 		createPipeline();
+		createSkyPipeline();
 	}
 
 	private void createSyncObjects()
@@ -535,6 +538,68 @@ public final class NormalRenderer implements Renderer
 			LongBuffer pPipeline = stack.mallocLong(1);
 			check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, info, null, pPipeline), "vkCreateGraphicsPipelines");
 			pipeline = pPipeline.get(0);
+
+			vkDestroyShaderModule(device, vert, null);
+			vkDestroyShaderModule(device, frag, null);
+		}
+	}
+
+	private void createSkyPipeline()
+	{
+		try (MemoryStack stack = stackPush())
+		{
+			long vert = loadShaderModule("/rltx/sky.vert.spv");
+			long frag = loadShaderModule("/rltx/sky.frag.spv");
+			ByteBuffer main = stack.UTF8("main");
+
+			VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
+			stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vert).pName(main);
+			stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(frag).pName(main);
+
+			VkPipelineVertexInputStateCreateInfo vertexInput = VkPipelineVertexInputStateCreateInfo.calloc(stack).sType$Default();
+			VkPipelineInputAssemblyStateCreateInfo assembly = VkPipelineInputAssemblyStateCreateInfo.calloc(stack).sType$Default()
+				.topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+			VkPipelineViewportStateCreateInfo viewport = VkPipelineViewportStateCreateInfo.calloc(stack).sType$Default()
+				.viewportCount(1).scissorCount(1);
+			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack).sType$Default()
+				.polygonMode(VK_POLYGON_MODE_FILL).cullMode(VK_CULL_MODE_NONE).frontFace(VK_FRONT_FACE_CLOCKWISE).lineWidth(1f);
+			VkPipelineMultisampleStateCreateInfo multisample = VkPipelineMultisampleStateCreateInfo.calloc(stack).sType$Default()
+				.rasterizationSamples(VK_SAMPLE_COUNT_1_BIT);
+			// No depth test or write: the sky fills the background and geometry draws over it.
+			VkPipelineDepthStencilStateCreateInfo depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
+				.depthTestEnable(false).depthWriteEnable(false);
+			VkPipelineColorBlendAttachmentState.Buffer blendAtt = VkPipelineColorBlendAttachmentState.calloc(1, stack);
+			blendAtt.get(0).blendEnable(false)
+				.colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+			VkPipelineColorBlendStateCreateInfo blend = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default().pAttachments(blendAtt);
+			VkPipelineDynamicStateCreateInfo dynamic = VkPipelineDynamicStateCreateInfo.calloc(stack).sType$Default()
+				.pDynamicStates(stack.ints(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR));
+
+			VkPushConstantRange.Buffer push = VkPushConstantRange.calloc(1, stack);
+			push.get(0).stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT).offset(0).size(SKY_PUSH_BYTES);
+			VkPipelineLayoutCreateInfo layoutInfo = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+				.pPushConstantRanges(push);
+			LongBuffer pLayout = stack.mallocLong(1);
+			check(vkCreatePipelineLayout(device, layoutInfo, null, pLayout), "vkCreatePipelineLayout sky");
+			skyPipelineLayout = pLayout.get(0);
+
+			VkGraphicsPipelineCreateInfo.Buffer info = VkGraphicsPipelineCreateInfo.calloc(1, stack);
+			info.get(0).sType$Default()
+				.pStages(stages)
+				.pVertexInputState(vertexInput)
+				.pInputAssemblyState(assembly)
+				.pViewportState(viewport)
+				.pRasterizationState(raster)
+				.pMultisampleState(multisample)
+				.pDepthStencilState(depth)
+				.pColorBlendState(blend)
+				.pDynamicState(dynamic)
+				.layout(skyPipelineLayout)
+				.renderPass(renderPass)
+				.subpass(0);
+			LongBuffer pPipeline = stack.mallocLong(1);
+			check(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, info, null, pPipeline), "vkCreateGraphicsPipelines sky");
+			skyPipeline = pPipeline.get(0);
 
 			vkDestroyShaderModule(device, vert, null);
 			vkDestroyShaderModule(device, frag, null);
@@ -1022,6 +1087,23 @@ public final class NormalRenderer implements Renderer
 			scissor.get(0).extent().set(outputWidth, outputHeight);
 			vkCmdSetScissor(cmd, 0, scissor);
 
+			// The sky fills the background before geometry draws over it; the login/idle pattern screen
+			// keeps its flat clear instead.
+			if (!params.pattern)
+			{
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+				ByteBuffer sky = stack.malloc(SKY_PUSH_BYTES);
+				float[] inv = params.inverseRotation;
+				sky.putFloat(inv[0]).putFloat(inv[1]).putFloat(inv[2]).putFloat(0f);
+				sky.putFloat(inv[3]).putFloat(inv[4]).putFloat(inv[5]).putFloat(0f);
+				sky.putFloat(inv[6]).putFloat(inv[7]).putFloat(inv[8]).putFloat(0f);
+				sky.putFloat(params.zoom).putFloat(outputWidth).putFloat(outputHeight).putFloat(params.sunUp);
+				sky.putFloat(params.sunX).putFloat(params.sunY).putFloat(params.sunZ).putFloat(params.sunIntensity);
+				sky.flip();
+				vkCmdPushConstants(cmd, skyPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sky);
+				vkCmdDraw(cmd, 3, 1, 0, 0);
+			}
+
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 			ByteBuffer pc = stack.malloc(PUSH_BYTES);
@@ -1147,6 +1229,8 @@ public final class NormalRenderer implements Renderer
 		destroyTargets();
 		if (pipeline != 0) { vkDestroyPipeline(device, pipeline, null); pipeline = 0; }
 		if (pipelineLayout != 0) { vkDestroyPipelineLayout(device, pipelineLayout, null); pipelineLayout = 0; }
+		if (skyPipeline != 0) { vkDestroyPipeline(device, skyPipeline, null); skyPipeline = 0; }
+		if (skyPipelineLayout != 0) { vkDestroyPipelineLayout(device, skyPipelineLayout, null); skyPipelineLayout = 0; }
 		if (renderPass != 0) { vkDestroyRenderPass(device, renderPass, null); renderPass = 0; }
 		if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
 		if (descriptorSetLayout != 0) { vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null); descriptorSetLayout = 0; }
