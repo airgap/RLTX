@@ -70,23 +70,30 @@ void main()
 	vec3 reflectDir = reflect(viewDir, n);
 	vec3 reflection = skyGradient(reflectDir);
 
-	// The base tint is the water's own face colour, modulated by its texture where it has one and
-	// then deepened so it reads as water rather than a flat fill.
-	vec3 tint = vColor.rgb;
+	// A deliberate deep blue-green body, warmed only partway toward the water's own face colour so
+	// regions still differ, is what makes the surface read as water. The face colour halved on its
+	// own is whatever murky hue the region baked to, which at oblique angles (where Fresnel is small
+	// and the body dominates) leaves the river a flat, washed-out sheet. The texture, where the face
+	// has one, darkens the body as a hint of the bed.
+	vec3 body = mix(vec3(0.05, 0.19, 0.23), vColor.rgb, 0.35);
 	if (vTex > 0u)
 	{
-		tint *= texture(gameTextures, vec3(vUv, float(vTex - 1u))).rgb * 2.0;
+		body *= texture(gameTextures, vec3(vUv, float(vTex - 1u))).rgb * 2.0;
 	}
-	tint *= 0.5;
 
-	vec3 rgb = mix(tint, reflection, fresnel);
+	vec3 rgb = mix(body, reflection, fresnel);
+
+	// A tight sun glint off the perturbed surface reads as a wet specular highlight; the mirror term
+	// alone, reflecting a matte sky, leaves the water looking like frosted glass.
+	float glint = pow(max(dot(reflectDir, normalize(pc.sun.xyz)), 0.0), 80.0) * pc.sun.w;
+	rgb += vec3(1.0, 0.97, 0.9) * glint;
 
 	// Distance fog, matching raster.frag so water fades into the scene with everything else.
 	float fog = clamp((vDepth - pc.fogRange.x) / max(pc.fogRange.y - pc.fogRange.x, 1e-3), 0.0, 1.0);
 	rgb = mix(rgb, pc.fogColor.rgb, fog);
 
-	// Partly transparent so the riverbed under the surface shows through, more so head-on and less
-	// where the grazing mirror takes over.
-	float alpha = clamp(0.6 + 0.4 * fresnel, 0.0, 1.0);
+	// Partly transparent so the riverbed under the surface shows through, clearer head-on and
+	// opaquer where the grazing mirror takes over.
+	float alpha = clamp(0.55 + 0.45 * fresnel, 0.0, 1.0);
 	outColor = vec4(rgb, alpha);
 }
