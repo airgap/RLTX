@@ -27,10 +27,9 @@ layout(location = 2) flat in uint vTex;
 layout(location = 3) in float vDepth;
 layout(location = 4) in vec3 vNormal;
 
-// Floor under the sky ambient so faces turned from the sun keep RuneScape's baked colour rather than
-// crushing to black. The baked colours already carry the client's own lighting, so ambient plus the
-// sun term stays around one on a lit surface and only drops in shadow, not darkening everything.
-const float AMBIENT_FLOOR = 0.5;
+// A small floor under the sky ambient so shadowed faces keep some colour rather than crushing to
+// black at dusk or indoors, without the wash of a large floor.
+const float AMBIENT_FLOOR = 0.22;
 
 layout(location = 0) out vec4 outColor;
 
@@ -52,9 +51,14 @@ void main()
 		discard;
 	}
 
-	// Directional sunlight plus a floored sky ambient over the baked albedo, before the distance fog.
-	vec3 light = max(pc.ambient.rgb, vec3(AMBIENT_FLOOR)) + pc.sunColour.rgb * max(dot(normalize(vNormal), pc.sunDir.xyz), 0.0);
-	rgb *= light;
+	// Re-light the albedo. Terrain and model colours have the vanilla fixed-direction shading divided
+	// out by default (see unlitColours), so they arrive as flat, full-luminance albedos: the sky
+	// ambient fills shadow and the sun adds a warm directional term where it strikes, with the total
+	// capped at one so an albedo is only ever darkened, never pushed past its own colour. A larger
+	// additive term left the shading-removed albedos washed out and bright-hued slopes glowing.
+	float ndl = max(dot(normalize(vNormal), pc.sunDir.xyz), 0.0);
+	vec3 light = max(pc.ambient.rgb, vec3(AMBIENT_FLOOR)) + pc.sunColour.rgb * ndl;
+	rgb *= min(light, vec3(1.0));
 
 	float fog = clamp((vDepth - pc.fogRange.x) / max(pc.fogRange.y - pc.fogRange.x, 1e-3), 0.0, 1.0);
 	rgb = mix(rgb, pc.fogColor.rgb, fog);

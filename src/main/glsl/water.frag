@@ -83,10 +83,11 @@ void main()
 
 	vec3 rgb = mix(body, reflection, fresnel);
 
-	// A tight sun glint off the perturbed surface reads as a wet specular highlight; the mirror term
-	// alone, reflecting a matte sky, leaves the water looking like frosted glass.
-	float glint = pow(max(dot(reflectDir, normalize(pc.sun.xyz)), 0.0), 80.0) * pc.sun.w;
-	rgb += vec3(1.0, 0.97, 0.9) * glint;
+	// A tight sun glint off the perturbed surface reads as a wet specular sparkle; the mirror term
+	// alone, reflecting a matte sky, leaves the water looking like frosted glass. Kept narrow (high
+	// exponent) and modest so the sun's mirror is a highlight, not a broad white wash over the river.
+	float glint = pow(max(dot(reflectDir, normalize(pc.sun.xyz)), 0.0), 220.0) * pc.sun.w;
+	rgb += vec3(1.0, 0.97, 0.9) * glint * 0.4;
 
 	// Distance fog, matching raster.frag so water fades into the scene with everything else.
 	float fog = clamp((vDepth - pc.fogRange.x) / max(pc.fogRange.y - pc.fogRange.x, 1e-3), 0.0, 1.0);
